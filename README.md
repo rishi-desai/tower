@@ -137,7 +137,8 @@ main. It grills the idea one question at a time (`/wayfinder`, typed by you, for
 discussion ends one of two ways: **park it** (an issue with what was settled), or **spec it**: you type `/to-spec`,
 which writes the spec into an issue labelled `ready-for-agent` (read it in the approval prompt), then `/to-tickets`
 if it's too big for one session. Then "start #N". If the discussion needs a prototype or spike to answer, the hub
-starts a worktree for it early and the discussion moves there.
+parks the question as its own issue and starts a worktree for it early; the discussion moves there, and its answer
+comes back to the hub with `/handoff`.
 
 The first `/to-spec` in a repo needs `/setup-matt-pocock-skills` to have run; the hub suggests running it in a
 worktree, never on main.
@@ -186,7 +187,7 @@ Set it back to `every` to review PRs again.
 
 | Step | Where | Command | Effort |
 |---|---|---|---|
-| 1. Sharpen the idea | hub | "discuss: <idea>" (grilling; not `/grill-with-docs`, which writes into the repo) | high |
+| 1. Sharpen the idea | hub | "discuss: <idea>" (grilling; not `/grill-with-docs`, which writes into the repo) | medium (the hub's) |
 | 2. Write it down | hub | `/to-spec`, then `/to-tickets` | medium |
 | 3. Pick a ticket | hub | "what's next?" | — |
 | 4. Build it | new worktree, new session | "start #42": the hub runs `orca worktree create … --effort <level> --prompt '/implement #42 …'` | hub picks: medium / high / xhigh |

@@ -36,22 +36,22 @@ When the user wants to start something new and the scan says `AT LIMIT`, say so 
 
 ## 4. Discuss or park an idea
 
-The hub is where new work gets discussed, not only tracked. When the user raises an idea, ask whether to park it or discuss it now; "park: <idea>" means park, "discuss: <idea>" means discuss.
+The hub is where new work gets discussed, not only tracked. An idea mentioned mid-flow ("oh, also the worm theme", or "park: <idea>") gets parked straight away, as before. When the user wants to talk it through ("discuss: <idea>"), discuss it.
 
 You may read code here to inform the discussion, but you run in the main checkout: edit nothing and commit nothing on main. That includes GLOSSARY.md and ADRs (architecture decision records); domain decisions go in the spec, and the worker records them in its branch.
 
-**Park it** (the user's mid-flow idea, "oh, also the worm theme"):
+**Park it:**
 
 - If the GITHUB section shows a repo, create an issue with a one-line title and a short body in their words, and tell them the number.
 - Otherwise append a line to `<LEDGER>/_backlog.md` (path printed by the scan): `- [ ] YYYY-MM-DD — idea in their words` (get the date from `date +%F`).
 
 Then return to what they were doing. Don't start work on the idea.
 
-**Discuss it**, then end one of two ways:
+**Discuss it** with the `grilling` skill (Matt Pocock's: one question at a time until the plan holds). For a huge, foggy effort, tell the user to type `/wayfinder` instead. Don't use `/grill-with-docs` here: it writes GLOSSARY.md and ADRs into the repo. The discussion ends one of two ways, unless it needs a spike:
 
-1. Sharpen it with the `grilling` skill (Matt Pocock's: one question at a time until the plan holds). For a huge, foggy effort, tell the user to type `/wayfinder` instead. Don't use `/grill-with-docs` here: it writes GLOSSARY.md and ADRs into the repo.
-2. **Park it** as above, with what the discussion settled in the issue body. Or **spec it**: tell the user to type `/to-spec`, which writes the spec into an issue and labels it `ready-for-agent`. It publishes straight after writing, so the approval prompt for that issue write is where the user approves the text: tell them to read it there and decline to send it back for changes. If it's too big for one session, tell them to type `/to-tickets` after it: sub-issues with `Blocked by` links, each `ready-for-agent`. Once it's on the tracker, the user can `/clear` the hub and rerun; nothing lives only in the chat.
-3. **Needs a runnable answer** (a prototype or spike): park it first so it has an issue number, then start a worktree for it early (section 6) with `--name spike/<N>-<slug>` and this prompt, and the discussion moves there: `/prototype <the question> — #<N>. <two or three sentences of what the discussion settled>. Use the status-card skill whenever you stop.` If the discussion was long, have the user type `/handoff` first and put the file it writes into the prompt instead.
+- **Park it** as above, with what the discussion settled in the issue body.
+- **Spec it**: tell the user to type `/to-spec`, which writes the spec into an issue and labels it `ready-for-agent`. It publishes straight after writing, so the approval prompt for that issue write is where the user approves the text: tell them to read it there and decline to send it back for changes. If it's too big for one session, tell them to type `/to-tickets` after it: sub-issues with `Blocked by` links, each `ready-for-agent`. Once it's on the tracker, the user can `/clear` the hub and rerun; nothing lives only in the chat.
+- **Needs a runnable answer first** (a prototype or spike): park the question as its own issue #N, then start a worktree for it early (section 6) with `--name spike/<N>-<slug>` and this prompt, and the discussion moves there: `/prototype <the question> — #<N>. <two or three sentences of what the discussion settled>. Use the status-card skill whenever you stop.` If the discussion was long, have the user type `/handoff` first and put the file it writes into the prompt instead. #N is only the spike: when its card says the question is answered, the user types `/handoff` in the spike session, brings that file back to the hub, and the discussion ends as above (park or spec, a new issue). The spike worktree is then cleaned up, so no ticket ever has two worktrees.
 
 `/wayfinder`, `/to-spec`, `/to-tickets` and `/handoff` can only be typed by the user (Matt Pocock's skills disable model invocation), so tell them when; you can't run them. Before the first `/to-spec` in a repo, check that `docs/agents/` exists in the main checkout. If not, `/setup-matt-pocock-skills` hasn't run (it writes that folder and creates the `ready-for-agent` label), and `/to-spec` will stop and ask. Suggest running it in a worktree (`--name chore/setup-matt-skills`, prompt `/setup-matt-pocock-skills`), never on main; it asks questions, then its PR has to merge before main has the folder. On a team repo ask first: it edits the repo's CLAUDE.md.
 
@@ -81,21 +81,19 @@ Say in one line why you picked that level.
 
 ### Kickoff prompt
 
-Two different `/code-review` skills run, so the prompt names each: `/implement` runs Matt Pocock's (`mattpocock-skills:code-review`, Standards + Spec) on its own; the prompt adds Claude Code's built-in `/code-review high` (`xhigh` when the change touches security) before the PR. Pick the line by `PR approval:` in the scan (`pr_approval` in `~/.claude/tower.conf`, set per machine):
+Two different `/code-review` skills run, so the prompt names each: Matt Pocock's `mattpocock-skills:code-review` (Standards + Spec; `/implement` runs it on its own, `/diagnosing-bugs` doesn't), then Claude Code's built-in `/code-review high` before the PR. Fill in three parts:
 
-- `every` (the user approves PRs):
+```
+<start> #42 — <title>. Use the status-card skill whenever you stop. Record domain decisions from the ticket with the domain-modeling skill in this branch. Before the PR, make sure mattpocock-skills:code-review has run (once is enough), then run the built-in /code-review <review level>; once it passes, <ship>
+```
 
-  ```
-  /implement #42 — <title>. Use the status-card skill whenever you stop. After /implement's own review, run the built-in /code-review high; once it passes, open the PR and use babysit-pr to watch it.
-  ```
+- `<start>`: `/implement`, or `/diagnosing-bugs` for a bug ticket.
+- `<review level>`: `high`, or `xhigh` when the change touches security.
+- `<ship>`, by `PR approval:` in the scan (`pr_approval` in `~/.claude/tower.conf`, set per machine):
+  - `every` (the user approves PRs): `open the PR and use babysit-pr to watch it.`
+  - `none` (workers open and merge their own PRs): `open the PR and squash-merge it yourself with gh pr merge --squash --delete-branch after its checks pass; don't wait for me and don't use babysit-pr.`
 
-- `none` (workers open and merge their own PRs):
-
-  ```
-  /implement #42 — <title>. Use the status-card skill whenever you stop. After /implement's own review, run the built-in /code-review high; once it passes, open the PR and squash-merge it yourself with gh pr merge --squash --delete-branch after its checks pass; don't wait for me and don't use babysit-pr.
-  ```
-
-For a bug ticket, start with `/diagnosing-bugs #42 — <title>.` instead of `/implement`. Leave backticks, double quotes and `$` out of the prompt, and rewrite a title with an apostrophe without it: the prompt goes inside single quotes in a shell command.
+`/retro` can only be typed by the user, so it isn't in the prompt; the user runs it in the worker before closing it. Leave backticks, double quotes and `$` out of the prompt, and rewrite a title with an apostrophe without it: the prompt goes inside single quotes in a shell command.
 
 ### Start it through Orca
 
@@ -107,12 +105,12 @@ For a bug ticket, start with `/diagnosing-bugs #42 — <title>.` instead of `/im
    ```
 
    - `<main checkout>`: the path on the first WORKTREES row of the scan.
-   - `--name`, e.g. `feat/42-discord-tracker`: Orca's display name for the worktree. Orca derives the git branch from it with the user's Orca Branch prefix setting (`git-username` turns it into `rishi-desai/feat-42-discord-tracker`), so the real branch, and the card file named after it, can differ from `--name`.
-   - `--no-parent`: the worktree is top-level work, not a child of the main checkout. `--issue <N>` links the ticket in Orca; leave it out when there is no ticket.
+   - `--name`, e.g. `feat/42-discord-tracker`: Orca's display name for the worktree. Orca derives the git branch from it with the user's Orca Branch prefix setting (`git-username` turns it into `<git user>/feat-42-discord-tracker`), so the real branch, and the card file named after it, can differ from `--name`.
+   - `--no-parent`: the worktree is top-level work, not a child of the main checkout. `--issue <N>` links the ticket in Orca; leave it out for the one ticketless start, the setup worktree in section 4.
    - `--model` is required: Orca refuses `--effort` without it (`--effort requires --model.`). Use `model` from `~/.claude/settings.json`, or `opus` when it isn't set. `--effort` on the command line applies to this worker session only, unlike `/effort <level>`.
    - `--surface terminal` runs the Claude Code CLI in an Orca terminal, which LIVE SESSIONS and tower's card hooks need; Orca's chat surface may not be either. A prompt starting with `/implement` runs as the skill, as if typed.
 3. On success, run `hub-scan.sh --no-github`: the new worktree should be listed, with its session under LIVE SESSIONS. Tell the user its real branch and where it is.
-4. Write it a starter card, so the scan lists it under Running instead of Housekeeping until the worker writes its own: run `../status-card/scripts/card-path.sh <new worktree path>` (relative to this skill's base directory; use its absolute path) and write the status-card format there with `status: running`, the ticket, the real branch, `pr: none`, `updated` from `date '+%Y-%m-%dT%H:%M'`, and "Started from the hub; the worker hasn't reported yet." under Done. The worker overwrites it the first time it stops.
+4. Write it a starter card, so the scan lists it under Running instead of Housekeeping until the worker writes its own: run `../status-card/scripts/card-path.sh <new worktree path>` (relative to this skill's base directory; use its absolute path) and write the status-card format there with `status: running`, `ticket: "#<N>"` (quoted, or YAML reads it as a comment), the real branch, `pr: none`, `updated` from `date '+%Y-%m-%dT%H:%M'`, and "Started from the hub; the worker hasn't reported yet." under Done. The worker overwrites it the first time it stops.
 5. On failure, show Orca's `error.message` as it is. If it says the launch outcome is unknown (it gives an `operationId`), run `hub-scan.sh --no-github` first: if the worktree and its session are there, it worked. Otherwise re-run the same command with `--retry-launch <operationId>` added, from the same directory; never as a fresh launch, which can start a second worker.
 
 ### Fallback: the two-step paste
