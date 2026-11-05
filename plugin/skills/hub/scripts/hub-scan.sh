@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # hub-scan.sh — gathers the raw state of one repo so the hub never has to read transcripts.
-# Run it from anywhere inside the repo (main checkout or any worktree). No arguments.
+# Run it from anywhere inside the repo (main checkout or any worktree).
+# Usage: hub-scan.sh [--no-github]   (--no-github skips section 4, for frequent refreshes like the tower pane)
 #
 # Prints:
 #   1. WORKTREES     — every worktree, its branch, and its card's status; then the WIP count
@@ -13,6 +14,7 @@ set -uo pipefail    # unset variables and pipe failures are errors; NOT -e, so o
                     # section (e.g. no GitHub remote) doesn't kill the rest of the report
 
 here="$(cd "$(dirname "$0")" && pwd)"
+skip_github=0; [ "${1:-}" = "--no-github" ] && skip_github=1
 # The shared library sits at <plugin>/scripts/, three levels up from <plugin>/skills/hub/scripts/.
 # shellcheck source=../../../scripts/ledger-lib.sh
 source "${TOWER_LIB:-$here/../../../scripts/ledger-lib.sh}"
@@ -127,7 +129,9 @@ gh_section() {
   fi
 }
 
-if ! command -v gh >/dev/null 2>&1; then
+if [ "$skip_github" -eq 1 ]; then
+  echo "(skipped: --no-github)"
+elif ! command -v gh >/dev/null 2>&1; then
   echo "(gh not installed — skipping)"
 elif ! gh auth status >/dev/null 2>&1; then
   echo "(gh not logged in — run: gh auth login)"

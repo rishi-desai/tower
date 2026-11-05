@@ -75,7 +75,7 @@ If the plugin is already installed (for example from a restored `settings.json`)
 2. **"start #42"**. It replies with a branch name (`feat/42-discord-tracker`), an effort level with its reason, and two lines to paste.
 3. Create the worktree with that branch name in Orca, and open a **new** Claude session in it.
 4. Paste the two lines: `/effort medium` (or whatever the hub picked), then `/implement #42 — …`.
-5. Leave it alone. Whenever it stops, it writes its card and ends its message with **Done / Why it matters / Needs you / Verify**.
+5. Leave it alone. Whenever it stops, it writes its card and ends its message with **Done / Why it matters / Needs you / Verify**. When it needs a decision, it asks in Claude Code's question pop-up (recommended option first), so you answer by picking, not by typing a new prompt.
 
 If the hub says `AT LIMIT`, finish or pause something first, or park the new ticket. It won't refuse if you insist.
 

@@ -5,7 +5,7 @@ When you finish a task or stop to wait for me, end with:
 
 - **Done** — up to 3 plain-English bullets on what now works.
 - **Why it matters** — 1-2 lines connecting it to the ticket or the bigger goal.
-- **Needs you** — "Nothing", or one decision as a question with lettered options (A, B, …) and your recommendation with its reason.
+- **Needs you** — "Nothing", or one decision as a question with lettered options (A, B, …) and your recommendation with its reason. Ask that decision with the AskUserQuestion pop-up (recommended option first), not only as text I'd have to answer in a new prompt.
 - **Verify** — the one command or click that proves it works.
 
 Write it so I don't need a follow-up question, but not as a wall of text: short sections, with the decision clearly marked. Spell out each acronym the first time it appears (unless this file lists it as a known term) and define project terms (use the repo's GLOSSARY.md words when it has one). When you show code, walk through it step by step: what each new variable, file, and command does.
