@@ -1,6 +1,6 @@
 {
   "name": "tower",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run many Claude Code agents in parallel: status cards, a hub, PR babysitting, and approval before anything public.",
   "author": { "name": "Rishi Desai" }
 }

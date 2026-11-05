@@ -1,6 +1,7 @@
 ---
 name: adopt
 description: Bring a repo that already has work in flight under tower — several sessions in one checkout, worktrees without status cards, unclear ownership. Use when the user wants to start tower on an existing, messy project. Run from the repo's main checkout.
+effort: high
 ---
 
 # Adopt

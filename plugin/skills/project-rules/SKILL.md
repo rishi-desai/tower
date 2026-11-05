@@ -1,6 +1,7 @@
 ---
 name: project-rules
 description: Save a personal rule for this project (code style, shortcuts, preferences) without touching the repo's own CLAUDE.md. Use only when the user explicitly asks to remember or add a rule for this project.
+effort: medium
 ---
 
 # Project rules

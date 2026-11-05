@@ -15,9 +15,10 @@ SHA-256 of the upstream files as reviewed:
 - `scripts/pr-wait`: default `--until` changed from `ready` to `green` (one argument default and its
   docstring line). Reason: `ready` waits for the Greptile/Macroscope review bots, which neither the
   personal nor the work repos use, so it would never finish.
+- `SKILL.md`: added `effort: high` to the frontmatter (tower sets effort per skill).
 
 SHA-256 after patching:
-- `babysit-pr/SKILL.md` 6fc54ccede1f7789f7537d606c6cd2ec174df1060d102b5ccd020798bd42e87a
+- `babysit-pr/SKILL.md` 516dd59552ab6a26ca07b317f8ae83a7f1be488cbb2042a8c2ba579f063f8365
 - `babysit-pr/scripts/pr-wait` 6ae4ef3f9761a5223e454d0f32a174919bd72711bc315992c5e842485009f229
 
 Re-check after any update: `shasum -a 256 plugin/skills/babysit-pr/SKILL.md plugin/skills/babysit-pr/scripts/pr-wait plugin/skills/leaving-pr-comments/SKILL.md`

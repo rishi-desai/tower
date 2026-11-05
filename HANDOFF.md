@@ -29,6 +29,7 @@ Rishi is a software engineer (Georgia Tech CS, hand-coded for years). He is now 
 11. **Name: tower.** Repo, README, `~/.claude/tower.conf`, `~/.claude/tower/rules/`, CLAUDE.md block markers, env vars (`TOWER_CONF`, `TOWER_LIB`), skills `tower:<name>`.
 12. **adopt** (`tower:adopt`) brings an in-flight repo under tower: read-only scan → one plan → approved steps one at a time; live sessions write their own first cards via a paste-in prompt; main-checkout work moves with `git stash push -- <files>` / `pop`, never destructive commands.
 13. **Dotfiles: fully separate.** The dotfiles repo has no tower references (decided 2026-11-04). Its one related change is its own: `appsettings` saves `CLAUDE.md` per profile (work and personal differ on purpose; the old shared file moved to `exports/work/`). New-Mac setup for tower is documented only in this README: clone, run `setup.sh`.
+14. **Effort is set, not remembered; never below medium** (his instruction), mapped from Thariq's "Spending your effort" (in ~/Downloads): status-card/project-rules/hub medium; adopt high (verification, but user approves each step so no extra assumptions); babysit-pr high (brownfield fixes, often unattended). Hub kickoff starts with `/effort` per ticket: medium for clear feature slices, high for bug fixes or unattended runs, xhigh for security, concurrency/storage, performance, money/risk logic. Verification `/code-review high`, xhigh for security. Thariq's rule of thumb has no xhigh row; xhigh is used where he'd say max, since max is excluded.
 
 ## What was built (this repo)
 

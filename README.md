@@ -61,10 +61,75 @@ Restart Claude Code afterwards. Re-run `setup.sh` any time to change settings; i
 tower is independent of your dotfiles: on a new Mac, after your usual setup, clone this repo and run `setup.sh`.
 If the plugin is already installed (for example from a restored `settings.json`), step 5 notices and skips it.
 
-## Start using it
+## How to use it
 
-- **New or tidy repo:** in a ticket's worktree, `/implement #42` (the agent writes its card whenever it stops). In the main checkout, `/tower:hub` or just ask "what needs me?".
-- **Repo that's already a mess** (several sessions in one checkout, worktrees with no cards, uncommitted work in main): in the main checkout, run `/tower:adopt`. See [Adopting an existing repo](#adopting-an-existing-repo).
+### First time in a repo
+
+1. Open one Claude Code session in the repo's **main checkout** (in Orca: the main worktree). This is your **hub**. Use it only to check status and start work, never to write code.
+2. If the repo already has work in flight (several sessions in one checkout, worktrees with no cards, uncommitted changes in main), type `/tower:adopt` and follow its plan. See [Adopting an existing repo](#adopting-an-existing-repo). Otherwise type `/tower:hub`.
+3. If the project's vault folder isn't named like the repo folder, add `project.<repo>=<Folder>` to `~/.claude/tower.conf` (e.g. `project.poot=Poot`).
+
+### Starting a ticket
+
+1. In the hub: **"what's next?"** It recommends one unblocked ticket and says why.
+2. **"start #42"**. It replies with a branch name (`feat/42-discord-tracker`), an effort level with its reason, and two lines to paste.
+3. Create the worktree with that branch name in Orca, and open a **new** Claude session in it.
+4. Paste the two lines: `/effort medium` (or whatever the hub picked), then `/implement #42 — …`.
+5. Leave it alone. Whenever it stops, it writes its card and ends its message with **Done / Why it matters / Needs you / Verify**.
+
+If the hub says `AT LIMIT`, finish or pause something first, or park the new ticket. It won't refuse if you insist.
+
+### Checking in
+
+- In the hub: **"what needs me?"** (or `/tower:hub`). You get one screen, ordered Needs you → Blocked → Running → Done → Housekeeping, and one suggested next action.
+- Each "Needs you" item names the session to go to. Answer there, not in the hub.
+- In Obsidian: `Projects/<Project>/Ledger/` has one note per worktree, with `status`, `ticket`, `pr` and `updated` as properties.
+- If the hub's context gets long, `/clear` it and ask again. Everything it reads is on disk.
+
+### When an agent wants to post, push, or change a rule
+
+The agent shows you the exact text in its chat, puts the draft in its card, and Claude Code shows an approval
+prompt in **that** session. Approve or decline there; the hub also lists it under "Needs you". To stop being
+asked about pushes, set `push_approval=force` (force pushes only) or `none` in `~/.claude/tower.conf`.
+
+### When you think of something else mid-flow
+
+Tell the hub **"park: worm theme for the dashboard"**. It files a GitHub issue (after you approve) or adds a line
+to `Ledger/_backlog.md`, then goes back to what you were doing. Nothing starts until you pick it.
+
+### Shipping
+
+1. In the worker session: `/code-review high` (or `/code-review xhigh` if it touches security). Fix what it finds.
+2. **"open the PR"**. It drafts the title and description and asks before creating it.
+3. **"babysit the PR"**. It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
+4. When checks are green, its card says `done` with the PR number. You merge.
+
+### Finishing up
+
+- After merging, remove the worktree in Orca. The hub will list its card as an orphan; say "yes, delete it" when it suggests that.
+- Stopping for the day: `/handoff` in any session you'll resume. The cards stay either way.
+- Want an agent to remember a preference for this project? Say **"remember for this project: use pytest fixtures"**. It asks before saving it to `~/.claude/tower/rules/`.
+
+### Things to say to the hub
+
+| Say | You get |
+|---|---|
+| "what needs me?" | the one-screen report |
+| "what's next?" | one unblocked ticket, preferring `ready-for-agent`, with a reason |
+| "start #42" | branch name, effort level, and the kickoff lines to paste |
+| "park: <idea>" | a GitHub issue (asks first) or a backlog line |
+| "what should I pause?" | which running item to pause to get under the WIP limit |
+| "clean up" | housekeeping suggestions: stale cards, orphans, merged worktrees. Nothing is deleted without your yes |
+
+### If something looks wrong
+
+| You see | Do |
+|---|---|
+| "no projects_dir … run setup.sh" | run `setup.sh` on this machine |
+| `STALE` on a card | go to that session and ask it to update its card, or check whether it has quietly died |
+| "skipping live sessions" | fine; the hub falls back to cards only |
+| a worktree with `NO CARD` | ask that session to "write your status card", or run adopt |
+| no approval prompt before a comment or push | check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
 
 ## Daily loop
 
@@ -73,14 +138,34 @@ If the plugin is already installed (for example from a restored `settings.json`)
 | 1. Sharpen the idea | any session | `/grill-me` or `/grill-with-docs` | high |
 | 2. Write it down | same session | `/to-spec`, then `/to-tickets` | medium |
 | 3. Pick a ticket | hub | "what's next?" | — |
-| 4. Build it | new worktree, new session | `/implement #42` (paste the hub's kickoff prompt) | low/medium |
+| 4. Build it | new worktree, new session | paste the hub's kickoff: `/effort <level>`, then `/implement #42` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
-| 6. Verify | the worktree's session | `/code-review high` | high |
+| 6. Verify | the worktree's session | `/code-review high` (`xhigh` if it touches security) | high / xhigh |
 | 7. Ship | same session | open the PR (asks you), then "babysit the PR" | — |
 | 8. Stop for the day | each session | `/handoff` | — |
 | Weekly | any | `/retro` to improve skills, checks, and gotchas from real failures | — |
 
-"Effort" is Claude Code's reasoning effort (`/effort` or the `--effort` flag): spend less to build, more to verify.
+"Effort" is Claude Code's reasoning effort: spend less to build, more to verify. tower never goes below `medium`.
+
+### How effort is chosen
+
+Based on Thariq's [Spending your effort](https://claude.dev/blog/spending-your-effort/): higher effort buys more
+verification and edge-case testing, and more decisions made without asking you. It doesn't fix a wrong
+approach, which is what grilling and the spec are for.
+
+| Where | Effort | Why |
+|---|---|---|
+| `status-card`, `project-rules`, `hub` | medium | in-the-loop, quick work |
+| `adopt` | high | must not lose a change, but you approve each step, so it shouldn't assume more |
+| `babysit-pr` | high | verifying bot findings and fixing CI in existing code, often while you're away |
+| worker: feature slice from a clear ticket | medium | "most regular software engineering work" |
+| worker: bug fix in existing code, or runs while you're away | high | "verification is important or there are edge cases" |
+| worker: security, concurrency/storage, performance, money/risk logic | xhigh | the benchmark tasks that only passed at xhigh were edge-case-heavy; security gained most |
+| verification | high, or xhigh for security | "code review and security" benefit most |
+
+- **Skills set their own level** with `effort:` in their frontmatter, overriding the session while they run. Edit that line to change one.
+- **Worker sessions:** a skill can't set a whole session, so the hub puts `/effort <level>` first in the kickoff prompt, with a one-line reason.
+- `CLAUDE_CODE_EFFORT_LEVEL`, if you ever set it, overrides all of the above. `max` isn't used by default.
 
 ## Adopting an existing repo
 
@@ -229,7 +314,7 @@ tower/
 ## Updating and uninstalling
 
 - **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
-- **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the two local patches, update the fingerprints.
+- **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the local patches, update the fingerprints.
 - **Uninstall:** `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
 
 ## Credits

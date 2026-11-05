@@ -1,6 +1,7 @@
 ---
 name: status-card
 description: Write or update this worktree's status card in the ledger. Use whenever you finish a chunk of work, stop to wait on the user, get blocked, or open/update a PR — in any repo. The hub reads these cards instead of transcripts.
+effort: medium
 ---
 
 # Status card

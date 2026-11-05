@@ -1,6 +1,7 @@
 ---
 name: hub
 description: Control tower for parallel work in one repo. Use when the user asks what's going on, what needs them, what to work on next, wants to park an idea, or wants to start a new worktree. Reads status cards, worktrees, live session states, PRs and issues — never other sessions' transcripts.
+effort: medium
 ---
 
 # Hub
@@ -52,9 +53,21 @@ When asked what to work on next, choose from the scan's open issues:
 
 ## 6. Start a worktree
 
-When the user picks a ticket to start, give them a ready-to-paste kickoff prompt for the new session:
+When the user picks a ticket to start, pick the worker's effort from the ticket (read it with `gh issue view <n>`), then give them two lines to paste into the new session, in order:
 
+> /effort medium
+>
 > /implement #42 — <title>. Use the status-card skill whenever you stop. Once the PR is open, use babysit-pr to watch it.
+
+Never pick below `medium`. Higher effort buys more verification and edge-case testing, and more assumptions made without asking; it doesn't fix a wrong approach (that's what grilling and the spec are for).
+
+| Effort | When |
+|---|---|
+| `medium` | The default: a feature slice from a clear ticket or spec, docs, config, small contained changes. |
+| `high` | A bug fix in existing code, anything where verification or edge cases matter, or a ticket that will run while the user is away (`ready-for-agent`, background). |
+| `xhigh` | Hidden edge cases with a high cost of being wrong: security (auth, input handling, the firewall's rules), concurrency or storage, performance work, money or risk logic (Poot's sizing, exits, risk caps). |
+
+Say in one line why you picked that level. Verification is separate: the worker runs `/code-review high` before the PR, or `/code-review xhigh` when the change touches security.
 
 Branch name: `<short-type>/<ticket>-<slug>`, e.g. `feat/42-discord-tracker`. The user creates the worktree in their worktree app (Orca or similar); create it yourself with `git worktree add` only if they ask.
 
