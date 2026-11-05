@@ -145,9 +145,11 @@ worktree, never on main.
 
 ### Shipping
 
-1. In the worker session: `/code-review high` (or `/code-review xhigh` if it touches security). Fix what it finds.
-2. **"open the PR"**. It drafts the title and description and asks before creating it.
-3. **"babysit the PR"**. It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
+1. The worker reviews its own work before the PR, because the kickoff prompt tells it to: Matt Pocock's
+   `mattpocock-skills:code-review` (which `/implement` runs), then the built-in `/code-review high` (`xhigh` if it
+   touches security). Without the kickoff, type those yourself.
+2. It opens the PR: it drafts the title and description and asks before creating it.
+3. It babysits the PR (the kickoff says so; otherwise say **"babysit the PR"**). It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
 4. When checks are green, its card says `done` with the PR number. You merge.
 
 With `pr_approval=none` in `~/.claude/tower.conf` (per machine; e.g. personal Mac on, work laptop off), steps 2–4
