@@ -53,13 +53,15 @@ When asked what to work on next, choose from the scan's open issues:
 
 ## 6. Start a worktree
 
-When the user picks a ticket to start, pick the worker's effort from the ticket (read it with `gh issue view <n>`), then give them two lines to paste into the new session, in order, each in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
+When the user picks a ticket to start, pick the worker's effort from the ticket (read it with `gh issue view <n>`), then give them two steps for the new session, labelled "Step 1" and "Step 2". Anything they paste goes in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
+
+**Step 1: set the effort for this session only.** Type this on its own, pick `<level>` in the slider, and press **s**. If the session already shows that level, skip this step. (Starting Claude by hand instead: `claude --effort <level>`.)
 
 ```
-/effort medium
+/effort
 ```
 
-The second line follows `PR approval:` in the scan (`pr_approval` in `~/.claude/tower.conf`, set per machine):
+**Step 2: then, as a separate message.** The line follows `PR approval:` in the scan (`pr_approval` in `~/.claude/tower.conf`, set per machine):
 
 - `every` (the user approves PRs):
 
@@ -72,6 +74,8 @@ The second line follows `PR approval:` in the scan (`pr_approval` in `~/.claude/
   ```
   /implement #42 — <title>. Use the status-card skill whenever you stop. Once /code-review passes, open the PR and squash-merge it yourself with gh pr merge --squash --delete-branch after its checks pass; don't wait for me and don't use babysit-pr.
   ```
+
+Never write `/effort <level>` for the user to paste: a level typed after `/effort` is saved as the default for every new session, not just this one. And never put both steps in one block: pasted together, Claude Code reads the `/implement` line as `/effort`'s argument and rejects the whole message.
 
 Never pick below `medium`. Higher effort buys more verification and edge-case testing, and more assumptions made without asking; it doesn't fix a wrong approach (that's what grilling and the spec are for).
 
