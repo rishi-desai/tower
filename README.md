@@ -218,6 +218,8 @@ description, or you type `/tower:<name>`.
 
 - **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
+- **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
+- **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
 
 ## Approvals: public actions and rule changes
 
