@@ -48,13 +48,17 @@ gh repo clone rishi-desai/tower ~/Developer/personal/tower
 ```
 
 `setup.sh` writes `~/.claude/tower.conf`, creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
-global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the plugin:
+global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the two plugins:
 
 ```bash
 claude plugin marketplace add rishi-desai/tower
-claude plugin install tower@tower
+claude plugin install tower@tower          # skills, approval hook, card hooks
+claude plugin install tower-pane@tower     # optional: the live pane (see "The tower pane")
 # or, in one step inside Claude Code 2.1.275+:  /plugin install tower --marketplace rishi-desai/tower
 ```
+
+If an organization's policy refuses mods, the pane install fails and `setup.sh` says so and carries on: everything
+else works without it.
 
 Restart Claude Code afterwards. Re-run `setup.sh` any time to change settings; it keeps what it doesn't own.
 
@@ -83,8 +87,32 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 
 - In the hub: **"what needs me?"** (or `/tower:hub`). You get one screen, ordered Needs you → Blocked → Running → Done → Housekeeping, and one suggested next action.
 - Each "Needs you" item names the session to go to. Answer there, not in the hub.
+- Or open the live pane with `/tower` (see below): the same picture, refreshed every 30 seconds, where a click
+  jumps to the session in Orca and pop-up questions can be answered in place.
 - In Obsidian: `Projects/<Project>/Ledger/` has one note per worktree, with `status`, `ticket`, `pr` and `updated` as properties.
 - If the hub's context gets long, `/clear` it and ask again. Everything it reads is on disk.
+
+### The tower pane
+
+`tower-pane` is a mod: a panel inside Claude Code, beside the chat. Run `/tower` in the hub session to open it.
+It never reads transcripts either; it runs the hub's own scan.
+
+- **Status line:** `tower WIP 2/3 · 1 needs you` in every session of the repo, and a toast when something new needs you.
+- **Needs you:** cards that say needs-you, and sessions waiting on you. A card whose session is working again
+  (you already answered) moves to Worktrees and says "still says needs you".
+- **Click a worktree name** (or press 1–9 on a Needs you row): Orca switches to that worktree's Claude tab,
+  the one that printed last, and comes to the front. **card** opens the status card in Obsidian.
+- **Pop-up questions:** when a session running the pane asks you something in its pop-up, the question shows up
+  in the pane within about 3 seconds, with one button per option. Click one and the answer goes back to that
+  session, as if you'd picked it there. The first answer wins, the pane's or the pop-up's. Questions that allow
+  several answers, or a typed "Other", are answered in the session.
+- **Approvals never go through the pane.** A push or a GitHub comment is approved only in the session doing it,
+  so nothing else can approve on your behalf.
+- **Buttons:** Refresh (r), Refresh GitHub (g, which loads PRs and ready-for-agent issues; click an issue's number
+  to start it), What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
+
+Anything that changes something (starting a ticket, parking an idea) is sent to the hub's Claude as a request,
+so the usual approval prompts still apply.
 
 ### When an agent wants to post, push, or change a rule
 
@@ -219,6 +247,10 @@ description, or you type `/tower:<name>`.
 - **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
+- **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
+  answer a session, by typing or in its pop-up, a card that says `needs-you` is switched to `running` (only the
+  `status` and `updated` lines). The session rewrites the rest when it next stops. Without it, a card stayed
+  needs-you for the whole stretch between your answer and the session's next stop.
 - **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
 
 ## Approvals: public actions and rule changes
@@ -279,7 +311,8 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `<projects_dir>/<Project>/Ledger/_backlog.md` | parked ideas, only for repos without GitHub |
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
-| `~/.claude/plugins/cache/tower/…` | the installed plugin (skills, scripts, hook) |
+| `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
+| `~/.claude/tower/questions/<session id>.json` | a pop-up question waiting for an answer from the pane; removed once answered |
 | `~/.claude/CLAUDE.md` | the tower block; your original is in `CLAUDE.md.pre-tower.bak` |
 | `~/.local/state/pr-wait/` | `pr-wait`'s lock and event memory |
 
@@ -287,12 +320,16 @@ Repo layout:
 
 ```
 tower/
-  .claude-plugin/marketplace.json     this repo is its own one-plugin marketplace
+  .claude-plugin/marketplace.json     this repo is its own marketplace: plugins tower and tower-pane
   plugin/
     .claude-plugin/plugin.json
-    hooks/hooks.json                  approval hook
-    scripts/                          ledger-lib.sh (shared), confirm-public.py (hook)
+    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification
+    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
+  pane/                               the tower-pane mod
+    hooks/register.tsx                the pane, status line, toasts, Orca jump, question relay
+    types/index.d.ts                  its saved state, as Claude Code checks it
+    tests/                            claude plugin test pane
   setup.sh  CLAUDE.global.md  README.md  HANDOFF.md
 ```
 
@@ -315,9 +352,10 @@ tower/
 
 ## Updating and uninstalling
 
-- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
+- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower && claude plugin update tower-pane@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` (and `pane/.claude-plugin/plugin.json` for pane changes) so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
+- **Change the pane:** edit `pane/`, run `claude plugin validate pane && claude plugin test pane`, and try it with `claude --plugin-dir pane` before pushing (uninstalled, or the installed copy loads too).
 - **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the local patches, update the fingerprints.
-- **Uninstall:** `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
+- **Uninstall:** `claude plugin uninstall tower-pane@tower`, `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
 
 ## Credits
 

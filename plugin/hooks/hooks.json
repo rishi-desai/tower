@@ -1,5 +1,5 @@
 {
-  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; notify when a session needs you",
+  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you",
   "hooks": {
     "PreToolUse": [
       {
@@ -30,6 +30,29 @@
           {
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/notify-needs-you.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-resume.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-resume.py\"",
             "timeout": 10
           }
         ]

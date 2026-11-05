@@ -15,7 +15,7 @@
 #   2. creates ~/.claude/tower/rules/     personal per-project rules (protected by Claude Code)
 #   3. adds CLAUDE.local.md to your global git ignore, so personal rules are never committed
 #   4. refreshes the marked block in ~/.claude/CLAUDE.md (original backed up once)
-#   5. adds the tower marketplace and installs the plugin with `claude plugin`
+#   5. adds the tower marketplace and installs the plugins (tower, and the optional tower-pane) with `claude plugin`
 
 set -euo pipefail
 
@@ -159,7 +159,7 @@ fi
 if [ "$plugin" -eq 0 ]; then
   echo "5. Plugin: skipped (--no-plugin)"
 else
-  echo "5. Plugin: marketplace 'tower' from $plugin_source, plugin tower@tower"
+  echo "5. Plugins: marketplace 'tower' from $plugin_source, plugins tower@tower and tower-pane@tower"
   if claude plugin marketplace list 2>/dev/null | grep -qw tower; then
     echo "  marketplace already added (update with: claude plugin marketplace update tower)"
   else
@@ -169,6 +169,13 @@ else
     echo "  plugin already installed (update with: claude plugin update tower@tower)"
   else
     run claude plugin install tower@tower
+  fi
+  # The pane is a mod (a hooks module). It's optional: an organization's policy may refuse mods, and
+  # tower works without it, so a failed install is reported and setup goes on.
+  if claude plugin list 2>/dev/null | grep -q 'tower-pane@tower'; then
+    echo "  pane already installed (update with: claude plugin update tower-pane@tower)"
+  elif ! run claude plugin install tower-pane@tower; then
+    echo "  pane not installed (tower works without it; retry with: claude plugin install tower-pane@tower)" >&2
   fi
 fi
 
