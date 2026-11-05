@@ -76,9 +76,10 @@ If the plugin is already installed (for example from a restored `settings.json`)
 ### Starting a ticket
 
 1. In the hub: **"what's next?"** It recommends one unblocked ticket and says why.
-2. **"start #42"**. It replies with a branch name (`feat/42-discord-tracker`), an effort level with its reason, and two lines to paste.
+2. **"start #42"**. It replies with a branch name (`feat/42-discord-tracker`), an effort level with its reason, and two steps.
 3. Create the worktree with that branch name in Orca, and open a **new** Claude session in it.
-4. Paste the two lines: `/effort medium` (or whatever the hub picked), then `/implement #42 — …`.
+4. **Step 1:** type `/effort` on its own, pick the hub's level in the slider, and press **s** (this session only). Skip it if the session already shows that level.
+   **Step 2:** send `/implement #42 — …` as its own message. Don't paste both steps at once: Claude Code reads the second line as part of the first and rejects it.
 5. Leave it alone. Whenever it stops, it writes its card and ends its message with **What happened / Done / Why it matters / Needs you / Verify**, written so you can follow it without having watched the session. When it needs a decision, it asks in Claude Code's question pop-up (recommended option first), so you answer by picking, not by typing a new prompt.
 
 If the hub says `AT LIMIT`, finish or pause something first, or park the new ticket. It won't refuse if you insist.
@@ -150,7 +151,7 @@ Set it back to `every` to review PRs again.
 |---|---|
 | "what needs me?" | the one-screen report |
 | "what's next?" | one unblocked ticket, preferring `ready-for-agent`, with a reason |
-| "start #42" | branch name, effort level, and the kickoff lines to paste |
+| "start #42" | branch name, effort level, and the two kickoff steps |
 | "park: <idea>" | a GitHub issue (asks first) or a backlog line |
 | "what should I pause?" | which running item to pause to get under the WIP limit |
 | "clean up" | housekeeping suggestions: stale cards, orphans, merged worktrees. Nothing is deleted without your yes |
@@ -172,7 +173,7 @@ Set it back to `every` to review PRs again.
 | 1. Sharpen the idea | any session | `/grill-me` or `/grill-with-docs` | high |
 | 2. Write it down | same session | `/to-spec`, then `/to-tickets` | medium |
 | 3. Pick a ticket | hub | "what's next?" | — |
-| 4. Build it | new worktree, new session | paste the hub's kickoff: `/effort <level>`, then `/implement #42` | hub picks: medium / high / xhigh |
+| 4. Build it | new worktree, new session | the hub's kickoff: `/effort` slider + **s**, then `/implement #42` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
 | 6. Verify | the worktree's session | `/code-review high` (`xhigh` if it touches security) | high / xhigh |
 | 7. Ship | same session | open the PR (asks you), then "babysit the PR"; with `pr_approval=none` the worker merges it itself | — |
@@ -198,7 +199,8 @@ approach, which is what grilling and the spec are for.
 | verification | high, or xhigh for security | "code review and security" benefit most |
 
 - **Skills set their own level** with `effort:` in their frontmatter, overriding the session while they run. Edit that line to change one.
-- **Worker sessions:** a skill can't set a whole session, so the hub puts `/effort <level>` first in the kickoff prompt, with a one-line reason.
+- **Worker sessions:** a skill can't set a whole session, so the hub's kickoff starts with setting the level for that session only: the `/effort` slider, then **s**. Not `/effort <level>`: a level typed after `/effort` (or picked with Enter) is saved as the default for every new session. One `/effort xhigh` for a risky ticket once left every later session at `xhigh`.
+- **Your default** for new sessions is the level you last saved, kept per model under `modelSettings` in `~/.claude/settings.json`. tower assumes `high`. To check it, open `/effort` in a fresh session; to change it on purpose, pick a level and press Enter.
 - `CLAUDE_CODE_EFFORT_LEVEL`, if you ever set it, overrides all of the above. `max` isn't used by default.
 
 ## Adopting an existing repo
