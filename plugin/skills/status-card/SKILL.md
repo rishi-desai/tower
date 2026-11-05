@@ -55,7 +55,8 @@ pr: "#57"                # or none
 - When you need a decision: write the card first (status `needs-you`, the question and options under Needs you), then ask it with the AskUserQuestion tool (the pop-up), recommended option first and labelled "(Recommended)". Don't leave the question only in your final text: the user answers in the pop-up, and the tower pane shows the card meanwhile.
 - `blocked` means waiting on something other than the user (CI, another ticket, a teammate). Say what in Needs you.
 - `done` means merged or ready for the user to merge, with the PR number in `pr:`.
-- Write the same content as your final chat message too, so the user sees it in this session as well.
+- Name things so a reader of the card alone can follow it: "#44 (the theme and mascot ticket)", not "#44". The hub repeats card text to the user.
+- The card is the short version for the hub. Your final chat message is the full version for the user: same facts, written out in the report format from your CLAUDE.md (What happened, Done, Why it matters, Needs you, Verify), without the card's length limit.
 
 ## Gotchas
 

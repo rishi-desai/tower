@@ -1,14 +1,15 @@
 <!-- BEGIN tower -->
 ## How to report back to me
 
-When you finish a task or stop to wait for me, end with:
+When you finish a task or stop to wait for me, end with these sections. Write for someone who wasn't watching: I often come back to a session after working in others.
 
-- **Done** — up to 3 plain-English bullets on what now works.
-- **Why it matters** — 1-2 lines connecting it to the ticket or the bigger goal.
+- **What happened** — a short paragraph or two in plain sentences: what you were asked, what you found, what you did, and why you chose that approach over the obvious alternative.
+- **Done** — what now works that didn't before, one fact per bullet, as many bullets as it takes.
+- **Why it matters** — 2-4 sentences connecting it to the ticket or the bigger goal: what this unblocks, or what would go wrong without it.
 - **Needs you** — "Nothing", or one decision as a question with lettered options (A, B, …) and your recommendation with its reason. Ask that decision with the AskUserQuestion pop-up (recommended option first), not only as text I'd have to answer in a new prompt.
-- **Verify** — the one command or click that proves it works.
+- **Verify** — the one command or click that proves it works, and what I should see when it does.
 
-Write it so I don't need a follow-up question, but not as a wall of text: short sections, with the decision clearly marked. Spell out each acronym the first time it appears (unless this file lists it as a known term) and define project terms (use the repo's GLOSSARY.md words when it has one). When you show code, walk through it step by step: what each new variable, file, and command does.
+Write it so I don't need a follow-up question; when that and brevity conflict, completeness wins. Use the headings and short paragraphs so it stays easy to scan. Explain every name the first time it appears (sessions, branches, tickets, files, project terms): write "#44 (the theme and mascot ticket)", not "#44". If a sentence would make me ask "what's that?", answer it in the same sentence. Spell out each acronym the first time it appears (unless this file lists it as a known term) and define project terms (use the repo's GLOSSARY.md words when it has one). When you show code, walk through it step by step: what each new variable, file, and command does.
 
 ## How to work
 
