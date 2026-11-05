@@ -51,15 +51,15 @@ Then return to what they were doing. Don't start work on the idea.
 
 - **Park it** as above, with what the discussion settled in the issue body.
 - **Spec it**: tell the user to type `/to-spec`, which writes the spec into an issue and labels it `ready-for-agent`. It publishes straight after writing, so the approval prompt for that issue write is where the user approves the text: tell them to read it there and decline to send it back for changes. If it's too big for one session, tell them to type `/to-tickets` after it: sub-issues with `Blocked by` links, each `ready-for-agent`. Once it's on the tracker, the user can `/clear` the hub and rerun; nothing lives only in the chat.
-- **Needs a runnable answer first** (a prototype or spike): park the question as its own issue #N, then start a worktree for it early (section 6) with `--name spike/<N>-<slug>` and this prompt, and the discussion moves there: `/prototype <the question> — #<N>. <two or three sentences of what the discussion settled>. Use the status-card skill whenever you stop.` If the discussion was long, have the user type `/handoff` first and put the path of the file it writes into the prompt instead. #N is only the spike: when its card says the question is answered, the user types `/handoff` in the spike session, brings that file back to the hub, and the discussion ends as above (park or spec, a new issue). The spike worktree is then cleaned up, so no ticket ever has two worktrees.
+- **Needs a runnable answer first** (a prototype or spike): park the question as its own issue #N, then start a worktree for it early (section 6) with `--name spike/<N>-<slug>` and this prompt, and the discussion moves there: `/prototype <the question> — #<N>. <two or three sentences of what the discussion settled>. Use the status-card skill whenever you stop.` If the discussion was long, have the user type `/handoff` first (it writes to `$TMPDIR`, outside the repo) and put the path of the file it writes into the prompt instead. #N is only the spike: when its card says the question is answered, the user types `/handoff` in the spike session, brings that file back to the hub, and the discussion ends as above (park or spec, a new issue). The spike worktree is then cleaned up, so no ticket ever has two worktrees.
 
-`/wayfinder`, `/to-spec`, `/to-tickets` and `/handoff` can only be typed by the user (Matt Pocock's skills disable model invocation), so tell them when; you can't run them. Before the first `/to-spec` in a repo, check that `docs/agents/` exists in the main checkout. If not, `/setup-matt-pocock-skills` hasn't run (it writes that folder and creates the `ready-for-agent` label), and `/to-spec` will stop and ask. Suggest running it in a worktree (`--name chore/setup-matt-skills`), never on main, with the prompt `/setup-matt-pocock-skills. Use the status-card skill whenever you stop. When it's done, commit, then <ship>` (`<ship>` from section 6). It asks questions, and its PR has to merge before main has the folder. On a team repo ask first: it edits the repo's CLAUDE.md.
+`/wayfinder`, `/to-spec`, `/to-tickets` and `/handoff` can only be typed by the user (Matt Pocock's skills disable model invocation), so tell them when; you can't run them. Before the first `/to-spec` in a repo, check that `docs/agents/` exists in the main checkout. If not, `/setup-matt-pocock-skills` hasn't run (it writes that folder and creates the `ready-for-agent` label), and `/to-spec` will stop and ask. Suggest running it in a worktree (`--name chore/setup-matt-skills`), never on main, with the prompt `/setup-matt-pocock-skills. Use the status-card skill whenever you stop. When it's done, commit, then <ship>` (`<ship>` from section 6). It asks questions, and its PR has to merge; then run `git pull --ff-only` in the main checkout (syncing main isn't editing it) so the folder is there. On a team repo ask first: it edits the repo's CLAUDE.md.
 
 ## 5. Pick the next ticket
 
 When asked what to work on next, choose from the scan's open issues:
 
-1. Prefer issues labelled `ready-for-agent` (from `/triage`).
+1. Prefer issues labelled `ready-for-agent` (from `/to-spec`, `/to-tickets` or `/triage`).
 2. Skip any whose `Blocked by` tickets are still open — run `gh issue view <n>` on the top candidates to check.
 3. Recommend one, in a sentence, with why.
 
@@ -77,7 +77,7 @@ Never pick below `medium`. Higher effort buys more verification and edge-case te
 | `high` | A bug fix in existing code, anything where verification or edge cases matter, or a ticket the user says will run while they're away. The `ready-for-agent` label alone doesn't mean that: every spec and sub-ticket gets it. |
 | `xhigh` | Hidden edge cases with a high cost of being wrong: security (auth, input handling, the firewall's rules), concurrency or storage, performance work, money or risk logic (Poot's sizing, exits, risk caps). |
 
-Say in one line why you picked that level.
+A spike (`/prototype`) or the setup worktree gets `medium`. Say in one line why you picked that level.
 
 ### Kickoff prompt
 
@@ -101,21 +101,18 @@ Two different `/code-review` skills run, so the prompt names each: Matt Pocock's
 2. Show the command in a fenced block, with the effort line, then ask with AskUserQuestion: "Start it (Recommended)", "Change the effort", "Don't start". Run it only on a yes.
 
    ```
-   orca worktree create --repo path:<main checkout> --name <type>/<N>-<slug> --no-parent --issue <N> --agent claude --model <model> --effort <level> --surface terminal --json --prompt "$(cat <<'KICKOFF'
-   <kickoff prompt, on one line>
-   KICKOFF
-   )"
+   orca worktree create --repo path:<main checkout> --name <type>/<N>-<slug> --no-parent --issue <N> --agent claude --model '<model>' --effort <level> --surface terminal --json --prompt "$(cat <kickoff file>)"
    ```
 
-   - The prompt goes in a quoted heredoc (`<<'KICKOFF'`) so the shell passes it as one argument exactly as written: apostrophes ("don't"), quotes, backticks and `$` are all safe. Don't switch to `'...'` quoting, which an apostrophe breaks.
+   - `<kickoff file>`: first write the kickoff prompt, one line, to `kickoff-<N>.txt` in your scratchpad directory (or `$TMPDIR`) with the Write tool, and show the user its text. Read from a file, the prompt reaches Orca as one argument exactly as written in every shell: apostrophes ("don't"), quotes, backticks and `$` are all safe. Don't put the text in the command itself: `'...'` breaks on an apostrophe, and a heredoc inside `$(...)` breaks on one in macOS bash 3.2.
 
    - `<main checkout>`: the path on the first WORKTREES row of the scan.
    - `--name`, e.g. `feat/42-discord-tracker`: Orca's display name for the worktree. Orca derives the git branch from it with the user's Orca Branch prefix setting (`git-username` turns it into `<git user>/feat-42-discord-tracker`), so the real branch, and the card file named after it, can differ from `--name`.
    - `--no-parent`: the worktree is top-level work, not a child of the main checkout. `--issue <N>` links the ticket in Orca; leave it out for the one ticketless start, the setup worktree in section 4.
-   - `--model` is required: Orca refuses `--effort` without it (`--effort requires --model.`). Use `model` from `~/.claude/settings.json`, or `opus` when it isn't set; if Orca rejects that id, show the error and retry with `opus`. `--effort` on the command line applies to this worker session only, unlike `/effort <level>`.
+   - `--model` is required: Orca refuses `--effort` without it (`--effort requires --model.`). Use `model` from `~/.claude/settings.json`, or `opus` when it isn't set, in single quotes (`opus[1m]` is a glob pattern to zsh); if Orca rejects that id, show the error and ask before retrying with `opus`. `--effort` on the command line applies to this worker session only, unlike `/effort <level>`.
    - `--surface terminal` runs the Claude Code CLI in an Orca terminal, which LIVE SESSIONS and tower's card hooks need; Orca's chat surface may not be either. A prompt starting with `/implement` runs as the skill, as if typed.
 3. On success, run `hub-scan.sh --no-github`: the new worktree should be listed, with its session under LIVE SESSIONS. Tell the user its real branch and where it is.
-4. If the worktree has no card yet (the worker may already have written one, e.g. `needs-you` with a question; never overwrite it), write it a starter card, so the scan lists it under Running instead of Housekeeping until the worker writes its own: run `../status-card/scripts/card-path.sh <new worktree path>` (relative to this skill's base directory; use its absolute path) and write the status-card format there with `status: running`, `ticket: "#<N>"` (quoted, or YAML reads it as a comment; `none` for the setup worktree), the real branch, `pr: none`, `updated` from `date '+%Y-%m-%dT%H:%M'`, and "Started from the hub; the worker hasn't reported yet." under Done. The worker overwrites it the first time it stops.
+4. Unless the worker has already written its own card (e.g. `needs-you` with a question; never overwrite that), write it a starter card. Note the time before running the command; a card whose `updated` is earlier than that is an orphan from an earlier run of the same branch and may be replaced. Write the starter card so the scan lists it under Running instead of Housekeeping until the worker writes its own: run `../status-card/scripts/card-path.sh <new worktree path>` (relative to this skill's base directory; use its absolute path) and write the status-card format there with `status: running`, `ticket: "#<N>"` (quoted, or YAML reads it as a comment; `none` for the setup worktree), the real branch, `pr: none`, `updated` from `date '+%Y-%m-%dT%H:%M'`, and "Started from the hub; the worker hasn't reported yet." under Done. The worker overwrites it the first time it stops.
 5. On failure, show Orca's `error.message` as it is. If it says the launch outcome is unknown (it gives an `operationId`), run `hub-scan.sh --no-github` first: if the worktree and its session are there, it worked. Otherwise re-run the same command with `--retry-launch <operationId>` added, from the same directory; never as a fresh launch, which can start a second worker.
 
 ### Fallback: the two-step paste

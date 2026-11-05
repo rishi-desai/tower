@@ -79,7 +79,7 @@ If the plugin is already installed (for example from a restored `settings.json`)
 2. **"start #42"** (or click `#42` in the pane). It picks an effort level with its reason, writes the kickoff prompt, and
    shows one `orca worktree create …` command that creates the worktree and starts Claude in it with that effort
    (this session only) and prompt. Say yes and it runs it, checks the new session shows up, and writes the worktree a
-   starter `running` card.
+   starter `running` card (unless the worker already wrote its own).
 3. If Orca isn't running, it falls back to the old way: create the worktree in Orca yourself, open a **new** Claude
    session in it, then **Step 1:** type `/effort` on its own, pick the level in the slider, press **s**; **Step 2:** send
    the `/implement #42 — …` line as its own message (pasted together, Claude Code rejects both).
@@ -192,7 +192,7 @@ Set it back to `every` to review PRs again.
 | 1. Sharpen the idea | hub | "discuss: <idea>" (grilling; not `/grill-with-docs`, which writes into the repo) | medium (the hub's) |
 | 2. Write it down | hub | `/to-spec`, then `/to-tickets` | medium |
 | 3. Pick a ticket | hub | "what's next?" | — |
-| 4. Build it | new worktree, new session | "start #42": the hub runs `orca worktree create … --effort <level> --prompt '/implement #42 …'` | hub picks: medium / high / xhigh |
+| 4. Build it | new worktree, new session | "start #42": the hub runs `orca worktree create … --effort <level> --prompt <the /implement #42 … kickoff>` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
 | 6. Verify | the worktree's session | `/code-review high` (`xhigh` if it touches security) | high / xhigh |
 | 7. Ship | same session | open the PR (asks you), then "babysit the PR"; with `pr_approval=none` the worker merges it itself | — |
