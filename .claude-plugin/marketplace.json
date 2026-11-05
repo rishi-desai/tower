@@ -1,0 +1,12 @@
+{
+  "name": "tower",
+  "owner": { "name": "Rishi Desai" },
+  "description": "tower: a personal workflow for running many Claude Code agents in parallel.",
+  "plugins": [
+    {
+      "name": "tower",
+      "source": "./plugin",
+      "description": "Run many Claude Code agents in parallel: status cards, a hub, PR babysitting, and approval before anything public."
+    }
+  ]
+}

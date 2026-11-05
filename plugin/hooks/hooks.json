@@ -1,0 +1,16 @@
+{
+  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/confirm-public.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

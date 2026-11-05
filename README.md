@@ -1,0 +1,240 @@
+# tower
+
+A way to run many Claude Code agents in parallel, on personal and work projects alike, without losing track of
+which session owns what, what needs you, and how the pieces fit together.
+
+Each agent works one ticket in its own git worktree and leaves a short **status card** in your Obsidian vault.
+One **hub** session reads only those cards plus git, GitHub, and Claude Code's live session list, and tells you
+on one screen what needs you and what to do next. Nothing it uses is committed to any repo, so it is safe on a
+shared work repo. Already have a messy repo? **adopt** brings it under tower without losing a change.
+
+tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small per-machine `setup.sh`.
+
+---
+
+## The four rules
+
+1. **One ticket = one branch = one worktree = one main session.** Subagents inside a worktree are fine; two sessions editing the same worktree are not.
+2. **WIP limit** (work in progress): at most N worktrees running or waiting on you (3 personal, 4 work, set per machine). New ideas get parked as tickets, not started.
+3. **The hub never reads transcripts.** All state is on disk, so the hub is disposable: `/clear` it and run it again any time.
+4. **Nothing public without your OK.** Comments, PR changes, pushes, and edits to your standing rules stop for your approval.
+
+## How it works
+
+```
+ worktree A ──┐  status-card skill writes          ┌─> Vault/Projects/<Project>/Ledger/feat__42-x.md
+ worktree B ──┼─ a card when it stops ─────────────┼─> Vault/Projects/<Project>/Ledger/fix__51-y.md
+ worktree C ──┘                                    └─> ...
+                                                          │
+ main checkout: /tower:hub ── hub-scan.sh reads ───────────┤ cards
+                                                           ├ git worktree list
+                                                           ├ claude agents --json  (live: busy / idle / waiting)
+                                                           └ gh: your PRs, open issues
+                     └─> one screen: Needs you → Blocked → Running → Done → Housekeeping → ONE next action
+```
+
+- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. Its top block is YAML frontmatter, so Obsidian shows the fields as properties.
+- **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
+- **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
+
+## Install
+
+On each Mac (after Claude Code, `gh`, and git are set up):
+
+```bash
+gh repo clone rishi-desai/tower ~/Developer/personal/tower
+~/Developer/personal/tower/setup.sh --dry-run     # shows every change; changes nothing
+~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, push approval
+```
+
+`setup.sh` writes `~/.claude/tower.conf`, creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
+global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the plugin:
+
+```bash
+claude plugin marketplace add rishi-desai/tower
+claude plugin install tower@tower
+# or, in one step inside Claude Code 2.1.275+:  /plugin install tower --marketplace rishi-desai/tower
+```
+
+Restart Claude Code afterwards. Re-run `setup.sh` any time to change settings; it keeps what it doesn't own.
+
+tower is independent of your dotfiles: on a new Mac, after your usual setup, clone this repo and run `setup.sh`.
+If the plugin is already installed (for example from a restored `settings.json`), step 5 notices and skips it.
+
+## Start using it
+
+- **New or tidy repo:** in a ticket's worktree, `/implement #42` (the agent writes its card whenever it stops). In the main checkout, `/tower:hub` or just ask "what needs me?".
+- **Repo that's already a mess** (several sessions in one checkout, worktrees with no cards, uncommitted work in main): in the main checkout, run `/tower:adopt`. See [Adopting an existing repo](#adopting-an-existing-repo).
+
+## Daily loop
+
+| Step | Where | Command | Effort |
+|---|---|---|---|
+| 1. Sharpen the idea | any session | `/grill-me` or `/grill-with-docs` | high |
+| 2. Write it down | same session | `/to-spec`, then `/to-tickets` | medium |
+| 3. Pick a ticket | hub | "what's next?" | — |
+| 4. Build it | new worktree, new session | `/implement #42` (paste the hub's kickoff prompt) | low/medium |
+| 5. Check status | hub | `/tower:hub` | — |
+| 6. Verify | the worktree's session | `/code-review high` | high |
+| 7. Ship | same session | open the PR (asks you), then "babysit the PR" | — |
+| 8. Stop for the day | each session | `/handoff` | — |
+| Weekly | any | `/retro` to improve skills, checks, and gotchas from real failures | — |
+
+"Effort" is Claude Code's reasoning effort (`/effort` or the `--effort` flag): spend less to build, more to verify.
+
+## Adopting an existing repo
+
+`/tower:adopt` (run from the main checkout) is for a repo where work is already in flight and you've lost track.
+
+1. **Scan (read-only).** `adopt-scan.sh` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state).
+2. **One plan, which you approve.** In order:
+   - a **paste-in prompt for every live session**: it writes its own first card and, if it's in the main checkout, lists exactly which uncommitted files are its work;
+   - **untangling the main checkout**: each session's files move to their own branch + worktree (`git stash push -- <its files>` → `git stash pop` in the new worktree; never `reset`, `checkout .`, or `clean`);
+   - **draft cards** from git facts for worktrees with no live session, marked `needs-you` until you confirm;
+   - **WIP**: what to park first (merged or untouched longest), and cleanup suggestions;
+   - **tickets** for work with no issue (creating one asks you).
+3. **Steps run one at a time**, only the ones you approve. Nothing is deleted. It ends by running the hub.
+
+## Skills
+
+All skills are namespaced by the plugin: `tower:hub`, `tower:status-card`, and so on. Claude picks them by
+description, or you type `/tower:<name>`.
+
+### Run automatically (Claude decides from the skill's description)
+
+| Skill | Fires when | What it does |
+|---|---|---|
+| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Finds this worktree's card in the vault (`card-path.sh`) and overwrites it with the current state. Same content as its final chat message. |
+| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh`, reports in the fixed order, enforces the WIP limit, parks ideas as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, writes kickoff prompts. Suggests `adopt` when the repo clearly hasn't been adopted. |
+| `tower:adopt` | you want to start tower on a messy, in-flight repo | See [above](#adopting-an-existing-repo). |
+| `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
+| `tower:babysit-pr` | you say "babysit / watch / monitor the PR" | Runs `pr-wait` (one line per real event: check failed, comment, review, base moved, merged) and fixes real CI failures and review findings. Drafts every public action and waits for your approval. Waits on your repo's own required checks (`--until green`). |
+| `tower:leaving-pr-comments` | any agent comment on GitHub | Starts each comment with "🤖 <model> responding on behalf of <you>", keeps it short, checks for secrets. |
+| `tdd`, `code-review`, `grilling`, `diagnosing-bugs`, `domain-modeling`, `research`, `prototype` (Matt Pocock) | their descriptions match what you're doing | `/implement` calls `tdd` and `code-review` itself. |
+
+### Run only when you type them (Matt Pocock, `disable-model-invocation`)
+
+| Command | When to use | What it does |
+|---|---|---|
+| `/grill-me`, `/grill-with-docs` | an idea is fuzzy | Interviews you one round at a time with a recommended answer per question; `-with-docs` also writes ADRs (architecture decision records) and the glossary. |
+| `/to-spec` | the idea is clear | Turns the conversation into a spec on the issue tracker. |
+| `/to-tickets` | a spec exists | Splits it into tracer-bullet tickets (thin end-to-end slices), each listing the tickets that block it. |
+| `/implement #42` | starting a ticket | Reads the ticket, builds it test-first, runs `code-review`, commits. |
+| `/triage` | issues pile up | Labels issues (`needs-triage`, `ready-for-agent`, `ready-for-human`, …). The hub prefers `ready-for-agent`. |
+| `/wayfinder` | work too big for one session | Charts a map of decision tickets and resolves them one at a time. |
+| `/handoff` | stopping a session | Writes a handoff doc for the next session (in `$TMPDIR`; your card is the durable record). |
+| `/wait-what` | an answer didn't land | Makes the agent re-pitch it in plain English using the repo's `GLOSSARY.md` words. |
+| `/retro` | weekly | Suggests environment fixes: checks, coding standards, gotchas. |
+| `/setup-matt-pocock-skills` | once per repo | Configures tracker and labels. **Writes files into the repo — ask first on work repos.** |
+
+**Which `/code-review`?** Several are installed. `/code-review high` (with an effort level) is Claude Code's built-in reviewer, the one the daily loop means. Matt's is `mattpocock-skills:code-review`; `/implement` calls it for you.
+
+### Always on (not skills)
+
+- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (Done / Why it matters / Needs you / Verify, terms defined unless listed as known terms), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
+- **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
+
+## Approvals: public actions and rule changes
+
+The plugin's hook runs before every Bash, Edit, Write, and MultiEdit call. When the call would post or change
+something on GitHub, or change your standing rules, Claude Code shows you an approval prompt, even if your
+allow list (`Bash(git *)`) would normally let it through. Decline, and the agent must ask you instead of trying
+another way.
+
+| Always asks | Depends on `push_approval` |
+|---|---|
+| `gh pr` / `gh issue` comment, review, create, edit, merge, close, reopen, … | `every` (default): every `git push` |
+| `gh release` / `gh label` writes | `force`: only force pushes, `+refspec`, branch deletes |
+| `gh api` writes: GraphQL mutations, `-X POST/PATCH/PUT/DELETE`, or fields without `-X GET` (gh defaults to POST) | `none`: pushes never ask |
+| Any edit to a `CLAUDE.local.md` or `~/.claude/tower/rules/*`, and Bash commands naming them | |
+
+Change the push mode by editing `push_approval=` in `~/.claude/tower.conf` (takes effect on the next command)
+or by re-running `setup.sh`. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs, GraphQL queries) never ask.
+
+The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
+first, and the hub lists it under **Needs you** with the session's name.
+
+**Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
+script calling the GitHub API directly isn't caught. `pr-wait` itself only reads.
+
+## Security model
+
+- **Instructions and code live where agents can't silently change them.** The plugin is installed from GitHub into `~/.claude/plugins/cache/`, and your rules are in `~/.claude/tower/rules/`; Claude Code protects `~/.claude`. This matches the dotfiles' rule of copying, never symlinking, Claude config.
+- **Don't run the plugin from a local folder day to day.** `setup.sh --plugin-source <path>` makes Claude Code read the plugin straight from that folder, which agents *can* edit. It's for testing changes before pushing them.
+- **Cards are data, not instructions.** They live in the vault and agents write them; the hub only reports what they say.
+
+## Personal project rules (never committed)
+
+Team repos often have their own `CLAUDE.md` and `.claude/settings.json`. tower never edits those.
+
+- **Rules** (code style, shortcuts): ask "remember for this project: …". `tower:project-rules` adds one line to the worktree's `CLAUDE.local.md` (`@~/.claude/tower/rules/<Project>.md`) and adds your rule to that file after you approve. `CLAUDE.local.md` is git-ignored (setup adds it to your global git ignore), and the script refuses to write if it isn't.
+- **Hooks** (formatters, linters): `.claude/settings.local.json` in the repo, which Claude Code git-ignores.
+- Rules stay on the machine they were made on: work-project rules never leave the work Mac.
+- The first time a project imports a file from outside the repo, Claude Code asks you to approve the import once.
+
+## Configuration: `~/.claude/tower.conf` (one per machine)
+
+```ini
+projects_dir=/Users/rishi/Library/Mobile Documents/com~apple~CloudDocs/Vault/Projects
+wip_limit=3
+push_approval=every
+project.poot=Poot          # optional: repo folder name -> project folder name
+```
+
+Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.sh`, which keeps your
+`project.*` lines.
+
+## Where everything lives
+
+| Path | What |
+|---|---|
+| `<projects_dir>/<Project>/Ledger/<branch>.md` | status cards (`/` in branch names becomes `__`; detached HEAD → `detached-<sha>`) |
+| `<projects_dir>/<Project>/Ledger/_backlog.md` | parked ideas, only for repos without GitHub |
+| `~/.claude/tower.conf` | per-machine settings |
+| `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
+| `~/.claude/plugins/cache/tower/…` | the installed plugin (skills, scripts, hook) |
+| `~/.claude/CLAUDE.md` | the tower block; your original is in `CLAUDE.md.pre-tower.bak` |
+| `~/.local/state/pr-wait/` | `pr-wait`'s lock and event memory |
+
+Repo layout:
+
+```
+tower/
+  .claude-plugin/marketplace.json     this repo is its own one-plugin marketplace
+  plugin/
+    .claude-plugin/plugin.json
+    hooks/hooks.json                  approval hook
+    scripts/                          ledger-lib.sh (shared), confirm-public.py (hook)
+    skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
+  setup.sh  CLAUDE.global.md  README.md  HANDOFF.md
+```
+
+## Using it on the work laptop
+
+- Run `setup.sh` there and point `projects_dir` at the work vault (`~/Vault` → OneDrive). Work notes stay in company storage.
+- On a team repo the hub lists only issues assigned to you, and nothing is written into the repo.
+- `babysit-pr` waits on the repo's required checks. Every comment or push stops for your approval, and comments are labelled as AI-written.
+- The repo is on your personal GitHub account: `gh auth switch` to it for `marketplace add` / updates.
+
+## Gotchas
+
+- **Cards are only as fresh as the last time an agent wrote one.** The hub flags `running` cards untouched for 24h as `STALE`, and trusts live session status over a card.
+- **Agent view's JSON format isn't documented.** If it changes, the hub prints one "skipping live sessions" line and works from cards alone.
+- **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. In Poot, `data/` exists only in the main checkout, so worktrees don't have it.
+- **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). adopt checks the actual diff before calling a branch unshipped.
+- **Background sessions** (`claude --bg`) create their own worktrees under `.claude/worktrees/`. Add that path to the repo's ignore file if it shows up in `git status`.
+- **Project names can't contain spaces** (the rules import path would break). Map to a name without spaces with `project.<repo>=`.
+- Card time comes from `date`, never from the model's memory, because models often get today's date wrong.
+
+## Updating and uninstalling
+
+- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
+- **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the two local patches, update the fingerprints.
+- **Uninstall:** `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
+
+## Credits
+
+- Skill base: [Matt Pocock's skills](https://github.com/mattpocock/skills) (Claude Code plugin `mattpocock-skills`).
+- `babysit-pr`, `leaving-pr-comments`: [t3dotgg/tstack](https://github.com/t3dotgg/tstack), MIT, vendored at `1085050` with local patches.
+- Working principles: [Karpathy-inspired guidelines](https://github.com/multica-ai/andrej-karpathy-skills).
+- Design notes and the decisions behind them: `HANDOFF.md`.

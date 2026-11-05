@@ -1,0 +1,4 @@
+# Claude Code scratch state
+.claude/
+__pycache__/
+.DS_Store
