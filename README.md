@@ -146,7 +146,7 @@ worktree, never on main.
 ### Shipping
 
 1. The worker reviews its own work before the PR, because the kickoff prompt tells it to: Matt Pocock's
-   `mattpocock-skills:code-review` (which `/implement` runs), then the built-in `/code-review high` (`xhigh` if it
+   `mattpocock-skills:code-review` (named in full: `/implement` asks for plain "code-review", which can resolve to the built-in one), then the built-in `/code-review high` (`xhigh` if it
    touches security). Without the kickoff, type those yourself.
 2. It opens the PR: it drafts the title and description and asks before creating it.
 3. It babysits the PR (the kickoff says so; otherwise say **"babysit the PR"**). It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
@@ -267,7 +267,7 @@ description, or you type `/tower:<name>`.
 | `/retro` | weekly | Suggests environment fixes: checks, coding standards, gotchas. |
 | `/setup-matt-pocock-skills` | once per repo | Configures tracker and labels. **Writes files into the repo — ask first on work repos.** |
 
-**Which `/code-review`?** Several are installed. `/code-review high` (with an effort level) is Claude Code's built-in reviewer, the one the daily loop means. Matt's is `mattpocock-skills:code-review`; `/implement` calls it for you.
+**Which `/code-review`?** Several are installed. `/code-review high` (with an effort level) is Claude Code's built-in reviewer, the one the daily loop means. Matt's is `mattpocock-skills:code-review`; `/implement` asks for plain "code-review", which can resolve to the built-in one, so the hub's kickoff names Matt's in full.
 
 ### Always on (not skills)
 
