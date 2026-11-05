@@ -10,13 +10,13 @@ The user runs several worktrees at once and loses track of them. You are the one
 
 ## 1. Gather state
 
-Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints worktrees with their card status and the WIP count, the Claude sessions open in each worktree right now, orphaned cards, GitHub PRs and issues, and the parked-ideas backlog. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
+Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints worktrees with their card status and the WIP count, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
 
 Open a card file only when its status is `needs-you` or `blocked`, or the user asks about it.
 
 ## 2. Report
 
-Always in this order, skipping empty groups:
+Always in this order, skipping empty groups. The scan's GROUPS section has already sorted every worktree into these groups, including a waiting session whose card says otherwise; report from it rather than regrouping. Add only what it can't see: PRs with no worktree (Housekeeping), and details from cards you open.
 
 1. **Needs you** — cards with `needs-you`, plus any live session with status `waiting` (it's waiting on the user even if its card says otherwise). Each item: branch and what that work is in a few plain words, the exact question, what each option means in practice, your recommendation and why. Most urgent first. A worker about to post on GitHub or push puts the draft in its card and then waits on an approval prompt: show the draft, and tell the user to approve or decline **in that session** (session name from LIVE SESSIONS). You can't approve it from here.
 2. **Blocked** — what it's waiting on.
