@@ -76,11 +76,14 @@ If the plugin is already installed (for example from a restored `settings.json`)
 ### Starting a ticket
 
 1. In the hub: **"what's next?"** It recommends one unblocked ticket and says why.
-2. **"start #42"**. It replies with a branch name (`feat/42-discord-tracker`), an effort level with its reason, and two steps.
-3. Create the worktree with that branch name in Orca, and open a **new** Claude session in it.
-4. **Step 1:** type `/effort` on its own, pick the hub's level in the slider, and press **s** (this session only). Skip it if the session already shows that level.
-   **Step 2:** send `/implement #42 — …` as its own message. Don't paste both steps at once: Claude Code reads the second line as part of the first and rejects it.
-5. Leave it alone. Whenever it stops, it writes its card and ends its message with **What happened / Done / Why it matters / Needs you / Verify**, written so you can follow it without having watched the session. When it needs a decision, it asks in Claude Code's question pop-up (recommended option first), so you answer by picking, not by typing a new prompt.
+2. **"start #42"** (or click `#42` in the pane). It picks an effort level with its reason, writes the kickoff prompt, and
+   shows one `orca worktree create …` command that creates the worktree and starts Claude in it with that effort
+   (this session only) and prompt. Say yes and it runs it, checks the new session shows up, and writes the worktree a
+   starter `running` card.
+3. If Orca isn't running, it falls back to the old way: create the worktree in Orca yourself, open a **new** Claude
+   session in it, then **Step 1:** type `/effort` on its own, pick the level in the slider, press **s**; **Step 2:** send
+   the `/implement #42 — …` line as its own message (pasted together, Claude Code rejects both).
+4. Leave it alone. Whenever it stops, it writes its card and ends its message with **What happened / Done / Why it matters / Needs you / Verify**, written so you can follow it without having watched the session. When it needs a decision, it asks in Claude Code's question pop-up (recommended option first), so you answer by picking, not by typing a new prompt.
 
 If the hub says `AT LIMIT`, finish or pause something first, or park the new ticket. It won't refuse if you insist.
 
@@ -127,6 +130,18 @@ workers open and merge their own PRs on this machine, set `pr_approval=none` (se
 Tell the hub **"park: worm theme for the dashboard"**. It files a GitHub issue (after you approve) or adds a line
 to `Ledger/_backlog.md`, then goes back to what you were doing. Nothing starts until you pick it.
 
+### Discussing an idea into a spec
+
+Tell the hub **"discuss: worm theme for the dashboard"**. It reads code if that helps but never edits or commits on
+main. It grills the idea one question at a time (`/wayfinder`, typed by you, for a huge, foggy effort), and the
+discussion ends one of two ways: **park it** (an issue with what was settled), or **spec it**: you type `/to-spec`,
+which writes the spec into an issue labelled `ready-for-agent` (read it in the approval prompt), then `/to-tickets`
+if it's too big for one session. Then "start #N". If the discussion needs a prototype or spike to answer, the hub
+starts a worktree for it early and the discussion moves there.
+
+The first `/to-spec` in a repo needs `/setup-matt-pocock-skills` to have run; the hub suggests running it in a
+worktree, never on main.
+
 ### Shipping
 
 1. In the worker session: `/code-review high` (or `/code-review xhigh` if it touches security). Fix what it finds.
@@ -151,7 +166,8 @@ Set it back to `every` to review PRs again.
 |---|---|
 | "what needs me?" | the one-screen report |
 | "what's next?" | one unblocked ticket, preferring `ready-for-agent`, with a reason |
-| "start #42" | branch name, effort level, and the two kickoff steps |
+| "start #42" | effort level and the Orca command that starts the worker; runs it on your yes (two paste steps if Orca is down) |
+| "discuss: <idea>" | grilling in the hub, ending in a parked issue or a spec (`/to-spec`) |
 | "park: <idea>" | a GitHub issue (asks first) or a backlog line |
 | "what should I pause?" | which running item to pause to get under the WIP limit |
 | "clean up" | housekeeping suggestions: stale cards, orphans, merged worktrees. Nothing is deleted without your yes |
@@ -170,10 +186,10 @@ Set it back to `every` to review PRs again.
 
 | Step | Where | Command | Effort |
 |---|---|---|---|
-| 1. Sharpen the idea | any session | `/grill-me` or `/grill-with-docs` | high |
-| 2. Write it down | same session | `/to-spec`, then `/to-tickets` | medium |
+| 1. Sharpen the idea | hub | "discuss: <idea>" (grilling; not `/grill-with-docs`, which writes into the repo) | high |
+| 2. Write it down | hub | `/to-spec`, then `/to-tickets` | medium |
 | 3. Pick a ticket | hub | "what's next?" | — |
-| 4. Build it | new worktree, new session | the hub's kickoff: `/effort` slider + **s**, then `/implement #42` | hub picks: medium / high / xhigh |
+| 4. Build it | new worktree, new session | "start #42": the hub runs `orca worktree create … --effort <level> --prompt '/implement #42 …'` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
 | 6. Verify | the worktree's session | `/code-review high` (`xhigh` if it touches security) | high / xhigh |
 | 7. Ship | same session | open the PR (asks you), then "babysit the PR"; with `pr_approval=none` the worker merges it itself | — |
@@ -199,7 +215,7 @@ approach, which is what grilling and the spec are for.
 | verification | high, or xhigh for security | "code review and security" benefit most |
 
 - **Skills set their own level** with `effort:` in their frontmatter, overriding the session while they run. Edit that line to change one.
-- **Worker sessions:** a skill can't set a whole session, so the hub's kickoff starts with setting the level for that session only: the `/effort` slider, then **s**. Not `/effort <level>`: a level typed after `/effort` (or picked with Enter) is saved as the default for every new session. One `/effort xhigh` for a risky ticket once left every later session at `xhigh`.
+- **Worker sessions:** a skill can't set a whole session, so the hub starts the worker with `orca worktree create … --model <model> --effort <level>`, which applies to that session only (Orca refuses `--effort` without `--model`; the hub uses `model` from `~/.claude/settings.json`). Without Orca, the kickoff starts with the `/effort` slider, then **s**. Not `/effort <level>`: a level typed after `/effort` (or picked with Enter) is saved as the default for every new session. One `/effort xhigh` for a risky ticket once left every later session at `xhigh`.
 - **Your default** for new sessions is the level you last saved, kept per model under `modelSettings` in `~/.claude/settings.json`. tower assumes `high`. To check it, open `/effort` in a fresh session; to change it on purpose, pick a level and press Enter.
 - `CLAUDE_CODE_EFFORT_LEVEL`, if you ever set it, overrides all of the above. `max` isn't used by default.
 
@@ -226,7 +242,7 @@ description, or you type `/tower:<name>`.
 | Skill | Fires when | What it does |
 |---|---|---|
 | `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Finds this worktree's card in the vault (`card-path.sh`) and overwrites it with the current state. The card is the short version for the hub; the final chat message is the full version for you. |
-| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, parks ideas as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, writes kickoff prompts. Suggests `adopt` when the repo clearly hasn't been adopted. |
+| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Suggests `adopt` when the repo clearly hasn't been adopted. |
 | `tower:adopt` | you want to start tower on a messy, in-flight repo | See [above](#adopting-an-existing-repo). |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
 | `tower:babysit-pr` | you say "babysit / watch / monitor the PR" | Runs `pr-wait` (one line per real event: check failed, comment, review, base moved, merged) and fixes real CI failures and review findings. Drafts every public action and waits for your approval. Waits on your repo's own required checks (`--until green`). |
@@ -358,6 +374,11 @@ tower/
 - **Agent view's JSON format isn't documented.** If it changes, the hub prints one "skipping live sessions" line and works from cards alone.
 - **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. In Poot, `data/` exists only in the main checkout, so worktrees don't have it.
 - **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). adopt checks the actual diff before calling a branch unshipped.
+- **Orca names the branch, not the hub.** `--name feat/42-x` is Orca's display name; with Orca's Branch prefix set to
+  your git username the branch is `rishi-desai/feat-42-x`, and the card is named after that branch. Set the prefix to
+  none in Orca's settings if you want the two to match.
+- **Orca's `./worktrees` folder sits inside the repo**, so main shows `worktrees/` as untracked. Add it to main's
+  `.git/info/exclude` (local, never committed), not to `.gitignore`.
 - **Background sessions** (`claude --bg`) create their own worktrees under `.claude/worktrees/`. Add that path to the repo's ignore file if it shows up in `git status`.
 - **Project names can't contain spaces** (the rules import path would break). Map to a name without spaces with `project.<repo>=`.
 - Card time comes from `date`, never from the model's memory, because models often get today's date wrong.
