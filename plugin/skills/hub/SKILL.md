@@ -53,11 +53,25 @@ When asked what to work on next, choose from the scan's open issues:
 
 ## 6. Start a worktree
 
-When the user picks a ticket to start, pick the worker's effort from the ticket (read it with `gh issue view <n>`), then give them two lines to paste into the new session, in order:
+When the user picks a ticket to start, pick the worker's effort from the ticket (read it with `gh issue view <n>`), then give them two lines to paste into the new session, in order, each in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
 
-> /effort medium
->
-> /implement #42 — <title>. Use the status-card skill whenever you stop. Once the PR is open, use babysit-pr to watch it.
+```
+/effort medium
+```
+
+The second line follows `PR approval:` in the scan (`pr_approval` in `~/.claude/tower.conf`, set per machine):
+
+- `every` (the user approves PRs):
+
+  ```
+  /implement #42 — <title>. Use the status-card skill whenever you stop. Once the PR is open, use babysit-pr to watch it.
+  ```
+
+- `none` (workers open and merge their own PRs):
+
+  ```
+  /implement #42 — <title>. Use the status-card skill whenever you stop. Once /code-review passes, open the PR and squash-merge it yourself with gh pr merge --squash --delete-branch after its checks pass; don't wait for me and don't use babysit-pr.
+  ```
 
 Never pick below `medium`. Higher effort buys more verification and edge-case testing, and more assumptions made without asking; it doesn't fix a wrong approach (that's what grilling and the spec are for).
 

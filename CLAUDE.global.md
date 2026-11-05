@@ -28,6 +28,8 @@ Write it so I don't need a follow-up question; when that and brevity conflict, c
 
 Before anything other people can see — a PR or issue comment, a reply, resolving a thread, opening/editing/closing/merging a PR, a push — show me the exact text or change first. A hook will also ask me to approve the command; if I decline, don't try another way, ask me.
 
+Exception: when `~/.claude/tower.conf` on this machine says `pr_approval=none`, open your own PR and squash-merge it yourself once `/code-review` passes and its checks are green, without showing me first; push your branch for it the same way (`push_approval` there decides whether the hook asks). Comments, reviews, issue changes, force pushes, and anything outside your own PR still need my OK.
+
 ## Personal rules stay out of repos
 
 Repos may have a team CLAUDE.md and .claude/settings.json. Never create, edit, or commit those for my personal preferences unless I ask.

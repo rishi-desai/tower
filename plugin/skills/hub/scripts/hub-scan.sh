@@ -26,6 +26,8 @@ project_dir="$(ledger_project_dir)" || exit 1              # prints why if confi
 ledger="$project_dir/Ledger"
 mkdir -p "$ledger"
 wip_limit="$(tower_conf_get wip_limit 3)"
+pr_approval="$(tower_conf_get pr_approval every)"          # every | none; anything else is every
+case "$pr_approval" in every|none) ;; *) pr_approval=every ;; esac
 stale_minutes=$((24 * 60))                                 # a `running` card untouched this long is suspect
 
 echo "REPO: $repo"
@@ -92,6 +94,7 @@ if [ "$wip_count" -ge "$wip_limit" ]; then
 else
   echo "WIP: $wip_count of $wip_limit (running + needs-you)"
 fi
+echo "PR approval: $pr_approval"
 echo
 
 # ---------- 2. LIVE SESSIONS ----------

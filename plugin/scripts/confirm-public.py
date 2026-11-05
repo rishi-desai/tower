@@ -5,9 +5,13 @@ Claude Code runs this before every Bash command and sends the call as JSON on st
 would post or change something other people can see, we print a JSON "ask" decision, and Claude Code
 shows the user a confirmation prompt, even when an allow rule like Bash(git *) would normally skip it.
 
-Always asks:  gh pr/issue writes (comment, review, create, edit, merge, close, ...), gh release/label
+Always asks:  gh pr comment/review, gh issue writes (comment, create, edit, close, ...), gh release/label
               writes, and `gh api` calls that write (GraphQL mutations, REST with a write method or
               with fields, since gh defaults to POST when fields are given).
+PR changes:   gh pr create/edit/ready/merge/close/reopen/update-branch depend on pr_approval
+                every (default) -> they ask
+                none            -> they don't, so a worker can open and merge its own PR
+              An unknown value is treated as `every`.
 Pushes:       depends on push_approval in ~/.claude/tower.conf
                 every (default) -> every `git push` asks
                 force           -> only force pushes, deletions and +refspecs ask
@@ -37,23 +41,36 @@ GH_WRITE_SUBCOMMANDS = {
     "release": {"create", "edit", "delete", "upload", "delete-asset"},
     "label": {"create", "edit", "delete", "clone"},
 }
+# The gh pr writes a worker needs to open and merge its own PR; pr_approval=none lets these through.
+# Comments and reviews stay out of this set: they are messages other people read.
+PR_SELF_SERVE = {"create", "edit", "ready", "merge", "close", "reopen", "update-branch"}
 WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 FIELD_FLAGS = re.compile(r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=|$)")
 METHOD_FLAG = re.compile(r"(?:^|\s)(?:-X|--method)(?:\s+|=)['\"]?([A-Za-z]+)")
 FORCE_PUSH = re.compile(r"(?:^|\s)(?:--force\b|--force-with-lease\b|--force-if-includes\b|--mirror\b|--delete\b|-[A-Za-z]*[fd][A-Za-z]*\b|\+\S+|:\S+)")
 
 
-def push_mode() -> str:
-    """push_approval from the config: every | force | none. Missing or unknown -> every."""
+def conf_mode(key: str, allowed: set[str]) -> str:
+    """KEY's value from the config if it is one of ALLOWED; missing, unreadable or unknown -> every."""
     mode = "every"
     try:
         with open(CONF, encoding="utf-8") as conf:
             for line in conf:
-                if line.startswith("push_approval="):
+                if line.startswith(key + "="):
                     mode = line.split("=", 1)[1].strip()
     except OSError:
         pass
-    return mode if mode in {"every", "force", "none"} else "every"
+    return mode if mode in allowed else "every"
+
+
+def push_mode() -> str:
+    """push_approval from the config: every | force | none."""
+    return conf_mode("push_approval", {"every", "force", "none"})
+
+
+def pr_mode() -> str:
+    """pr_approval from the config: every | none."""
+    return conf_mode("pr_approval", {"every", "none"})
 
 
 def segments(command: str) -> list[str]:
@@ -61,8 +78,8 @@ def segments(command: str) -> list[str]:
     return [part.strip() for part in re.split(r"&&|\|\||[;|\n]", command) if part.strip()]
 
 
-def check_gh(segment: str) -> str | None:
-    """Reason to ask for a gh command, or None if it only reads."""
+def check_gh(segment: str, pr_approval: str) -> str | None:
+    """Reason to ask for a gh command, or None if it only reads (or is a PR change pr_approval allows)."""
     match = re.search(r"\bgh\s+(.*)", segment)
     if not match:
         return None
@@ -71,6 +88,8 @@ def check_gh(segment: str) -> str | None:
     while words and words[0].startswith("-"):
         words = words[2:] if words[0] in {"-R", "--repo"} else words[1:]
     if len(words) >= 2 and words[1] in GH_WRITE_SUBCOMMANDS.get(words[0], set()):
+        if pr_approval == "none" and words[0] == "pr" and words[1] in PR_SELF_SERVE:
+            return None
         return f"gh {words[0]} {words[1]} posts or changes something on GitHub"
     if words and words[0] == "api":
         rest = match.group(1)
@@ -139,9 +158,10 @@ def main() -> int:
         return 0
     command = tool_input.get("command") or ""
     mode = push_mode()
+    pr_approval = pr_mode()
     reasons = []
     for segment in segments(command):
-        reason = check_gh(segment) or check_push(segment, mode)
+        reason = check_gh(segment, pr_approval) or check_push(segment, mode)
         if reason and reason not in reasons:
             reasons.append(reason)
     if RULE_MENTION.search(command):

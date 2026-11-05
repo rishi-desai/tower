@@ -44,7 +44,7 @@ On each Mac (after Claude Code, `gh`, and git are set up):
 ```bash
 gh repo clone rishi-desai/tower ~/Developer/personal/tower
 ~/Developer/personal/tower/setup.sh --dry-run     # shows every change; changes nothing
-~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, push approval
+~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, push and PR approval
 ```
 
 `setup.sh` writes `~/.claude/tower.conf`, creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
@@ -118,7 +118,8 @@ so the usual approval prompts still apply.
 
 The agent shows you the exact text in its chat, puts the draft in its card, and Claude Code shows an approval
 prompt in **that** session. Approve or decline there; the hub also lists it under "Needs you". To stop being
-asked about pushes, set `push_approval=force` (force pushes only) or `none` in `~/.claude/tower.conf`.
+asked about pushes, set `push_approval=force` (force pushes only) or `none` in `~/.claude/tower.conf`. To let
+workers open and merge their own PRs on this machine, set `pr_approval=none` (see Shipping).
 
 ### When you think of something else mid-flow
 
@@ -131,6 +132,11 @@ to `Ledger/_backlog.md`, then goes back to what you were doing. Nothing starts u
 2. **"open the PR"**. It drafts the title and description and asks before creating it.
 3. **"babysit the PR"**. It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
 4. When checks are green, its card says `done` with the PR number. You merge.
+
+With `pr_approval=none` in `~/.claude/tower.conf` (per machine; e.g. personal Mac on, work laptop off), steps 2–4
+collapse: once `/code-review` passes, the worker opens the PR and squash-merges it itself after the checks pass,
+with no prompts and no babysitting. The hub's kickoff line says so. Comments, reviews and issue changes still ask.
+Set it back to `every` to review PRs again.
 
 ### Finishing up
 
@@ -169,7 +175,7 @@ to `Ledger/_backlog.md`, then goes back to what you were doing. Nothing starts u
 | 4. Build it | new worktree, new session | paste the hub's kickoff: `/effort <level>`, then `/implement #42` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
 | 6. Verify | the worktree's session | `/code-review high` (`xhigh` if it touches security) | high / xhigh |
-| 7. Ship | same session | open the PR (asks you), then "babysit the PR" | — |
+| 7. Ship | same session | open the PR (asks you), then "babysit the PR"; with `pr_approval=none` the worker merges it itself | — |
 | 8. Stop for the day | each session | `/handoff` | — |
 | Weekly | any | `/retro` to improve skills, checks, and gotchas from real failures | — |
 
@@ -262,13 +268,16 @@ another way.
 
 | Always asks | Depends on `push_approval` |
 |---|---|
-| `gh pr` / `gh issue` comment, review, create, edit, merge, close, reopen, … | `every` (default): every `git push` |
+| `gh pr` comment, review; `gh issue` comment, create, edit, close, reopen, … | `every` (default): every `git push` |
 | `gh release` / `gh label` writes | `force`: only force pushes, `+refspec`, branch deletes |
 | `gh api` writes: GraphQL mutations, `-X POST/PATCH/PUT/DELETE`, or fields without `-X GET` (gh defaults to POST) | `none`: pushes never ask |
 | Any edit to a `CLAUDE.local.md` or `~/.claude/tower/rules/*`, and Bash commands naming them | |
 
-Change the push mode by editing `push_approval=` in `~/.claude/tower.conf` (takes effect on the next command)
-or by re-running `setup.sh`. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs, GraphQL queries) never ask.
+`gh pr` create, edit, ready, merge, close, reopen and update-branch depend on `pr_approval`: `every` (default)
+asks, `none` lets a worker open and merge its own PR. Missing or unknown values count as `every`.
+
+Change either mode by editing `push_approval=` or `pr_approval=` in `~/.claude/tower.conf` (takes effect on the
+next command) or by re-running `setup.sh`. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs, GraphQL queries) never ask.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
@@ -297,6 +306,7 @@ Team repos often have their own `CLAUDE.md` and `.claude/settings.json`. tower n
 projects_dir=/Users/rishi/Library/Mobile Documents/com~apple~CloudDocs/Vault/Projects
 wip_limit=3
 push_approval=every
+pr_approval=every          # none: workers open and merge their own PRs on this machine
 project.poot=Poot          # optional: repo folder name -> project folder name
 ```
 
