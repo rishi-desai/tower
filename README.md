@@ -15,7 +15,7 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
 ## The four rules
 
 1. **One ticket = one branch = one worktree = one main session.** Subagents inside a worktree are fine; two sessions editing the same worktree are not.
-2. **WIP limit** (work in progress): at most N worktrees running or waiting on you (3 personal, 4 work, set per machine). New ideas get parked as tickets, not started.
+2. **WIP limit** (work in progress): at most N execution slots in use (3 personal, 4 work, set per machine). A worktree holds a slot when its session is busy or waiting on you, or its card says `running` or `needs-you`; one only waiting on CI or review doesn't. New ideas get parked as tickets, not started.
 3. **The hub never reads transcripts.** All state is on disk, so the hub is disposable: `/clear` it and run it again any time.
 4. **Nothing public without your OK.** Comments, PR changes, pushes, and edits to your standing rules stop for your approval.
 
@@ -26,16 +26,18 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
  worktree B ──┼─ a card when it stops ─────────────┼─> Vault/Projects/<Project>/Ledger/fix__51-y.md
  worktree C ──┘                                    └─> ...
                                                           │
- main checkout: /tower:hub ── hub-scan.sh reads ───────────┤ cards
-                                                           ├ git worktree list
+ main checkout: /tower:hub ── hub-scan.sh ── tower state ──┤ cards
+                                                           ├ git worktree list, commits not on main
                                                            ├ claude agents --json  (live: busy / idle / waiting)
-                                                           └ gh: your PRs, open issues
-                     └─> one screen: Needs you → Blocked → Running → Done → Housekeeping → ONE next action
+                                                           ├ the event log (stands in when agent view can't be read)
+                                    hub-scan.sh also reads └ gh: your PRs, open issues
+                     └─> one screen: Needs you → Blocked → Running → Waiting on CI → Done → Housekeeping → ONE next action
 ```
 
-- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. Its top block is YAML frontmatter, so Obsidian shows the fields as properties.
+- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. Its top block is YAML frontmatter, so Obsidian shows the fields as properties.
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
+- **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR).
 
 ## Install
 
@@ -89,31 +91,37 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 
 ### Checking in
 
-- In the hub: **"what needs me?"** (or `/tower:hub`). You get one screen, ordered Needs you → Blocked → Running → Done → Housekeeping, and one suggested next action.
+- In the hub: **"what needs me?"** (or `/tower:hub`). You get one screen, ordered Needs you → Blocked → Running → Waiting on CI or review → Done → Housekeeping, and one suggested next action.
 - Each "Needs you" item names the session to go to. Answer there, not in the hub.
 - Or open the live pane with `/tower` (see below): the same picture, refreshed every 30 seconds, where a click
-  jumps to the session in Orca and pop-up questions can be answered in place.
+  jumps to the session waiting on you in Orca, and 0 there brings you back.
 - In Obsidian: `Projects/<Project>/Ledger/` has one note per worktree, with `status`, `ticket`, `pr` and `updated` as properties.
 - If the hub's context gets long, `/clear` it and ask again. Everything it reads is on disk.
 
 ### The tower pane
 
 `tower-pane` is a mod: a panel inside Claude Code, beside the chat. Run `/tower` in the hub session to open it.
-It never reads transcripts either; it runs the hub's own scan.
+It never reads transcripts either: it draws `tower state --json`, the same effective state the hub reports from,
+so the two can't disagree.
 
 - **Status line:** `tower WIP 2/3 · 1 needs you` in every session of the repo, and a toast when something new needs you.
-- **Needs you:** cards that say needs-you, and sessions waiting on you. A card whose session is working again
-  (you already answered) moves to Worktrees and says "still says needs you".
-- **Click a worktree name** (or press 1–9 on a Needs you row): Orca switches to that worktree's Claude tab,
-  the one that printed last, and comes to the front. **card** opens the status card in Obsidian.
-- **Pop-up questions:** when a session running the pane asks you something in its pop-up, the question shows up
-  in the pane within about 3 seconds, with one button per option. Click one and the answer goes back to that
-  session, as if you'd picked it there. The first answer wins, the pane's or the pop-up's. Questions that allow
-  several answers, or a typed "Other", are answered in the session.
+- **Needs you:** worktrees whose effective state is needs-you. A session waiting on you shows **WAITING** with what
+  it needs (`input needed` for a question, `approve Bash` for an approval); a needs-you card nothing contradicts
+  shows **NEEDS YOU**. A card whose session is working again (you already answered) shows as running under
+  Worktrees, with the reason.
+- **Click a worktree name** (or press 1–9 on a Needs you row): Orca switches to the terminal that is waiting on
+  you (Orca's own agent state says which; without it, the Claude terminal that printed last, and the toast says
+  so) and comes to the front. Answer there: the pop-up has every option, typed answers included. **card** opens
+  the status card in Obsidian.
+- **Back to the hub:** in a worker's session inside Orca, a `0: back to the tower hub` line sits above the prompt.
+  Press 0 in the empty prompt, or click it, and Orca switches back to the hub's terminal. It steps aside while a
+  question is open.
 - **Approvals never go through the pane.** A push or a GitHub comment is approved only in the session doing it,
   so nothing else can approve on your behalf.
-- **Buttons:** Refresh (r), Refresh GitHub (g, which loads PRs and ready-for-agent issues; click an issue's number
-  to start it), What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
+- **Buttons:** Refresh (r), Refresh GitHub (g: PRs and every open issue: each ready one, then the newest others
+  up to ten, and "+ N more";
+  `start #N` on a `ready-for-agent` issue starts it, `discuss #N` on any other asks the hub to discuss it first),
+  What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
 
 Anything that changes something (starting a ticket, parking an idea) is sent to the hub's Claude as a request,
 so the usual approval prompts still apply.
@@ -232,7 +240,7 @@ approach, which is what grilling and the spec are for.
 
 `/tower:adopt` (run from the main checkout) is for a repo where work is already in flight and you've lost track.
 
-1. **Scan (read-only).** `adopt-scan.sh` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state).
+1. **Scan (read-only).** `adopt-scan.sh` (`tower adopt-scan`) lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
 2. **One plan, which you approve.** In order:
    - a **paste-in prompt for every live session**: it writes its own first card and, if it's in the main checkout, lists exactly which uncommitted files are its work;
    - **untangling the main checkout**: each session's files move to their own branch + worktree (`git stash push -- <its files>` → `git stash pop` in the new worktree; never `reset`, `checkout .`, or `clean`);
@@ -285,6 +293,17 @@ description, or you type `/tower:<name>`.
   `status` and `updated` lines). The session rewrites the rest when it next stops. Without it, a card stayed
   needs-you for the whole stretch between your answer and the session's next stop.
 - **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
+- **The event log** (`record-event.py`, on SessionStart, UserPromptSubmit, Notification, PostToolUse on
+  AskUserQuestion, Stop and SessionEnd): appends one line per event (`session-start`, `prompt`, `needs-you`,
+  `answer`, `stop`, `session-end`) to `~/.claude/tower/events.jsonl`, one file for every repo, tagged with repo,
+  worktree and branch. It records the length of your prompts, never their text. `tower state` reads its last 24h
+  when agent view can't be read, and `tower stats` computes metrics from it. It never blocks or fails a session:
+  problems go to `~/.claude/tower/errors.log`. To look at it from this checkout: `uv run tower events tail -n 20`.
+- **Metrics** (`uv run tower stats [--since 14d] [--repo [PATH]]`): one row per PR merged in the window, from the
+  event log and GitHub (through `gh`): start → merged, your active minutes, time waiting on you, interruptions and
+  the median time to resume, follow-up prompts per report, and rework (later PRs for the same ticket or branch, and
+  reopened tickets). Every repo in the log by default; `--repo` limits it to one. Each metric's exact definition is
+  in `src/tower/stats.py`.
 
 ## Approvals: public actions and rule changes
 
@@ -357,7 +376,8 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
 | `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
-| `~/.claude/tower/questions/<session id>.json` | a pop-up question waiting for an answer from the pane; removed once answered |
+| `~/.claude/tower/events.jsonl` | the event log, this month (UTC); earlier months are `events-YYYY-MM.jsonl` beside it |
+| `~/.claude/tower/errors.log` | anything the event-log hook couldn't do (it never fails the session instead) |
 | `~/.claude/CLAUDE.md` | the tower block; your original is in `CLAUDE.md.pre-tower.bak` |
 | `~/.local/state/pr-wait/` | `pr-wait`'s lock and event memory |
 
@@ -368,14 +388,19 @@ tower/
   .claude-plugin/marketplace.json     this repo is its own marketplace: plugins tower and tower-pane
   plugin/
     .claude-plugin/plugin.json
-    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification
-    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py
+    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
+    lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
+                                      (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
+                                      `card-path` and `rules`, kept for one release)
   pane/                               the tower-pane mod
-    hooks/register.tsx                the pane, status line, toasts, Orca jump, question relay
+    hooks/register.tsx                the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  its saved state, as Claude Code checks it
-    tests/                            claude plugin test pane
-  tests/                              pytest: the approval hook's cases (tests/test_confirm_public.py)
+    tests/                            claude plugin test pane; fixtures/ holds `tower state --json` output tests/test_state.py checks
+  src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
+  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI
+  GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`
   setup.sh  CLAUDE.global.md  README.md  HANDOFF.md
@@ -404,7 +429,7 @@ which needs no login). Run `mise install` once first.
 
 ## Gotchas
 
-- **Cards are only as fresh as the last time an agent wrote one.** The hub flags `running` cards untouched for 24h as `STALE`, and trusts live session status over a card.
+- **Cards are only as fresh as the last time an agent wrote one.** The hub flags `running` cards untouched for 24h as `STALE`, and `tower state` trusts live session status over a card.
 - **Agent view's JSON format isn't documented.** If it changes, the hub prints one "skipping live sessions" line and works from cards alone.
 - **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. In Poot, `data/` exists only in the main checkout, so worktrees don't have it.
 - **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). adopt checks the actual diff before calling a branch unshipped.

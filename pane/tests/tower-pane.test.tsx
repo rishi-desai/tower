@@ -2,37 +2,57 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-// A hub report shaped exactly like hub-scan.sh's output: one needs-you card, one session waiting.
-const REPORT = `REPO: poot
-LEDGER: /vault/Projects/poot/Ledger
+import type { StateWorktree, TowerState } from '../types'
+import { issuesToShow, parseGithub } from '../hooks/register'
+import { SHARED } from './fixtures/tower-state'
 
-== WORKTREES ==
-- main | main checkout (no card expected) | /p
-- rolly-polly | status: needs-you | ticket: #36 | updated: 2026-11-05T10:00 | /p/worktrees/rolly-polly
-- copilot | status: running | ticket: none | updated: 2026-11-05T09:00 | /p/worktrees/tracker
-WIP: 2 of 3 (running + needs-you)
+// SHARED is `tower state --json`'s real output for the fixture in tests/test_state.py, which checks it: feat-3's card
+// says needs-you; feat-8 waits on an approval and feat-9 on a question; feat-1 and feat-7 are busy; feat-5 is idle
+// with no card. Variants below change it the way the core would, never by hand-written JSON.
 
-== LIVE SESSIONS (agent view) ==
-- main | 1 open: poot-68(int:idle)
-- copilot | 1 open: copilot-1(int:waiting) waiting for: approve Bash
+/** SHARED with each worktree passed through change. */
+function variant(change: (w: StateWorktree) => StateWorktree, base: TowerState = SHARED): TowerState {
+  return { ...base, worktrees: base.worktrees.map(change) }
+}
 
-== ORPHAN CARDS (worktree gone) ==
-(none)
+/** Nothing needs you: every needs-you worktree running, every session busy instead of waiting. */
+const CALM = variant(w => w.status !== 'needs-you' ? w : {
+  ...w,
+  status: 'running',
+  reason: 'busy',
+  sessions: w.sessions.map(s => ({ ...s, activity: 'busy', waiting_for: '' })),
+})
+
+// hub-scan.sh's GitHub section (only Refresh GitHub runs it): one PR, twelve open issues, one ready for an agent.
+const ISSUES = ['- #61 Copilot: analyst [level] calls [ready-for-agent] [enhancement]', ...Array.from({ length: 11 }, (_, i) => `- #${60 - i} idea ${60 - i}`)]
+const githubReport = (issues: string[]) => `REPO: repo
 
 == GITHUB ==
-(skipped: --no-github)
+repo: me/repo | you: me
+-- my open PRs --
+- #57 Alert copilot [feat/37-copilot] review:none
+-- open issues (all — your repo) --
+${issues.join('\n') || '(none)'}
 
 == BACKLOG (parked ideas) ==
 (empty)
 `
-const CALM = REPORT.replace('status: needs-you', 'status: running').replace('int:waiting', 'int:idle')
 
-// Orca's terminals in rolly-polly: a plain shell that printed last, and the Claude session.
+// Orca's terminals in feat-8: a plain shell that printed last, the Claude session waiting on you, and a second
+// Claude session that printed more recently. Orca's agent states say which pane waits.
 const ORCA_TERMINALS = [
-  { handle: 'term_shell', title: 'Terminal 1', connected: true, lastOutputAt: 300 },
-  { handle: 'term_claude_old', title: 'Old Claude', connected: true, lastOutputAt: 100, agentIdentity: 'claude' },
-  { handle: 'term_claude', title: 'Terminal 2', connected: true, lastOutputAt: 200, agentIdentity: 'claude' },
+  { handle: 'term_shell', title: 'Terminal 1', connected: true, lastOutputAt: 300, tabId: 't1', leafId: 'l1' },
+  { handle: 'term_waiting', title: 'Asks you', connected: true, lastOutputAt: 100, agentIdentity: 'claude', tabId: 't2', leafId: 'l2' },
+  { handle: 'term_claude', title: 'Terminal 3', connected: true, lastOutputAt: 200, agentIdentity: 'claude', tabId: 't3', leafId: 'l3' },
 ]
+const ORCA_PS = {
+  ok: true,
+  result: {
+    worktrees: [
+      { path: '/p/worktrees/feat-8', agents: [{ paneKey: 't3:l3', state: 'working', updatedAt: 5 }, { paneKey: 't2:l2', state: 'waiting', updatedAt: 4 }] },
+    ],
+  },
+}
 
 const PANE = {
   plugin: 'tower-pane',
@@ -41,13 +61,36 @@ const PANE = {
   props: { title: 'tower', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
 } as const
 
-type World = { report: string; statuses: (string | undefined)[]; toasts: string[]; argvs: string[][]; files: Record<string, string>; clock: ReturnType<typeof mock.clock> }
+const BAND = {
+  plugin: 'tower-pane',
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
 
-/** The engine beneath the mod: canned commands, captured status line and toasts. */
-function world(on: On, report: string): World {
-  const w: World = { report, statuses: [], toasts: [], argvs: [], files: {}, clock: mock.clock(on, { now: 0 }) }
-  mock.env(on, { HOME: '/home' })
+type World = {
+  state: TowerState
+  issues: string[]
+  stateRun: { exitCode: number; stderr: string } | null
+  orcaPs: unknown
+  statuses: (string | undefined)[]
+  toasts: string[]
+  argvs: string[][]
+  files: Record<string, string>
+  writes: string[]
+  readError?: string
+  clock: ReturnType<typeof mock.clock>
+}
+
+/** The engine beneath the mod: canned commands, captured status line, toasts and file writes. */
+function world(on: On, state: TowerState, env: Record<string, string> = {}): World {
+  const w: World = { state, issues: ISSUES, stateRun: null, orcaPs: ORCA_PS, statuses: [], toasts: [], argvs: [], files: {}, writes: [], clock: mock.clock(on, { now: 0 }) }
+  mock.env(on, env)
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  // The engine's own band above the prompt, drawn when no plugin draws one.
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine band</Text>
+  })
   on('ui.status', (_, e) => {
     w.statuses.push(e.text)
     return { value: undefined }
@@ -58,31 +101,28 @@ function world(on: On, report: string): World {
   })
   on('process.run', (_, e) => {
     w.argvs.push([...e.argv])
-    const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    const ran = (exitCode: number, stdout: string, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+    const ok = (stdout: string) => ran(0, stdout)
     if (e.argv[0] === 'claude') return ok(JSON.stringify([{ id: 'tower@tower', enabled: true, installPath: '/tower' }]))
+    if (e.argv[0] === 'git') return ok('true\n')
+    if (e.argv[0] === 'python3') return w.stateRun ? ran(w.stateRun.exitCode, '', w.stateRun.stderr) : ok(JSON.stringify(w.state))
+    if (e.argv[0] === 'bash') return ok(githubReport(w.issues))
     if (e.argv[0] === 'orca' && e.argv[2] === 'list') return ok(JSON.stringify({ ok: true, result: { terminals: ORCA_TERMINALS } }))
+    if (e.argv[0] === 'orca' && e.argv[1] === 'worktree') return w.orcaPs === null ? ran(1, '', 'orca: not running') : ok(JSON.stringify(w.orcaPs))
     if (e.argv[0] === 'orca' || e.argv[0] === 'open') return ok('{"ok":true}')
-    if (e.argv[0] === 'rm') {
-      delete w.files[e.argv[2] ?? '']
-      return ok('')
-    }
-    if (e.argv.includes('--no-github')) return ok(w.report)
-    return ok(w.report.replace('(skipped: --no-github)', '-- my open PRs --\n- #57 Alert copilot [feat/37-copilot] review:none'))
+    return ran(127, '', `unexpected command ${e.argv.join(' ')}`)
   })
+  on('fs.read', (_, e) => (e.path in w.files ? { value: w.files[e.path] ?? '' } : { deny: w.readError ?? 'ENOENT: no such file' }))
   on('fs.write', (_, e) => {
-    w.files[e.path] = e.text
+    w.writes.push(e.path)
     return { value: undefined }
   })
-  on('fs.read', (_, e) => (e.path in w.files ? { value: w.files[e.path] ?? '' } : { deny: 'ENOENT' }))
-  on('fs.list', (_, e) => ({
-    value: Object.keys(w.files).filter(f => f.startsWith(`${e.path}/`)).map(f => ({ name: f.slice(e.path.length + 1), kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false })),
-  }))
   return w
 }
 
-/** Starts the mod as a session in `cwd` with id `sessionId` would, and lets its background start finish. */
-async function startSession($: Parameters<TestBody>[0], on: On, w: World, sessionId: string, cwd: string) {
-  on('session.id', () => ({ value: sessionId }))
+/** Starts the mod as a session in `cwd` would, and lets its background start (the first scan) finish. */
+async function startSession($: Parameters<TestBody>[0], on: On, w: World, cwd: string) {
+  on('session.id', () => ({ value: 'session-1' }))
   on('session.cwd', () => ({ value: cwd }))
   on('command.register', () => ({ value: { command: 'tower' } }))
   on('session.start', () => ({ cwd }))
@@ -90,114 +130,191 @@ async function startSession($: Parameters<TestBody>[0], on: On, w: World, sessio
   await w.clock.settle() // session.start's work runs unawaited
 }
 
-test('the pane lists what needs you, and the status line counts it', async ($, on) => {
-  const w = world(on, REPORT)
+test('the pane draws tower state: what needs you, the WIP count, and every worktree', async ($, on) => {
+  const w = world(on, SHARED)
+  w.files['/vault/repo/Ledger/_backlog.md'] = '- [ ] 2026-11-05 — worm theme for the dashboard\n'
   await $.command.run({ command: 'tower' })
 
-  expect(w.argvs.some(argv => argv[0] === 'bash' && argv[1] === '/tower/skills/hub/scripts/hub-scan.sh' && argv[2] === '--no-github')).toBe(true)
-  expect(w.statuses.at(-1)).toBe('tower WIP 2/3 · 2 need you')
-
-  // A card and its own waiting session are one row, not two.
-  w.report = REPORT.replace('copilot-1(int:waiting)', 'copilot-1(int:idle)').replace('- copilot | 1 open', '- rolly-polly | 1 open')
-  w.report = w.report.replace('copilot-1(int:idle) waiting for: approve Bash', 'rolly-1(int:waiting) waiting for: input needed')
-  await $.command.run({ command: 'tower' })
-  expect(w.statuses.at(-1)).toBe('tower WIP 2/3 · 1 needs you')
-  w.report = REPORT
-  await $.command.run({ command: 'tower' }) // back to the two-row report for the pane checks
+  expect(w.argvs.some(argv => argv.join(' ') === 'python3 -I /tower/scripts/run-tower.py state --json')).toBe(true)
+  expect(w.argvs.some(argv => argv[0] === 'bash')).toBe(false) // hub-scan.sh runs only for GitHub
+  expect(w.statuses.at(-1)).toBe('tower WIP 5/3 · 3 need you')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Button', key: 'orca-rolly-polly' })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^card just updated$/ })).toBeTruthy() // rolly-polly's detail line: no waiting session of its own
-  expect(await ui.find({ type: 'Text', text: /^card just updated · waiting session copilot-1$/ })).toBeTruthy() // copilot's worktree row
-  expect((await ui.find({ type: 'Text', text: /copilot-1: approve Bash/ }))?.text).toContain('copilot')
-  expect(await ui.find({ type: 'Text', text: /NEEDS YOU/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /AT LIMIT/ })).toBeTruthy()
+  // Needs you: feat-8 and feat-9 wait in their sessions (WAITING with what they need), feat-3's card asks (NEEDS YOU).
+  expect((await ui.findAll({ type: 'Text', text: /^ WAITING\s*$/ })).length).toBe(2)
+  expect((await ui.findAll({ type: 'Text', text: /^ NEEDS YOU\s*$/ })).length).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /^w8: approve Bash$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^w9: input needed$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^card just updated$/ })).toBeTruthy() // feat-3
+  // 1-9 press the Needs you rows' names in order (the kit presses by key; the engine maps the hotkey to the same press).
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-3' }))?.props.hotkey).toBe('1')
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-8' }))?.props.hotkey).toBe('2')
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-9' }))?.props.hotkey).toBe('3')
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-1' }))?.props.hotkey).toBeUndefined() // Worktrees rows have none
+  // Worktrees: the core's status, and its reason where it overrules the card.
+  expect((await ui.findAll({ type: 'Text', text: /^ RUNNING\s*$/ })).length).toBe(2)
+  expect(await ui.find({ type: 'Text', text: /^card just updated, the card says needs-you but session w7 is busy: you already answered · busy session w7$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^busy session w1$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^idle session w5$/ })).toBeTruthy()
+  // Housekeeping, and the parked ideas from the ledger.
+  // Housekeeping is the core's own list (the hub's Housekeeping group), drawn as it comes.
+  expect(await ui.find({ type: 'Text', text: /^feat-5: no card$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^feat__2-gone: orphan card \(worktree gone\), status: done$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /worm theme for the dashboard/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /\/p\/worktrees/ })).toBeUndefined() // no paths in the pane
   expect(await ui.find({ type: 'Text', text: /Press Refresh GitHub/ })).toBeTruthy()
-  await ui.unmount()
-})
-
-test('a needs-you card whose session is working again is shown as running, not as needing you', async ($, on) => {
-  // rolly-polly's card still says needs-you, but its session is busy: the user already answered.
-  const resumed = REPORT.replace('- copilot | 1 open: copilot-1(int:waiting) waiting for: approve Bash', '- rolly-polly | 1 open: rolly-ad(int:busy)')
-  const w = world(on, resumed)
-  await $.command.run({ command: 'tower' })
-  expect(w.statuses.at(-1)).toBe('tower WIP 2/3')
-  expect(w.toasts).toHaveLength(0)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Text', text: /Nothing needs you right now/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /still says needs you · busy session rolly-ad/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /NEEDS YOU/ })).toBeUndefined()
   await ui.unmount()
 })
 
 test('a toast only for what is new since the last scan', async ($, on) => {
   const w = world(on, CALM)
   await $.command.run({ command: 'tower' }) // baseline: nothing needs you
-  w.report = REPORT
+  expect(w.statuses.at(-1)).toBe('tower WIP 5/3')
+  w.state = SHARED
   await $.command.run({ command: 'tower' })
   const before = w.toasts.length
   await $.command.run({ command: 'tower' }) // same items again: no new toasts
 
-  expect(w.toasts.some(t => t.includes('rolly-polly: card needs you'))).toBe(true)
-  expect(w.toasts.some(t => t.includes('session copilot-1 is waiting'))).toBe(true)
+  expect(w.toasts).toContain('tower: feat-3: card needs you — /tower')
+  expect(w.toasts).toContain('tower: feat-8: session w8 is waiting — /tower')
+  expect(w.toasts).toContain('tower: feat-9: session w9 is waiting — /tower')
   expect(w.toasts.length).toBe(before)
 })
 
-test('Refresh GitHub runs the full scan and the pane keeps its GitHub section', async ($, on) => {
-  const w = world(on, REPORT)
+test('a scan that fails shows its reason instead of freezing the pane', async ($, on) => {
+  const w = world(on, SHARED)
+  w.stateRun = { exitCode: 1, stderr: "python3: can't open file '/tower/scripts/run-tower.py': No such file\n" }
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'github' })
-  expect(w.argvs.some(argv => argv[0] === 'bash' && !argv.includes('--no-github'))).toBe(true)
-  expect(await ui.find({ type: 'Text', text: /^ #57$/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Alert copilot$/ })).toBeTruthy()
-
-  // The next quick refresh skips GitHub; the pane shows the stored section, stamped with its time.
-  await ui.press({ key: 'refresh' })
-  expect(w.argvs.at(-1)).toContain('--no-github')
-  expect(await ui.find({ type: 'Text', text: /^Alert copilot$/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^as of / })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /review:none|\[feat\/37-copilot\]/ })).toBeUndefined() // PR rows: number + title only
+  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('the pane needs tower 0.9.1 or later')
+  expect(w.statuses.at(-1)).toBeUndefined()
   await ui.unmount()
 })
 
-test('a scan that cannot run shows its reason instead of freezing the pane', async ($, on) => {
+test("a scan that can't start shows why", async ($, on) => {
   mock.clock(on, { now: 0 })
-  const statuses: (string | undefined)[] = []
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.status', (_, e) => {
-    statuses.push(e.text)
-    return { value: undefined }
-  })
+  on('ui.status', () => ({ value: undefined }))
   on('process.run', (_, e) => {
     if (e.argv[0] === 'claude') {
       return { value: { exitCode: 0, stdout: JSON.stringify([{ id: 'tower@tower', enabled: true, installPath: '/tower' }]), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
-    return { deny: 'spawn bash ENOENT' } // the command could not start: $.process.run rejects
+    return { deny: 'spawn python3 ENOENT' } // the command could not start: $.process.run rejects
   })
-
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /tower scan failed: scan didn't run/ }))?.text).toContain('ENOENT')
-  expect(statuses.at(-1)).toBeUndefined()
+  await ui.unmount()
+})
+
+test("clicking a name lands on the terminal Orca says is waiting, not the newest one", async ($, on) => {
+  const w = world(on, SHARED)
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+  await ui.press({ key: 'orca-feat-8' })
+  const orca = w.argvs.filter(argv => argv[0] === 'orca' || argv[0] === 'open')
+  expect(orca[0]).toEqual(['orca', 'terminal', 'list', '--worktree', 'path:/p/worktrees/feat-8', '--json'])
+  expect(orca[1]).toEqual(['orca', 'worktree', 'ps', '--limit', '500', '--json'])
+  expect(orca[2]).toEqual(['orca', 'terminal', 'switch', '--terminal', 'term_waiting', '--json'])
+  expect(orca[3]).toEqual(['open', '-a', 'Orca'])
+  expect(w.toasts.at(-1)).toBe('Orca: feat-8 · Asks you (waiting on you)')
+
+  // Orca can't say which agent waits: the newest Claude terminal, and the toast says it was a guess.
+  w.orcaPs = null
+  await ui.press({ key: 'orca-feat-8' })
+  expect(w.argvs.filter(argv => argv[2] === 'switch').at(-1)).toEqual(['orca', 'terminal', 'switch', '--terminal', 'term_claude', '--json'])
+  expect(w.toasts.at(-1)).toBe("Orca: feat-8 · Terminal 3 (Orca didn't say which terminal waits: the newest Claude one)")
+
+  await ui.press({ key: 'card-feat-8' })
+  expect(w.argvs.at(-1)).toEqual(['open', `obsidian://open?path=${encodeURIComponent('/vault/repo/Ledger/feat-8.md')}`])
+  await ui.unmount()
+})
+
+test('in a worker inside Orca, 0 goes back to the hub; the hub and sessions outside Orca get no band', async ($, on) => {
+  const w = world(on, SHARED, { ORCA_TERMINAL_HANDLE: 'term_waiting' })
+  await startSession($, on, w, '/p/worktrees/feat-8/src')
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const back = await band.find({ type: 'Button', key: 'hub' })
+  expect(back?.props.hotkey).toBe('0')
+  await band.press({ key: 'hub' })
+  expect(w.argvs.find(argv => argv[0] === 'orca')).toEqual(['orca', 'terminal', 'list', '--worktree', 'path:/p', '--json'])
+  await band.unmount()
+
+  // While a question's survey holds the band, it steps aside.
+  const survey = await $.ui.mount({ ...BAND, props: { ...BAND.props, hasSurvey: true }, surface: 'terminal' })
+  expect(await survey.find({ type: 'Button', key: 'hub' })).toBeUndefined()
+  await survey.unmount()
+})
+
+test('the hub session gets no back-to-hub band', async ($, on) => {
+  const w = world(on, SHARED, { ORCA_TERMINAL_HANDLE: 'term_hub' })
+  await startSession($, on, w, '/p')
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Button', key: 'hub' })).toBeUndefined()
+  await band.unmount()
+})
+
+test('a worker outside Orca gets no back-to-hub band', async ($, on) => {
+  const w = world(on, SHARED)
+  await startSession($, on, w, '/p/worktrees/feat-8')
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Button', key: 'hub' })).toBeUndefined()
+  await band.unmount()
+})
+
+test("a worker's pop-up question stays in its own session: nothing is relayed", async ($, on) => {
+  const w = world(on, SHARED)
+  const asked = [{ question: 'Which mascot?', header: 'Mascot', multiSelect: false, options: [{ label: 'Worm', description: 'wiggles' }, { label: 'Ball', description: 'rolls' }] }]
+  on('tool.call', { tool: 'AskUserQuestion' }, () => ({ result: { questions: asked, answers: { 'Which mascot?': 'Worm' } } }))
+  await startSession($, on, w, '/p/worktrees/feat-9')
+
+  const result = await $.tool.call({ tool: 'AskUserQuestion', questions: asked })
+  expect(result.result).toEqual({ questions: asked, answers: { 'Which mascot?': 'Worm' } })
+  expect(w.writes).toEqual([]) // no question file, and no answer buttons in any pane
+})
+
+test('every open issue is listed, ten at most: ready ones start, the rest are discussed', async ($, on) => {
+  const acts = actions(on)
+  const w = world(on, SHARED)
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'github' })
+  expect(w.argvs.some(argv => argv.join(' ') === 'bash /tower/skills/hub/scripts/hub-scan.sh')).toBe(true)
+
+  expect(await ui.find({ type: 'Text', text: /^ #57$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Alert copilot$/ })).toBeTruthy() // PR rows: number + title only
+  expect(await ui.find({ type: 'Text', text: /^Open issues \(12\)/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Copilot: analyst \[level\] calls$/ })).toBeTruthy() // a bracket in a title stays
+  expect(await ui.find({ type: 'Button', key: 'discuss-61' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'start-60' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'discuss-52' })).toBeTruthy() // the tenth
+  expect(await ui.find({ type: 'Button', key: 'discuss-51' })).toBeUndefined() // the eleventh: counted below
+  expect(await ui.find({ type: 'Text', text: /^ {2}\+ 2 more$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^as of / })).toBeTruthy()
+
+  await ui.press({ key: 'start-61' })
+  await ui.press({ key: 'discuss-60' })
+  expect(acts.prompts).toEqual(['Using the tower hub skill: start #61', 'Using the tower hub skill: discuss #60'])
+
+  // The 30-second refresh skips GitHub; the pane keeps the stored section.
+  await ui.press({ key: 'refresh' })
+  expect(w.argvs.filter(argv => argv[0] === 'bash').length).toBe(1)
+  expect(await ui.find({ type: 'Button', key: 'start-61' })).toBeTruthy()
   await ui.unmount()
 })
 
 // ---------- interactions ----------
 
-type Acts = { prompts: string[]; copied: string[]; sent: Array<{ to: unknown; text: string }>; toasts: string[] }
+type Acts = { prompts: string[]; sent: Array<{ to: unknown; text: string }> }
 
-/** The engine beneath the pane's actions: captures prompts, clipboard, messages and toasts. */
+/** The engine beneath the pane's actions: captures prompts and messages. */
 function actions(on: On): Acts {
-  const acts: Acts = { prompts: [], copied: [], sent: [], toasts: [] }
+  const acts: Acts = { prompts: [], sent: [] }
   on('prompt.submit', (_, e) => {
     acts.prompts.push(e.text)
     return { text: e.text }
-  })
-  on('ui.copy', (_, e) => {
-    acts.copied.push(e.text)
-    return { value: { isCopied: true } }
   })
   on('session.send', (_, e) => {
     acts.sent.push({ to: e.to, text: e.text })
@@ -206,129 +323,91 @@ function actions(on: On): Acts {
   return acts
 }
 
-const NO_CARD = REPORT.replace(
-  '- copilot | status: running | ticket: none | updated: 2026-11-05T09:00 | /p/worktrees/tracker',
-  '- copilot | status: NO CARD | /p/worktrees/tracker',
-)
-
-test("clicking a name switches Orca to that worktree's Claude terminal; card opens Obsidian", async ($, on) => {
-  actions(on)
-  const w = world(on, REPORT)
+test('with no open issues the GitHub section has no issue rows and no "+ more"', async ($, on) => {
+  const w = world(on, SHARED)
+  w.issues = []
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-
-  await ui.press({ key: 'orca-rolly-polly' })
-  const orca = w.argvs.filter(argv => argv[0] === 'orca' || argv[0] === 'open')
-  expect(orca[0]).toEqual(['orca', 'terminal', 'list', '--worktree', 'path:/p/worktrees/rolly-polly', '--json'])
-  expect(orca[1]).toEqual(['orca', 'terminal', 'switch', '--terminal', 'term_claude', '--json']) // newest Claude one, not the shell
-  expect(orca[2]).toEqual(['open', '-a', 'Orca'])
-  expect(w.toasts.at(-1)).toBe('Orca: rolly-polly · Terminal 2')
-
-  await ui.press({ key: 'card-rolly-polly' })
-  expect(w.argvs.at(-1)).toEqual(['open', `obsidian://open?path=${encodeURIComponent('/vault/Projects/poot/Ledger/rolly-polly.md')}`])
+  await ui.press({ key: 'github' })
+  expect(await ui.find({ type: 'Text', text: /^Open issues \(0\)/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'discuss-60' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /more$/ })).toBeUndefined()
   await ui.unmount()
 })
 
-test("What's next?, Start #N and Park send requests to this session's Claude", async ($, on) => {
+test('parseGithub reads PRs and every issue, ready or not', () => {
+  const github = parseGithub(['-- my open PRs --', '- #57 Alert [feat/x] review:none', '-- open issues (all — your repo) --', ...ISSUES.slice(0, 3), '(gh failed: rate limited)'])
+  expect(github.prs).toEqual(['#57 Alert [feat/x] review:none'])
+  expect(github.issues).toEqual([
+    { number: '61', title: 'Copilot: analyst [level] calls', isReady: true },
+    { number: '60', title: 'idea 60', isReady: false },
+    { number: '59', title: 'idea 59', isReady: false },
+  ])
+  expect(github.note).toBe('(gh failed: rate limited)')
+  expect(parseGithub(['-- open issues assigned to you --', '(none)']).issues).toEqual([])
+})
+
+test('a ready-for-agent issue older than the newest ten still gets its start button', () => {
+  const issues = parseGithub(['-- open issues (all — your repo) --', ...ISSUES.slice(1), '- #12 old but ready [ready-for-agent]']).issues
+  const shown = issuesToShow(issues)
+  expect(shown.map(i => i.number)).toEqual(['12', '60', '59', '58', '57', '56', '55', '54', '53', '52'])
+})
+
+test('a tower too old for the pane says to update it, and a real failure keeps its own reason', async ($, on) => {
+  const w = world(on, { ...SHARED, housekeeping: undefined } as unknown as TowerState) // tower 0.9.0's JSON
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('claude plugin update tower@tower')
+  await ui.unmount()
+
+  w.stateRun = { exitCode: 1, stderr: 'Traceback:\n  File "/tower/scripts/run-tower.py", line 24\nKeyError: boom\n' }
+  await $.command.run({ command: 'tower' })
+  const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await again.find({ type: 'Text', text: /tower scan failed: / }))?.text).toBe('tower scan failed: KeyError: boom')
+  await again.unmount()
+})
+
+test('without live sessions (event log only) nothing offers a nudge it could not deliver', async ($, on) => {
+  world(on, { ...SHARED, sessions_source: 'events' })
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'nudge-feat-5' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a backlog that cannot be read says why instead of showing nothing', async ($, on) => {
+  const w = world(on, SHARED)
+  w.readError = 'EACCES: permission denied'
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Couldn't read the parked ideas: / }))?.text).toContain('EACCES')
+  await ui.unmount()
+})
+
+test("What's next? and Park send requests to this session's Claude", async ($, on) => {
   const acts = actions(on)
-  world(on, REPORT)
+  world(on, SHARED)
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
   await ui.press({ key: 'next' })
-  await ui.press({ key: 'github' }) // loads the ready-for-agent list
   await ui.input({ key: 'park-0', text: '  worm theme for the dashboard ' })
 
-  expect(acts.prompts[0]).toBe("Using the tower hub skill: what's next?")
-  expect(acts.prompts[1]).toBe('Using the tower hub skill: park: worm theme for the dashboard')
+  expect(acts.prompts).toEqual(["Using the tower hub skill: what's next?", 'Using the tower hub skill: park: worm theme for the dashboard'])
   expect(await ui.find({ type: 'Input', key: 'park-1' })).toBeTruthy() // a fresh, empty field
-  await ui.unmount()
-})
-
-test('a ready-for-agent issue starts with one click', async ($, on) => {
-  const acts = actions(on)
-  const w = world(on, REPORT)
-  w.report = REPORT
-  await $.command.run({ command: 'tower' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  // A full scan whose GitHub section has one ready-for-agent issue.
-  w.report = REPORT.replace('(skipped: --no-github)', '-- open issues (all — your repo) --\n- #39 Copilot: analyst level calls [ready-for-agent]\n- #44 poot theme [ready-for-human]')
-  await ui.press({ key: 'github' })
-
-  await ui.press({ key: 'start-39' })
-  expect(acts.prompts.at(-1)).toBe('Using the tower hub skill: start #39')
-  expect(await ui.find({ type: 'Text', text: /\+ 1 other open issues/ })).toBeTruthy()
   await ui.unmount()
 })
 
 test('nudge asks the sessions of a cardless worktree to write their card', async ($, on) => {
   const acts = actions(on)
-  world(on, NO_CARD)
+  world(on, SHARED)
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
 
-  await ui.press({ key: 'nudge-copilot' })
+  expect(await ui.find({ type: 'Button', key: 'nudge-feat-7' })).toBeUndefined() // it has a card
+  await ui.press({ key: 'nudge-feat-5' })
   expect(acts.sent).toHaveLength(1)
-  expect(acts.sent[0]?.to).toBe('copilot-1')
+  expect(acts.sent[0]?.to).toBe('w5')
   expect(acts.sent[0]?.text).toContain('status-card skill')
-  await ui.unmount()
-})
-
-// ---------- pop-up questions relayed to the pane ----------
-
-const QUESTION_FILE = '/home/.claude/tower/questions/worker-1.json'
-const ASKED = [{ question: 'Which mascot?', header: 'Mascot', multiSelect: false, options: [{ label: 'Worm', description: 'wiggles' }, { label: 'Ball', description: 'rolls' }] }]
-
-test("a worker's pop-up is relayed to a file, and an answer from the pane settles it", async ($, on) => {
-  const w = world(on, REPORT)
-  on('tool.call', { tool: 'AskUserQuestion' }, () => new Promise(() => {})) // the pop-up stays open: nobody answers there
-  on('session.receive', (_, e) => ({ text: e.text })) // a message nobody took: queued for the model
-  await startSession($, on, w, 'worker-1', '/p/worktrees/rolly-polly')
-
-  const asked = $.tool.call({ tool: 'AskUserQuestion', questions: ASKED })
-  await w.clock.settle()
-  const relayed = JSON.parse(w.files[QUESTION_FILE] ?? '{}') as { id: string; cwd: string; questions: unknown }
-  expect(relayed.cwd).toBe('/p/worktrees/rolly-polly')
-  expect(relayed.questions).toEqual(ASKED)
-
-  // A message with the wrong id is left for the model; the right one is taken.
-  const wrong = await $.session.receive({ origin: { kind: 'peer', plugin: 'tower-pane' }, text: `tower-answer ${'0'.repeat(36)} %7B%7D` })
-  expect('consumed' in wrong).toBe(false)
-  const answer = encodeURIComponent(JSON.stringify({ 'Which mascot?': 'Worm' }))
-  const taken = await $.session.receive({ origin: { kind: 'peer', plugin: 'tower-pane' }, text: `tower-answer ${relayed.id} ${answer}` })
-  expect(taken).toEqual({ consumed: 'an answer from the tower pane' })
-
-  const result = await asked
-  expect(result.result).toEqual({ questions: ASKED, answers: { 'Which mascot?': 'Worm' } })
-  expect(QUESTION_FILE in w.files).toBe(false) // removed once answered
-})
-
-test('answered in the pop-up first, the relay steps aside and removes its file', async ($, on) => {
-  const w = world(on, REPORT)
-  on('tool.call', { tool: 'AskUserQuestion' }, () => ({ result: { questions: ASKED, answers: { 'Which mascot?': 'Ball' } } }))
-  await startSession($, on, w, 'worker-1', '/p/worktrees/rolly-polly')
-
-  const result = await $.tool.call({ tool: 'AskUserQuestion', questions: ASKED })
-  expect(result.result).toEqual({ questions: ASKED, answers: { 'Which mascot?': 'Ball' } })
-  expect(QUESTION_FILE in w.files).toBe(false)
-})
-
-test("the hub pane shows another session's question and sends the clicked option back", async ($, on) => {
-  const acts = actions(on)
-  const w = world(on, REPORT)
-  w.files[QUESTION_FILE] = JSON.stringify({ id: 'q1', sessionId: 'worker-1', cwd: '/p/worktrees/rolly-polly/web', askedAt: 0, questions: ASKED })
-  w.files['/home/.claude/tower/questions/elsewhere.json'] = JSON.stringify({ id: 'q2', sessionId: 'other', cwd: '/other/repo', askedAt: 0, questions: ASKED })
-  await startSession($, on, w, 'hub-1', '/p')
-  await w.clock.advance(3_000) // the question poll
-  await $.command.run({ command: 'tower' })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-
-  expect(await ui.find({ type: 'Text', text: /QUESTION/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^Which mascot\?$/ })).toBeTruthy()
-  expect((await ui.findAll({ type: 'Text', text: /^Which mascot\?$/ })).length).toBe(1) // the other repo's question isn't here
-
-  await ui.press({ key: 'answer-q1-Which mascot?-Worm' }) // { sessionId } reaches session.send spelled as the id
-  expect(acts.sent.at(-1)).toEqual({ to: 'worker-1', text: `tower-answer q1 ${encodeURIComponent(JSON.stringify({ 'Which mascot?': 'Worm' }))}` })
-  expect(await ui.find({ type: 'Text', text: /^Which mascot\?$/ })).toBeUndefined() // gone once delivered
   await ui.unmount()
 })

@@ -27,7 +27,8 @@ def git(cwd: str, *args: str) -> str:
 
 
 def where(cwd: str) -> tuple[str, str]:
-    """(project, worktree label) for cwd. Same repo naming as ledger-lib.sh: the folder holding the shared .git."""
+    """(project, worktree label) for cwd. Same repo naming as tower.gitrepo.repo_name: the folder holding the shared
+    .git."""
     common = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common:
         return os.path.basename(cwd) or cwd, ""  # not a git repo: just the folder name
