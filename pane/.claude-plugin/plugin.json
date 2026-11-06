@@ -1,7 +1,0 @@
-{
-  "name": "tower-pane",
-  "version": "0.8.0",
-  "description": "tower's hub as a live pane beside the chat, a status-line summary, and a toast when something new needs you",
-  "author": { "name": "Rishi Desai" },
-  "types": "./types/index.d.ts"
-}
