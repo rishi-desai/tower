@@ -570,6 +570,7 @@ def to_json(report: Report) -> dict[str, object]:
             {"label": f.label, "commits": f.unshipped_commits} for f, _ in report.worktrees if f.unshipped_commits
         ],
         "orphan_cards": [asdict(o) for o in report.orphan_cards],
+        "housekeeping": [{"label": label, "note": note} for label, note in cleanup(report)],
     }
 
 
@@ -592,8 +593,9 @@ def render_text(report: Report) -> str:
 def worktrees_section(report: Report) -> list[str]:
     """The WORKTREES section: one row per worktree, then the WIP count, unshipped work and the notes.
 
-    The pane parses these rows from the hub's scan (`status:` is the effective state), so keep the `field: value | ...`
-    shape and the path last. Every value from a card or a session goes through cell(), so none can contain " | ".
+    The hub reads these rows (`status:` is the effective state; the pane reads to_json() instead), so keep the
+    `field: value | ...` shape and the path last. Every value from a card or a session goes through cell(), so none can
+    contain " | ".
     """
     out = ["== WORKTREES =="]
     for facts, v in report.worktrees:
@@ -660,25 +662,29 @@ def group_row(facts: WorktreeFacts, v: Verdict) -> str:
 
 
 def housekeeping(report: Report) -> list[str]:
-    """Cleanup the hub suggests: worktrees to remove, missing or stale cards, orphans, shared worktrees."""
-    lines: list[str] = []
+    """The Housekeeping rows of hub-scan.sh's GROUPS section, one per cleanup item."""
+    return [f"- {cell(label)} | {cell(note)}" for label, note in cleanup(report)]
+
+
+def cleanup(report: Report) -> list[tuple[str, str]]:
+    """Cleanup the hub suggests, as (label, note): worktrees to remove, missing or stale cards, orphans, shared
+    worktrees. The hub's Housekeeping group and the pane's both list these."""
+    items: list[tuple[str, str]] = []
     for facts, v in report.worktrees:
         if v.status == "ready-to-clean":
-            lines.append(f"- {cell(facts.label)} | ready to clean up: {cell(v.reason)}")
+            items.append((facts.label, f"ready to clean up: {v.reason}"))
         if not facts.is_main and facts.card is None:
-            lines.append(f"- {cell(facts.label)} | no card")
+            items.append((facts.label, "no card"))
         elif facts.card and facts.card.status not in CARD_STATUSES:
-            lines.append(f"- {cell(facts.label)} | unknown card status: {cell(facts.card.status) or '?'}")
+            items.append((facts.label, f"unknown card status: {facts.card.status or '?'}"))
         if facts.card and facts.card.stale:
-            lines.append(f"- {cell(facts.label)} | STALE: running card not updated in over 24h")
+            items.append((facts.label, "STALE: running card not updated in over 24h"))
         interactive = sum(1 for s in facts.sessions if s.kind == "interactive")
         if interactive > 1:
             where = " (in the main checkout, one is the hub)" if facts.is_main else ""
-            lines.append(f"- {cell(facts.label)} | {interactive} interactive sessions share this worktree{where}")
-    lines += [
-        f"- {cell(o.name)} | orphan card (worktree gone), status: {cell(o.status) or '?'}" for o in report.orphan_cards
-    ]
-    return lines
+            items.append((facts.label, f"{interactive} interactive sessions share this worktree{where}"))
+    items += [(o.name, f"orphan card (worktree gone), status: {o.status or '?'}") for o in report.orphan_cards]
+    return items
 
 
 def cell(text: str) -> str:

@@ -27,6 +27,7 @@ PR_TEMPLATE = (
     "{{range .}}- #{{.number}} {{.title}} [{{.headRefName}}] review:"
     '{{if .reviewDecision}}{{.reviewDecision}}{{else}}none{{end}}{{if .isDraft}} DRAFT{{end}}{{"\\n"}}{{end}}'
 )
+ISSUE_LIMIT = 30  # gh issue list's --limit; the pane shows "+" when a list is this long (HUB_SCAN_ISSUE_LIMIT)
 ISSUE_TEMPLATE = '{{range .}}- #{{.number}} {{.title}}{{range .labels}} [{{.name}}]{{end}}{{"\\n"}}{{end}}'
 
 
@@ -75,7 +76,7 @@ def github_section(repo_dir: Path) -> list[str]:
         "pr", "list", "--author", "@me", "--state", "open",
         "--json", "number,title,headRefName,reviewDecision,isDraft", "--template", PR_TEMPLATE,
     )  # fmt: skip
-    issues = ("issue", "list", "--state", "open", "--limit", "30", "--json", "number,title,labels")
+    issues = ("issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT), "--json", "number,title,labels")
     if me and owner == me:
         lines += gh_list(repo_dir, "open issues (all — your repo)", *issues, "--template", ISSUE_TEMPLATE)
     else:

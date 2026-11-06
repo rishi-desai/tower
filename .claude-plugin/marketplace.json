@@ -11,7 +11,7 @@
     {
       "name": "tower-pane",
       "source": "./pane",
-      "description": "tower's hub as a live pane beside the chat: what needs you, jump to a session in Orca, answer its pop-up questions in place."
+      "description": "tower's hub as a live pane beside the chat: what needs you, jump straight to the session waiting on you in Orca and back, every open issue."
     }
   ]
 }

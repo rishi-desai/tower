@@ -50,6 +50,11 @@ A worker whose work is finished and whose PR only waits on CI, a review or a mer
 while its session watches the PR. A card says it, or tower infers it from an open PR with no session working.
 _Avoid_: blocked (that is waiting on something other than your own PR), done
 
+**Waiting session**:
+A live session stopped on the user: a pop-up question ("input needed") or an approval ("approve Bash"). Its
+worktree's effective state is needs-you; the pane marks the row WAITING and a click jumps to that terminal.
+_Avoid_: waiting (alone: it reads as waiting-ci), blocked (that is waiting on something other than you)
+
 **Unshipped work**:
 Commits on a worktree's branch that aren't on the base branch (origin's default branch) yet. Reported apart from
 execution slots: a parked branch has unshipped work but holds no slot. Squash-merged work still shows until the
