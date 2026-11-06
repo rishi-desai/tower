@@ -15,8 +15,12 @@ Then, in this order: its terminals are closed and the worktree removed through O
 `orca worktree rm`, never forced), or with `git worktree remove` (never forced) when Orca isn't running or doesn't
 manage it; the local branch is deleted only if it still points at the checked commit (`git update-ref -d`); its branch
 on GitHub is deleted by tower merge's rules (merge.delete_head_branch: never while open PRs are based on it, never an
-integration branch, never once it moved); its card moves to the Ledger's _archive folder. Once every worktree is done,
-the main checkout runs `git pull --ff-only`. A step that fails stops that worktree's later steps, and is said.
+integration branch, never once it moved, and it says why when it leaves one); its card moves to the Ledger's _archive
+folder. Live sessions are read again just before each worktree's terminals close, since a removal before it (a stacked
+PR's branch delete waits for GitHub) takes time. When the worktree can't be removed, nothing after it runs; a branch or
+card step that fails is said and makes the run fail, but the others still run. Once every worktree is done, the main
+checkout runs `git pull --ff-only` if any was removed. Git-ignored files (.env, build output) go with the worktree:
+neither `git status --porcelain` nor `git worktree remove` counts them, so --dry-run says so.
 
 --all takes every worktree but the main checkout whose branch's PR is merged, and says why each other one was left.
 --dry-run runs every check and says what would be removed, touching nothing. tower clean never asks: the approval hook
@@ -43,6 +47,7 @@ from tower.merge import Gh, GhResult, Say
 
 ORCA_TIMEOUT_SECONDS = 60  # one orca call; removing a worktree is the slowest
 PULL_TIMEOUT_SECONDS = 120
+GIT_REMOVE_TIMEOUT_SECONDS = 120  # git deletes every file in the worktree, node_modules included
 WORK_GOES_ON = ("running", "needs-you", "blocked")
 ARCHIVE = "_archive"
 
@@ -111,10 +116,11 @@ def clean(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> bool:
-    """Clean up the worktrees names names (paths, branches or folder names), or with every, each one whose PR is
-    merged, in the repo holding repo_dir, saying each check that failed and each step taken. With dry_run, only
-    check and say what would be removed. True when every worktree asked about passed its checks and every step
-    worked. Raises CleanError (touching nothing) when the names can't be resolved, NotARepo outside a repo."""
+    """Clean up the worktrees that `names` names (paths, branches or folder names), or with every, each one whose PR
+    is merged, in the repo holding repo_dir, saying each check that failed and each step taken. With dry_run, only
+    check and say what would be removed. True when every worktree asked about passed its checks and every step that
+    reports failure worked (a GitHub branch tower merge's rules leave is said, not a failure). Raises CleanError
+    (touching nothing) when the names can't be resolved, NotARepo outside a repo."""
     worktrees = list_worktrees(repo_dir)
     main = worktrees[0]
     chosen = worktrees[1:] if every else resolve(worktrees, names, here)
@@ -126,7 +132,10 @@ def clean(
     ledger_folder, ledger_note = ledger_for(Path(main.path))
     targets = [check(w, gh, live, live_note, ledger_folder, ledger_note, here) for w in chosen]
     if every:
-        targets = [t for t in targets if t.pr_number is not None or skip(t, say)]
+        for target in targets:
+            if target.pr_number is None:  # not finished: say why it is left, without listing it as a failure
+                say(f"{target.label}: skipped, {target.failures[0]}")
+        targets = [t for t in targets if t.pr_number is not None]
         if not targets:
             say("no worktree has a merged PR, so nothing to clean up")
             return True
@@ -148,15 +157,16 @@ def clean(
             say(f"{target.label}: would {plan(target, use_orca)}")
         say(f"would then run git pull --ff-only in {main.path}")
         return all_passed
-    worked = True
+    worked, removed_any = True, False
     for target in ready:  # every one, even after one fails: each worktree is independent
-        worked = remove(target, Path(main.path), ledger_folder, use_orca, gh, orca, say, sleep, clock) and worked
-    pulled = pull_main(Path(main.path), say)
+        removed, steps_worked = remove(target, Path(main.path), ledger_folder, use_orca, gh, orca, say, sleep, clock)
+        worked, removed_any = worked and steps_worked, removed_any or removed
+    pulled = pull_main(Path(main.path), say) if removed_any else True
     return all_passed and worked and pulled
 
 
 def resolve(worktrees: list[GitWorktree], names: list[str], here: Path) -> list[GitWorktree]:
-    """The worktrees names names, each once, in the order named: by path (from here), branch, label or folder name.
+    """The worktrees that `names` names, each once, in the order named: by path (from here), branch, label or folder name.
     Raises CleanError for no name, a name matching none or several, or the main checkout."""
     if not names:
         raise CleanError("name the worktrees to clean up (a path, branch or folder name), or pass --all")
@@ -297,12 +307,6 @@ def card_of(worktree: GitWorktree, path: Path, ledger_folder: Path | None, ledge
     return card_file, ""
 
 
-def skip(target: Target, say: Say) -> bool:
-    """Say why --all leaves a worktree with no merged PR; always False, to drop it from the targets."""
-    say(f"{target.label}: skipped, {target.failures[0]}")
-    return False
-
-
 def orca_running(orca: Run) -> bool:
     """Whether Orca's runtime answers (`orca status --json`: ok, and result.runtime.reachable)."""
     answer, _ = orca_answer(orca(["status", "--json"]))
@@ -332,7 +336,10 @@ def plan(target: Target, use_orca: bool) -> str:
     branch = target.worktree.branch
     how = "close its terminals and remove it through Orca" if use_orca else "remove it with git worktree remove"
     card = f", and archive its card {target.card.name}" if target.card else ""
-    return f"{how} ({target.worktree.path}), delete {branch} here and on GitHub (when that's safe){card}"
+    return (
+        f"{how} ({target.worktree.path}, git-ignored files included), delete {branch} here and on GitHub (when"
+        f" that's safe){card}"
+    )
 
 
 def remove(
@@ -345,12 +352,12 @@ def remove(
     say: Say,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
-) -> bool:
-    """Remove one worktree that passed every check, saying each step; True when every step worked. A failed step
-    stops the steps after it."""
+) -> tuple[bool, bool]:
+    """Remove one worktree that passed every check, saying each step: whether the worktree was removed, and whether
+    every step worked. When the worktree can't be removed, nothing after it runs."""
     label, path, branch = target.label, target.worktree.path, str(target.worktree.branch)
     if not remove_worktree(target, main, use_orca, orca, say):
-        return False
+        return False, False
     worked = True
     tip = git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     if tip is None:
@@ -368,15 +375,26 @@ def remove(
     else:
         merge.delete_head_branch(pull, gh, lambda line: say(f"{label}: {line}"), sleep, clock)
     if target.card is not None and ledger_folder is not None:
-        archived = archive_card(target.card, ledger_folder)
-        if archived is None:
-            say(f"{label}: couldn't archive its card {target.card}")
+        try:
+            say(f"{label}: archived its card to {archive_card(target.card, ledger_folder)}")
+        except OSError as error:
+            say(f"{label}: couldn't archive its card {target.card} ({error.strerror or type(error).__name__})")
             worked = False
-        else:
-            say(f"{label}: archived its card to {archived}")
     if target.idle_sessions and not use_orca:
         say(f"{label}: session(s) {', '.join(target.idle_sessions)} still open in {path}, which is gone: close them")
-    return worked
+    return True, worked
+
+
+def busy_now(path: str) -> str:
+    """Why the worktree at path can't lose its terminals right now: a live session there is busy or waiting, or live
+    sessions can't be read; "" when neither."""
+    listed, live_note = sessions.read_agents()
+    if listed is None:
+        return f"{live_note}, so a session busy or waiting there can't be ruled out"
+    for session in state.live_sessions(listed, [os.path.realpath(path)]).get(os.path.realpath(path), []):
+        if session.activity != "idle":
+            return f"session {session.name} {'is busy' if session.activity == 'busy' else 'is waiting on you'} there"
+    return ""
 
 
 def remove_worktree(target: Target, main: Path, use_orca: bool, orca: Run, say: Say) -> bool:
@@ -384,6 +402,10 @@ def remove_worktree(target: Target, main: Path, use_orca: bool, orca: Run, say: 
     remove; neither is forced, so either refuses a worktree that changed since the checks. True once git no longer
     lists it."""
     label, path = target.label, target.worktree.path
+    busy = busy_now(path)
+    if busy:
+        say(f"{label}: left as it is: {busy} now")
+        return False
     if use_orca and orca_manages(orca, path):
         _, error = orca_answer(orca(["terminal", "close", "--worktree", f"path:{path}", "--all", "--json"]))
         if error:
@@ -392,11 +414,14 @@ def remove_worktree(target: Target, main: Path, use_orca: bool, orca: Run, say: 
         say(f"{label}: closed its terminals")
         _, error = orca_answer(orca(["worktree", "rm", "--worktree", f"path:{path}", "--json"]))
         if error:
-            say(f"{label}: Orca couldn't remove the worktree ({error}), so nothing else was removed")
+            say(
+                f"{label}: Orca closed its terminals but couldn't remove the worktree ({error}), so nothing else"
+                " was removed"
+            )
             return False
         how = "through Orca"
     else:
-        removed = run_program("git", main, PULL_TIMEOUT_SECONDS)(["worktree", "remove", path])
+        removed = run_program("git", main, GIT_REMOVE_TIMEOUT_SECONDS)(["worktree", "remove", path])
         if removed.code != 0:
             say(f"{label}: git couldn't remove the worktree ({merge.gh_reason(removed)}), so nothing else was removed")
             return False
@@ -408,19 +433,16 @@ def remove_worktree(target: Target, main: Path, use_orca: bool, orca: Run, say: 
     return True
 
 
-def archive_card(card: Path, ledger_folder: Path) -> Path | None:
+def archive_card(card: Path, ledger_folder: Path) -> Path:
     """Move card into the Ledger's _archive folder, under a timestamped name when one by its name is already there (a
-    reused branch); where it went, or None if it couldn't be moved."""
+    reused branch); where it went. Raises OSError when it can't be moved."""
     archive = ledger_folder / ARCHIVE
     target = archive / card.name
     if target.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         target = archive / f"{card.stem}.{stamp}{card.suffix}"
-    try:
-        archive.mkdir(exist_ok=True)
-        card.rename(target)
-    except OSError:
-        return None
+    archive.mkdir(exist_ok=True)
+    card.rename(target)
     return target
 
 

@@ -853,9 +853,8 @@ class CommandChecker:
         name = program_name(command.words[index])
         is_language = bool(LANGUAGE_RUNNER.fullmatch(name))
         is_git_dashed = name.startswith("git-") and runs_as_program(command.words, index)  # not `man git-push`
-        if name in TOWER_PROGRAMS and runs_tower(
-            command.words, index
-        ):  # a merge is judged at the end, like gh pr merge
+        if name in TOWER_PROGRAMS and runs_tower(command.words, index):
+            # A merge is judged at the end, like gh pr merge; a clean now, by the cleanup key
             self.note_tower_merge(command.words, index, depth == 0)
             return self.tower_clean_reasons(command.words, index)
         if name not in INVOKERS and not is_git_dashed and not is_language:

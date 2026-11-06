@@ -275,9 +275,10 @@ def test_when_orca_cant_remove_the_worktree_its_branch_and_card_stay(repo: Fixtu
 
     assert said[-1] == "result: False"
     assert (
-        "feat-1: Orca couldn't remove the worktree (worktree has running processes), so nothing else was removed"
-        in said
+        "feat-1: Orca closed its terminals but couldn't remove the worktree (worktree has running processes), so"
+        " nothing else was removed" in said
     )
+    assert not any("git pull" in line or "nothing was pulled" in line for line in said)  # nothing was removed
     assert branch_exists(repo, "feat-1") and "feat-1" in worker.github.branches
     assert (repo.ledger / "feat-1.md").read_text(encoding="utf-8") == card_before
 
@@ -291,8 +292,8 @@ def test_dry_run_says_what_would_go_and_touches_nothing(repo: Fixture) -> None:
     assert said == [
         f"feat-1: every check passed (PR #1 merged at {worker.sha[:7]})",
         (
-            f"feat-1: would close its terminals and remove it through Orca ({worker.path}), delete feat-1 here and"
-            " on GitHub (when that's safe), and archive its card feat-1.md"
+            f"feat-1: would close its terminals and remove it through Orca ({worker.path}, git-ignored files"
+            " included), delete feat-1 here and on GitHub (when that's safe), and archive its card feat-1.md"
         ),
         f"would then run git pull --ff-only in {repo.main}",
         "result: True",
@@ -437,3 +438,23 @@ def test_tower_clean_takes_names_or_all_not_both(cli_worker: Merged, capsys: pyt
 
     assert exited.value.code == 2
     assert "name worktrees or pass --all, not both" in capsys.readouterr().err
+
+
+def test_a_session_that_turns_busy_after_the_checks_keeps_its_worktree(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    card_before = (repo.ledger / "feat-1.md").read_text(encoding="utf-8")
+    asked_status = worker.orca.__call__
+
+    def orca(args: list[str]) -> GhResult:
+        if args[:1] == ["status"]:  # asked after the checks, before any removal
+            repo.sessions(interactive("w1", worker.path, "busy"))
+        return asked_status(args)
+
+    said: list[str] = []
+    done = clean.clean(repo.main, ["feat-1"], every=False, dry_run=False, gh=worker.github, orca=orca,
+                       say=said.append, here=repo.main)  # fmt: skip
+
+    assert not done
+    assert "feat-1: left as it is: session w1 is busy there now" in said
+    assert not any("git pull" in line or "nothing was pulled" in line for line in said)  # nothing removed
+    assert_untouched(repo, worker, card_before)
