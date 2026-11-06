@@ -20,6 +20,10 @@ tower merge [PR]           merge PR (default: this branch's), stacked or not, by
                            delete its head branch when that's safe; exit 1 when nothing was merged, 3 when it isn't
                            merged yet but may be: GitHub still merging, a merge queue, or GitHub unreachable (see
                            merge.py)
+tower clean [WORKTREE ...|--all] [--dry-run]
+                           clean up finished workers (worktree, branch here and on GitHub, terminals; the card is
+                           archived) once every check proves nothing would be lost; --dry-run only checks and says what
+                           would go; exit 1 when a check failed or a step didn't work (see clean.py)
 tower policy               the approval profile for this repo, why it applies, and what each key says (see policy.py)
 tower policy use PROFILE [--repo]
                            make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
@@ -41,6 +45,7 @@ from tower import (
     __version__,
     adopt,
     card,
+    clean,
     events,
     github,
     hook_events,
@@ -130,6 +135,12 @@ def parser() -> argparse.ArgumentParser:
         "merge", help="merge a PR, stacked or not, and delete its head branch when that's safe"
     )
     merge_parser.add_argument("pr", nargs="?", type=pr_number, help="the PR's number (default: this branch's PR)")
+    clean_parser = commands.add_parser(
+        "clean", help="clean up finished workers, once every check proves nothing would be lost"
+    )
+    clean_parser.add_argument("worktrees", nargs="*", help="a worktree's path, branch or folder name")
+    clean_parser.add_argument("--all", action="store_true", help="every worktree whose PR is merged")
+    clean_parser.add_argument("--dry-run", action="store_true", help="only check, and say what would be removed")
     policy_parser = commands.add_parser("policy", help="the approval profile for this repo, and why it applies")
     policy_commands = policy_parser.add_subparsers(dest="policy_command")
     use = policy_commands.add_parser("use", help="switch the default profile, or this repo's (run it yourself)")
@@ -306,6 +317,27 @@ def merge_command(pr: int | None) -> int:
     return 0
 
 
+def clean_command(names: list[str], every: bool, dry_run: bool) -> int:
+    """Run `tower clean`: say each check that failed and each step on stdout; exit 1 when a check failed, a step
+    didn't work, or the worktrees can't be named (saying why, touching nothing)."""
+    here = Path.cwd()
+    try:
+        done = clean.clean(
+            here,
+            names,
+            every=every,
+            dry_run=dry_run,
+            gh=merge.run_gh(here),
+            orca=clean.run_orca(here),
+            say=lambda line: print(f"tower: {line}", flush=True),
+            here=here,
+        )
+    except (NotARepo, clean.CleanError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    return 0 if done else 1
+
+
 def show_policy() -> int:
     """Print the policy for the repo holding the current folder."""
     loaded = policy.load()
@@ -349,7 +381,10 @@ def link_rules() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the tower command with argv (default: the process's arguments); returns the exit code."""
-    args = parser().parse_args(argv)
+    top = parser()
+    args = top.parse_args(argv)
+    if args.command == "clean" and args.all and args.worktrees:
+        top.error("tower clean: name worktrees or pass --all, not both")
     if args.command == "events" and args.events_command == "tail":
         return events_tail(args.n)
     if args.command == "state":
@@ -370,6 +405,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return stats_command(args.since, args.repo)
     if args.command == "merge":
         return merge_command(args.pr)
+    if args.command == "clean":
+        return clean_command(args.worktrees, args.all, args.dry_run)
     if args.command == "policy":
         return use_profile(args.profile, args.repo) if args.policy_command == "use" else show_policy()
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable

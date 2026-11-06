@@ -34,6 +34,13 @@ of work its own worktree and card, run one approved step at a time. The hub swit
 `ADOPT: yes` (most worktrees, at least two, have no card, or the main checkout has uncommitted work or other sessions).
 _Avoid_: onboarding, the adopt skill (it is part of the hub since T19)
 
+**Cleanup**:
+Removing a finished worker once every check proves nothing would be lost: its PR merged at the worktree's HEAD,
+nothing uncommitted or stashed, no session busy or waiting there. It closes the worktree's terminals, removes the
+worktree and its branch (locally and on GitHub) and archives its card. A worktree that fails a check is left exactly
+as it was.
+_Avoid_: prune, teardown, delete (alone: the card is archived, not deleted)
+
 ## State
 
 **Card**:
@@ -50,6 +57,11 @@ _Avoid_: ticket number (a branch can have digits that aren't one)
 **Ledger**:
 The vault folder holding a project's cards and its backlog of parked ideas.
 _Avoid_: board, tracker
+
+**Archived card**:
+The card of a worktree that cleanup removed, kept in the Ledger's `_archive` folder so the history stays. It is no
+longer any worktree's card and is never an orphan card.
+_Avoid_: old card, deleted card
 
 **Event**:
 One timestamped fact recorded about a session as it happens (it started, the user answered, it needs the user, it
