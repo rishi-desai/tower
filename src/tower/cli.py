@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from tower import __version__, events
 
 
-def count(text: str) -> int:
+def non_negative_int(text: str) -> int:
     """argparse type for -n: a whole number, 0 or more."""
     value = int(text)
     if value < 0:
@@ -29,7 +29,7 @@ def parser() -> argparse.ArgumentParser:
     events_parser = commands.add_parser("events", help="the event log tower's hooks write")
     events_commands = events_parser.add_subparsers(dest="events_command", required=True)
     tail = events_commands.add_parser("tail", help="print the last events of this month's log as JSON lines")
-    tail.add_argument("-n", type=count, default=10, help="how many events (default 10)")
+    tail.add_argument("-n", type=non_negative_int, default=10, help="how many events (default 10)")
     return top
 
 

@@ -1,6 +1,7 @@
 [project]
 name = "tower"
-# Required by uv, never released: tower's version lives in plugin/.claude-plugin/plugin.json.
+# Never released: tower's version is plugin/.claude-plugin/plugin.json's, repeated in src/tower/__init__.py for
+# `tower --version` (tests/test_cli.py checks they match).
 version = "0.0.0"
 description = "Run many Claude Code agents in parallel: status cards, a hub, and approval before anything public."
 # The dev environment and the `tower` CLI use 3.11+. The hook scripts, and the parts of src/tower they import, are

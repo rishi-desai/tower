@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tower import events
 
 
-def make_event(ts: str = "2026-11-06T04:12:33.120Z", type: str = "prompt", **data: object) -> events.Event:
+def make_event(ts: str = "2026-11-06T04:12:33.120Z", event_type: str = "prompt", **data: object) -> events.Event:
     """An event in the tower repo's feature worktree; only ts, type and data vary between tests."""
     return events.Event(
         ts=ts,
-        type=type,
+        type=event_type,
         session_id="s-1",
         repo="/code/tower",
         worktree="/code/tower/worktrees/feat-22",
@@ -24,8 +26,8 @@ def make_event(ts: str = "2026-11-06T04:12:33.120Z", type: str = "prompt", **dat
 
 
 def test_append_writes_one_json_line_per_event_with_the_common_fields_first(tmp_path: Path) -> None:
-    events.append(make_event(type="session-start", source="startup"), tmp_path)
-    events.append(make_event(type="prompt", prompt_chars=12), tmp_path)
+    events.append(make_event(event_type="session-start", source="startup"), tmp_path)
+    events.append(make_event(event_type="prompt", prompt_chars=12), tmp_path)
 
     lines = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     assert lines[0] == (
@@ -38,6 +40,7 @@ def test_append_writes_one_json_line_per_event_with_the_common_fields_first(tmp_
 
 WRITER = """
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from tower import events
 
@@ -71,9 +74,9 @@ def test_concurrent_appends_from_several_processes_never_interleave_lines(tmp_pa
 
 
 def test_an_event_from_a_new_month_moves_the_old_month_to_its_own_file(tmp_path: Path) -> None:
-    events.append(make_event(ts="2026-10-31T23:59:59.000Z", type="prompt"), tmp_path)
-    events.append(make_event(ts="2026-10-31T23:59:59.500Z", type="stop"), tmp_path)
-    events.append(make_event(ts="2026-11-01T00:00:00.000Z", type="answer"), tmp_path)
+    events.append(make_event(ts="2026-10-31T23:59:59.000Z", event_type="prompt"), tmp_path)
+    events.append(make_event(ts="2026-10-31T23:59:59.500Z", event_type="stop"), tmp_path)
+    events.append(make_event(ts="2026-11-01T00:00:00.000Z", event_type="answer"), tmp_path)
 
     october = (tmp_path / "events-2026-10.jsonl").read_text(encoding="utf-8").splitlines()
     current = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
@@ -82,8 +85,8 @@ def test_an_event_from_a_new_month_moves_the_old_month_to_its_own_file(tmp_path:
 
 
 def test_an_event_from_an_earlier_month_does_not_rotate(tmp_path: Path) -> None:
-    events.append(make_event(ts="2026-11-01T00:00:00.000Z", type="prompt"), tmp_path)
-    events.append(make_event(ts="2026-10-31T23:59:59.000Z", type="stop"), tmp_path)  # the clock stepped back
+    events.append(make_event(ts="2026-11-01T00:00:00.000Z", event_type="prompt"), tmp_path)
+    events.append(make_event(ts="2026-10-31T23:59:59.000Z", event_type="stop"), tmp_path)  # the clock stepped back
 
     assert sorted(p.name for p in tmp_path.glob("events*.jsonl")) == ["events.jsonl"]
     assert len((tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()) == 2
@@ -91,8 +94,8 @@ def test_an_event_from_an_earlier_month_does_not_rotate(tmp_path: Path) -> None:
 
 def test_rotation_never_overwrites_an_existing_month_file(tmp_path: Path) -> None:
     (tmp_path / "events-2026-10.jsonl").write_text("kept\n", encoding="utf-8")
-    events.append(make_event(ts="2026-10-30T10:00:00.000Z", type="prompt"), tmp_path)
-    events.append(make_event(ts="2026-11-02T10:00:00.000Z", type="answer"), tmp_path)
+    events.append(make_event(ts="2026-10-30T10:00:00.000Z", event_type="prompt"), tmp_path)
+    events.append(make_event(ts="2026-11-02T10:00:00.000Z", event_type="answer"), tmp_path)
 
     assert (tmp_path / "events-2026-10.jsonl").read_text(encoding="utf-8") == "kept\n"
     assert json.loads((tmp_path / "events-2026-10.2.jsonl").read_text(encoding="utf-8"))["type"] == "prompt"
@@ -100,7 +103,7 @@ def test_rotation_never_overwrites_an_existing_month_file(tmp_path: Path) -> Non
 
 def test_tail_returns_the_last_n_lines_oldest_first(tmp_path: Path) -> None:
     for i in range(15):
-        events.append(make_event(type="prompt", i=i), tmp_path)
+        events.append(make_event(event_type="prompt", i=i), tmp_path)
 
     assert [json.loads(line)["data"]["i"] for line in events.tail(tmp_path, 3)] == [12, 13, 14]
     assert len(events.tail(tmp_path, 100)) == 15
@@ -108,3 +111,14 @@ def test_tail_returns_the_last_n_lines_oldest_first(tmp_path: Path) -> None:
 
 def test_tail_of_a_missing_log_is_empty(tmp_path: Path) -> None:
     assert events.tail(tmp_path / "nowhere", 10) == []
+
+
+def test_a_log_with_a_damaged_first_line_still_rotates_by_its_last_write(tmp_path: Path) -> None:
+    log = tmp_path / "events.jsonl"
+    log.write_text('{"ts":"2026-10-0\n', encoding="utf-8")  # torn first line
+    october = datetime(2026, 10, 20, tzinfo=timezone.utc).timestamp()
+    os.utime(log, (october, october))
+    events.append(make_event(ts="2026-11-02T10:00:00.000Z", event_type="answer"), tmp_path)
+
+    assert (tmp_path / "events-2026-10.jsonl").read_text(encoding="utf-8") == '{"ts":"2026-10-0\n'
+    assert json.loads(log.read_text(encoding="utf-8"))["type"] == "answer"

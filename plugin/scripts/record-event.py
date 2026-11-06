@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,8 +26,9 @@ def tower_dir() -> Path:
 
 
 def note_import_failure() -> None:
-    """Append why the core wouldn't import to errors.log; if that fails too, say so on stderr."""
-    message = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} record-event: can't import tower's core\n{traceback.format_exc()}"
+    """Append why the core wouldn't import to errors.log (same format as hook_events.log_error); else to stderr."""
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    message = f"{now} record-event: can't import tower's core\n{traceback.format_exc()}"
     try:
         tower_dir().mkdir(parents=True, exist_ok=True)
         with open(tower_dir() / "errors.log", "a", encoding="utf-8") as handle:

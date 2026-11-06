@@ -20,6 +20,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,8 @@ LOCK_NAME = "events.lock"
 
 @dataclass(frozen=True)
 class Event:
-    """One fact for the log. ts is ISO 8601 UTC ("2026-11-06T04:12:33.120Z"); repo/worktree/branch are None outside git."""
+    """One fact for the log. ts is ISO 8601 UTC ("2026-11-06T04:12:33.120Z"); repo/worktree/branch are None
+    outside git; data is the type-specific payload."""
 
     ts: str
     type: str
@@ -84,8 +86,9 @@ def tail(directory: Path, count: int) -> list[str]:
 def rotate_if_new_month(directory: Path, month: str) -> None:
     """If the log's first event is from a month before month ("YYYY-MM"), rename the log after that month.
 
-    Called with the lock held. A first line that can't be read leaves the log where it is: better one long file than
-    a lost or misnamed one. An existing month file is never overwritten; the next free `events-YYYY-MM.N.jsonl` is used.
+    Called with the lock held. If the first line can't be read (a torn or hand-edited file), the month of the log's
+    last write stands in for it, so a damaged log still rotates instead of growing forever. An existing month file is
+    never overwritten; the next free `events-YYYY-MM.N.jsonl` is used.
     """
     log = directory / LOG_NAME
     try:
@@ -96,7 +99,7 @@ def rotate_if_new_month(directory: Path, month: str) -> None:
     try:
         log_month = str(json.loads(first)["ts"])[:7]
     except (ValueError, KeyError, TypeError):
-        return
+        log_month = time.strftime("%Y-%m", time.gmtime(log.stat().st_mtime))
     if log_month >= month:
         return
     target = directory / f"events-{log_month}.jsonl"

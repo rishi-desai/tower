@@ -82,20 +82,21 @@ def place(cwd: str) -> tuple[str | None, str | None, str | None]:
 
 def record(hook: dict[str, object], directory: Path) -> None:
     """Append the event for one hook call to directory's log, if tower records this kind of call."""
-    kind = event_type_and_data(hook)
-    if kind is None:
+    type_and_data = event_type_and_data(hook)
+    if type_and_data is None:
         return
+    event_type, data = type_and_data
     cwd = hook.get("cwd")
     repo, worktree, branch = place(cwd if isinstance(cwd, str) and cwd else os.getcwd())
     session_id = hook.get("session_id")
     event = events.Event(
         ts=now_utc(),
-        type=kind[0],
+        type=event_type,
         session_id=session_id if isinstance(session_id, str) else None,
         repo=repo,
         worktree=worktree,
         branch=branch,
-        data=kind[1],
+        data=data,
     )
     events.append(event, directory)
 

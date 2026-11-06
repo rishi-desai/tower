@@ -8,6 +8,10 @@ as events in one append-only log (`~/.claude/tower/events.jsonl`, all repos), an
 worktree's effective state, renders cards' frontmatter and checks policy from those facts. Claude keeps writing the
 parts only a model can: what was done, why it matters, the decision it needs from you.
 
+Each event is one JSON line: `ts` (UTC), `type`, `session_id`, `repo`, `worktree`, `branch`, then `data`, the
+type-specific payload, kept under its own key so a payload field can never collide with a common one. Readers in the
+core depend on this shape: add fields, don't rename or remove them.
+
 The core is standard library only, because the plugin's hooks import it straight from the plugin through the
 `plugin/lib/tower` symlink, with nothing installed. For the same reason the modules a hook imports stay importable
 on Python 3.9, the `python3` a stock Mac gives a hook, even though the core as a whole targets 3.11+.
