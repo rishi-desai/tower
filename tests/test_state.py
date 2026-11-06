@@ -36,13 +36,6 @@ def rows(result: dict[str, object]) -> dict[str, dict[str, object]]:
     return {row["label"]: row for row in worktrees}
 
 
-def listed_notes(result: dict[str, object]) -> list[str]:
-    """The report's notes."""
-    notes = result["notes"]
-    assert isinstance(notes, list)
-    return notes
-
-
 def test_three_busy_workers_with_no_cards_hold_three_slots(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     paths = [repo.add_worktree(f"feat-{n}") for n in (1, 2, 3)]
     repo.sessions(*(interactive(f"w{n}", path, "busy") for n, path in enumerate(paths, 1)))
@@ -271,7 +264,8 @@ def test_a_tower_conf_that_isnt_utf8_is_noted_and_worktrees_are_still_reported(
 
     result = tower_state(capsys)
 
-    assert f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used" in listed_notes(result)
+    note = f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used"
+    assert note in result["notes"]  # type: ignore[operator]
     assert rows(result)["feat-1"]["status"] == "running"
 
 

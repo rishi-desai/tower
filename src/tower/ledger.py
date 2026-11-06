@@ -28,8 +28,8 @@ def conf_path() -> Path:
 def read_conf(path: Path) -> dict[str, str]:
     """The config's `key=value` lines as a dict; the last line for a key wins. It's parsed, never run, so a typo in it
     can't run as a command. Values may hold spaces (iCloud paths do). A missing file is an empty config; one that
-    exists but can't be read, or isn't UTF-8, raises LedgerError, so it never passes for a machine that was never set
-    up (and a stray byte, say a Latin-1 path, is a note in every report instead of a crash)."""
+    exists but can't be read, or isn't UTF-8 (LedgerError names the line), raises LedgerError, so it never passes for a
+    machine that was never set up."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
