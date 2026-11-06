@@ -54,6 +54,11 @@ The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess 
 be wrong, so it is a guess, never a fact.
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
+**Worktree's PR**:
+A PR from this repo whose head branch has the worktree's branch name. A fork's PR is never it, even with the same
+branch name (a stranger's patch-1 isn't this work).
+_Avoid_: PR by branch name (a fork's PR can have the same branch name)
+
 **Ledger**:
 The vault folder holding a project's cards and its backlog of parked ideas.
 _Avoid_: board, tracker

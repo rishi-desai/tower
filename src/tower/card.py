@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tower import ledger, state
-from tower.github import try_gh
+from tower.github import from_this_repo, try_gh
 from tower.gitrepo import git, list_worktrees
 
 SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
@@ -235,7 +235,7 @@ def branch_pr(worktree: Path, branch: str) -> tuple[BranchPr | None, str, str]:
         prs = [
             BranchPr(int(p["number"]), str(p["state"]), str(p["baseRefName"]), str(p["headRefOid"]))
             for p in json.loads(out)
-            if not p.get("isCrossRepository")
+            if from_this_repo(p)
         ]
     except (ValueError, TypeError, KeyError, AttributeError):
         return None, "", f"gh pr list printed something unexpected: {out[:120]!r}"
