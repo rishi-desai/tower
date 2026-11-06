@@ -11,7 +11,7 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
                    +refspecs; none -> no push asks
   comments         gh pr comment, gh pr review, gh issue comment
   issue_writes     gh issue create, edit, close, reopen, delete, lock, pin, transfer, develop, ...
-  pr_writes        gh pr create, edit, ready, close, reopen, update-branch (an edit that changes
+  pr_writes        gh pr create, edit, ready, close, reopen, update-branch, revert (an edit that changes
                    the base, -B/--base, also needs merge_to_main: it can retarget an armed auto-merge at main)
   merge_to_main /  gh pr merge, `tower merge` (the workers' merge path, src/tower/merge.py, whose own gh calls this
   merge_to_branch  hook can't see) and a gh api write to a PR's merge or merge-async endpoint, by the branch the PR
@@ -25,9 +25,11 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
                    GitHub itself), however tower is run, in interpreter code too; never `tower clean --dry-run`,
                    which only checks (the exact flag, before any --, with no word from a variable before it)
 The rest ask unless every GitHub key above is auto (as in the sandbox profile), since no one key covers
-them: gh release and gh label writes, gh pr lock/unlock, other `gh api` calls that write (GraphQL mutations or queries read from a
-file, REST with a write method or with fields, since gh defaults to POST when fields are given), and a gh
-subcommand taken from a variable.
+them: every other gh command that isn't a known read (GH_READS: view, list, status, diff, checks and the like, plus
+local work such as clone and checkout), so gh release, label, repo, gist, secret, variable, workflow, run and cache
+writes, an extension or a gh alias, and anything a newer gh adds; gh pr lock/unlock; other `gh api` calls that write
+(GraphQL mutations or queries read from a file, REST with a write method or with fields, since gh defaults to POST
+when fields are given); and a gh subcommand taken from a variable.
 
 Which repo's policy: the session's repo (the hook's `cwd`), judged by every remote it has, fetch and push
 URLs alike (the stricter profile of each, so re-pointing a remote can only tighten it). An action that
@@ -75,8 +77,7 @@ Limits: this sees only the command text. These are not caught:
   - commands built at run time: a variable or command output used as the program or as eval/-c code
     (`$GIT push`, `eval "$(...)"`, `bash -c "$CMD"`), xargs input that supplies the subcommand, or a
     tower.conf path supplied at run time (`... | xargs sed -i`);
-  - aliases and functions: git aliases set outside the command (`git p` for push), `gh alias set`, and
-    shell functions;
+  - aliases and functions: git aliases set outside the command (`git p` for push) and shell functions;
   - disguised names: globs, brace expansion or zsh glob qualifiers in a program name, and a protected
     path reached through cd and a relative path, a glob or a variable;
   - under push=force, a variable holding a force refspec (`git push origin "$REF"`, REF=+main), or git
@@ -111,6 +112,7 @@ if TYPE_CHECKING:  # only for the annotations: the hook imports tower's core in 
 # From this file's place, like run-tower.py: the plugin's lib/ holds the link to tower's core.
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# The gh pr and issue writes a policy key covers (GH_KEYS below says which).
 GH_WRITE_SUBCOMMANDS = {
     "pr": {
         "comment",
@@ -124,6 +126,7 @@ GH_WRITE_SUBCOMMANDS = {
         "lock",
         "unlock",
         "update-branch",
+        "revert",  # opens a PR that reverts a merged one
     },
     "issue": {
         "comment",
@@ -139,14 +142,55 @@ GH_WRITE_SUBCOMMANDS = {
         "transfer",
         "develop",
     },
-    "release": {"create", "edit", "delete", "upload", "delete-asset"},
-    "label": {"create", "edit", "delete", "clone"},
 }
+# gh commands that only read GitHub or work locally (`gh help reference`, gh 2.102), by group; a subgroup ("repo
+# license") lists its own, and a group or subgroup alone prints its help. Any other gh command may write: a pr or
+# issue write is judged by its key below, and the rest (release, label, repo, secret, workflow writes, an extension,
+# a gh alias, a command a newer gh adds) ask unless every GitHub key is auto. `auth token` prints a credential, so it
+# isn't listed, and neither is `auth status` with -t/--show-token (see prints_token). `extension browse` isn't
+# either: its screen can install and remove extensions.
+GH_READS: dict[str, set[str]] = {
+    "agent-task": {"list", "view"},
+    "alias": {"list"},
+    "attestation": {"download", "trusted-root", "verify"},
+    "auth": {"status"},
+    "cache": {"list"},
+    "codespace": {"list", "logs", "view"},
+    "config": {"get", "list"},
+    "discussion": {"list", "view"},
+    "extension": {"list", "search"},
+    "gist": {"clone", "list", "view"},
+    "gpg-key": {"list"},
+    "issue": {"list", "status", "view"},
+    "label": {"list"},
+    "org": {"list"},
+    "pr": {"checkout", "checks", "diff", "list", "status", "view"},
+    "preview": {"prompter"},
+    "project": {"field-list", "item-list", "list", "view"},
+    "release": {"download", "list", "verify", "verify-asset", "view"},
+    "repo": {"clone", "list", "read-dir", "read-file", "set-default", "view"},
+    "repo autolink": {"list", "view"},
+    "repo deploy-key": {"list"},
+    "repo gitignore": {"list", "view"},
+    "repo license": {"list", "view"},
+    "ruleset": {"check", "list", "view"},
+    "run": {"download", "list", "view", "watch"},
+    "secret": {"list"},
+    "skill": {"list", "preview", "search"},
+    "ssh-key": {"list"},
+    "variable": {"get", "list"},
+    "workflow": {"list", "view"},
+}
+# A word that is a cluster of one-letter options (-t, -at), with no value attached.
+SHORT_OPTIONS = re.compile(r"-[A-Za-z]+")
+# gh commands that only read, whatever follows them. `co`, gh's default alias for pr checkout, isn't one: it lives in
+# gh's config, which can redefine it, so it asks like any gh alias.
+GH_READ_COMMANDS = {"browse", "completion", "help", "licenses", "search", "status", "version"}
 # Not a policy key: a merge is judged by merge_to_main or merge_to_branch once the branch its PR lands on is known.
 MERGE = "merge (by where the PR lands)"
-# The policy key each gh write is judged by; a group's other writes are under its "*" entry. None (release and label
-# writes, and locking a PR's conversation, which pr_approval=none never let through) asks unless every GitHub key is
-# auto.
+# The policy key each gh pr and issue write above is judged by; a group's other writes are under its "*" entry. None
+# (locking a PR's conversation, which pr_approval=none never let through), like a gh command that is neither a known
+# read nor one of these writes, asks unless every GitHub key is auto.
 GH_KEYS: dict[str, dict[str, str | None]] = {
     "pr": {"comment": "comments", "review": "comments", "merge": MERGE, "lock": None, "unlock": None, "*": "pr_writes"},
     "issue": {"comment": "comments", "*": "issue_writes"},
@@ -272,8 +316,27 @@ WRAPPERS = {
 STDIN_PATHS = {"-", "/dev/stdin", "/dev/fd/0"}
 # env's options that take the next word as their value (GNU and BSD env).
 ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "-P"}
-# gh's built-in aliases for write subcommands (the ALIASES line of `gh <group> <subcommand> --help`).
-GH_ALIASES = {"pr": {"new": "create"}, "issue": {"new": "create"}, "release": {"new": "create"}}
+# gh's built-in aliases (the ALIASES line of `gh <group> [<subcommand>] --help`, gh 2.102): for groups, and for
+# subcommands by group, where "*" holds those of every group (each list is also ls). Unlike a gh alias, they can't
+# be redefined.
+GH_GROUP_ALIASES = {
+    "agent": "agent-task",
+    "agents": "agent-task",
+    "agent-tasks": "agent-task",
+    "at": "attestation",
+    "cs": "codespace",
+    "ext": "extension",
+    "extensions": "extension",
+    "rs": "ruleset",
+    "skills": "skill",
+}
+GH_ALIASES = {
+    "*": {"ls": "list"},
+    "pr": {"new": "create", "co": "checkout"},
+    "issue": {"new": "create"},
+    "release": {"new": "create"},
+    "skill": {"show": "preview"},
+}
 # git push's long options that force or delete; git also accepts any unambiguous prefix (--del).
 GIT_PUSH_FORCE_OPTIONS = ("force", "force-with-lease", "force-if-includes", "mirror", "delete", "prune")
 # `git -c` settings that make a plain push mirror (delete remote refs) or use force refspecs.
@@ -1007,10 +1070,10 @@ class CommandChecker:
         return self.unchecked(HIDDEN_CODE_REASON)
 
     def check_gh(self, args: list[Word], is_whole_command: bool) -> str | None:
-        """Reason to ask for gh run with ARGS, or None if it only reads or the policy lets it through. A merge is
+        """Reason to ask for gh run with ARGS, or None if it is a known read or the policy lets it through. A merge is
         only collected here; IS_WHOLE_COMMAND says gh is the program at the top level, which merge_reasons() needs
         before it asks gh for the merge's base."""
-        indexes = gh_command_indexes(args)
+        indexes = gh_command_indexes(args, count=3)  # a subgroup's command (gh repo license list) has three words
         if not indexes:
             return None
         flags = [arg for position, arg in enumerate(args) if position not in indexes[:2]]
@@ -1033,25 +1096,29 @@ class CommandChecker:
                 return None
             reason = check_gh_api(without_group)
             return None if reason is None or gates().github_open else reason
-        writes = GH_WRITE_SUBCOMMANDS.get(group.text, set())
-        if not writes or len(indexes) < 2:
-            return None
-        subcommand = args[indexes[1]]
+        group_name = GH_GROUP_ALIASES.get(group.text, group.text)
+        if group_name in GH_READ_COMMANDS or (len(indexes) == 1 and group_name in GH_READS):
+            return None  # it only reads, or it is a group alone, which prints its help
+        subcommand = args[indexes[1]] if len(indexes) > 1 else Word("")
         if subcommand.dynamic:
             return None if gates().github_open else GH_DYNAMIC_REASON
-        name = GH_ALIASES.get(group.text, {}).get(subcommand.text, subcommand.text)
-        if name not in writes:
+        name = gh_alias_target(group_name, subcommand.text)
+        third = args[indexes[2]] if len(indexes) > 2 else None
+        shows_token = prints_token(group_name, name, flags)
+        if not shows_token and is_gh_read(group_name, name, third):
             return None
-        group_keys = GH_KEYS.get(group.text, {})
-        key = group_keys.get(name, group_keys.get("*"))
-        action = f"gh {group.text} {name}"
+        group_keys = GH_KEYS.get(group_name, {})
+        key = group_keys.get(name, group_keys.get("*")) if name in GH_WRITE_SUBCOMMANDS.get(group_name, ()) else None
+        action = f"gh {group_name} {name}".rstrip()
         if key == MERGE:
             self.merges.append(parse_merge(flags, gates(), is_whole_command))
             return None
-        if key is None:  # release and label writes, PR lock/unlock
-            return None if gates().github_open else f"{action} changes something on GitHub that no one key covers"
+        if key is None:  # any other gh command that isn't a known read: release, repo, secret writes, PR lock, ...
+            reason = f"{action} may change something on GitHub that no one key covers (it isn't a known read)"
+            reason = f"{action} prints your GitHub auth token" if shows_token else reason
+            return None if gates().github_open else reason
         keys = [key]
-        if (group.text, name) == ("pr", "edit") and changes_base(flags):
+        if (group_name, name) == ("pr", "edit") and changes_base(flags):
             keys.append("merge_to_main")
         judged = gates()
         asking = [k for k in keys if judged.asks(k)]
@@ -1464,13 +1531,47 @@ def is_force_push_arg(arg: str) -> bool:
     return arg.startswith(("+", ":"))
 
 
-def gh_command_indexes(args: list[Word]) -> list[int]:
-    """Indexes in ARGS of gh's first two command words (`pr`, `comment`), found the way gh's CLI library
+def is_gh_read(group: str, name: str, third: Word | None) -> bool:
+    """Whether `gh GROUP NAME` is a known read (GH_READS), THIRD being the command word after NAME if any: NAME is a
+    listed read, or NAME is a subgroup (`gh repo license`) and THIRD is missing (its help) or one of its reads."""
+    if name in GH_READS.get(group, ()):
+        return True
+    subgroup = GH_READS.get(f"{group} {name}")
+    if subgroup is None:
+        return False
+    return third is None or (not third.dynamic and gh_alias_target(f"{group} {name}", third.text) in subgroup)
+
+
+def gh_alias_target(group: str, subcommand: str) -> str:
+    """The gh subcommand SUBCOMMAND of GROUP stands for: itself, or what gh's built-in alias for it names (pr co is
+    checkout, any ls is list)."""
+    return GH_ALIASES.get(group, {}).get(subcommand) or GH_ALIASES["*"].get(subcommand, subcommand)
+
+
+def prints_token(group: str, name: str, flags: list[Word]) -> bool:
+    """Whether `gh GROUP NAME` with FLAGS (the words after them) prints the auth token, which no known read does: gh
+    auth token, gh auth status -t/--show-token (or -t in a cluster), gh config get oauth_token (or a key from a
+    variable, which may be it)."""
+    if group == "auth":
+        return name == "token" or any(
+            flag.text.startswith("--show-token") or has_short_option(flag.text, "t") for flag in flags
+        )
+    return (group, name) == ("config", "get") and any(flag.text == "oauth_token" or flag.dynamic for flag in flags)
+
+
+def has_short_option(text: str, letter: str) -> bool:
+    """Whether the word TEXT gives the one-letter option LETTER, alone (-t) or in a cluster of them (-at)."""
+    return bool(SHORT_OPTIONS.fullmatch(text)) and letter in text[1:]
+
+
+def gh_command_indexes(args: list[Word], count: int) -> list[int]:
+    """Indexes in ARGS of gh's first COUNT command words (`pr`, `comment`), found the way gh's CLI library
     (cobra) finds them: a flag without "=" takes the next word as its value, except -h and --help, so
-    `gh pr -R owner/repo comment` is a comment; "--" ends the search."""
+    `gh pr -R owner/repo comment` is a comment; "--" ends the search. Past the second, a word may be an argument
+    (`gh pr view 5`): only a subgroup's (`gh repo license list`) is a command word."""
     found: list[int] = []
     index = 0
-    while index < len(args) and len(found) < 2:
+    while index < len(args) and len(found) < count:
         text = args[index].text
         if text == "--":
             break

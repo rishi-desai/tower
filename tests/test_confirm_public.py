@@ -131,6 +131,42 @@ ALWAYS_ASK = [
     "gh api -X PO$(echo ST) repos/a/b/issues",
     'gh api graphql -f query="$Q"',
     'gh api graphql -F query="$(cat q.graphql)"',
+    # every other gh command that isn't a known read (#59): repo, gist, workflow, secret, run, ... writes, a subgroup's
+    # write, an extension or alias, a command a newer gh may add, and a subgroup's command word from a variable
+    "gh repo delete owner/repo --yes",
+    "gh repo edit owner/repo --visibility public",
+    "gh gist create --public notes.txt",
+    "gh workflow run deploy.yml",
+    "gh secret set TOKEN --body x",
+    "gh repo sync --force",
+    "gh repo rename new-name",
+    "gh repo archive owner/repo --yes",
+    "gh variable set NAME --body x",
+    "gh variable delete NAME",
+    "gh ruleset create",
+    "gh cache delete --all",
+    "gh run cancel 123",
+    "gh run rerun 123",
+    "gh run delete 123",
+    "gh discussion comment 4 -b hi",
+    "gh repo deploy-key add key.pub",
+    "gh -R owner/repo secret delete TOKEN",
+    "gh extension install owner/gh-ext",
+    "gh auth refresh -s delete_repo",
+    "gh my-extension --flag",
+    "gh my-extension",
+    "gh pr frobnicate 5",
+    'gh repo license "$VERB"',
+    # gh's default co alias lives in gh's config, which can redefine it; a read that prints the auth token; a write
+    # through a group's built-in alias
+    "gh co 5",
+    "gh auth status --show-token",
+    "gh auth status -t",
+    "gh auth status -at",
+    "gh extension browse",
+    "gh config get -h github.com oauth_token",
+    'gh config get "$K" -h github.com',
+    "gh cs delete -c name",
 ]
 PR_CHANGES = [
     "gh pr create --fill",
@@ -153,6 +189,7 @@ PR_CHANGES = [
     "bash -c 'gh pr merge 5 --squash'",
     "env FOO=1 gh pr create --fill",
     "gh pr new --fill",
+    "gh pr revert 5",  # opens a PR that reverts a merged one
 ]
 PUSHES = [
     "git push",
@@ -284,6 +321,41 @@ READS = [
     # tower policy without `use` only shows the policy
     "tower policy",
     "uv run tower policy",
+    # known gh reads outside pr and issue, local gh work, a group or subgroup alone (its help), and gh's own reads
+    "gh repo view",
+    "gh repo view owner/repo --json name",
+    "gh run list --limit 5",
+    "gh run view 123 --log-failed",
+    "gh run watch 123",
+    "gh workflow list",
+    "gh gist list",
+    "gh release view v1.0.0",
+    "gh label list",
+    "gh auth status",
+    "gh repo clone owner/repo",
+    "gh pr checkout 5",
+    "gh auth status --hostname github.com",
+    # gh's built-in aliases for reads, which gh's config can't redefine
+    "gh pr ls",
+    "gh issue ls --state open",
+    "gh run ls",
+    "gh pr co 5",
+    "gh cs list",
+    "gh rs view 1",
+    "gh ext list",
+    "gh at verify artifact.zip -o owner",
+    "gh agent list",
+    "gh skills list",
+    "gh skill show owner/skill",
+    "gh repo license ls",
+    "gh repo license view mit",
+    "gh repo deploy-key list",
+    "gh repo license",
+    "gh repo",
+    "gh status",
+    "gh search prs --author @me",
+    "gh browse 5 --no-browser",
+    "gh --version",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -387,6 +459,14 @@ def bash(command: str) -> dict[str, object]:
 def test_github_writes_always_ask(tmp_path: Path, command: str, push: str) -> None:
     """Comments, reviews, issue/release/label writes and gh api writes ask in every mode."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
+
+
+@pytest.mark.parametrize(
+    "command", ["gh auth token", "gh auth status --show-token", "gh config get -h github.com oauth_token"]
+)
+def test_a_gh_command_that_prints_the_token_says_so(tmp_path: Path, command: str) -> None:
+    """A command that prints the auth token asks, and its reason says so rather than that it changes GitHub."""
+    assert "prints your GitHub auth token" in str(run_hook(tmp_path, bash(command), push="every", pr="none"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
@@ -735,6 +815,18 @@ POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bo
     ("no key: gh api write", "gh api -X POST repos/acme/widget/issues -f title=x", None, True, True, False),
     ("no key: release", "gh release create v1.0.0", None, True, True, False),
     ("no key: label", "gh label create triage", None, True, True, False),
+    # every gh command that isn't a known read asks unless every GitHub key is auto (#59)
+    ("no key: gh repo delete", "gh repo delete owner/repo --yes", None, True, True, False),
+    ("no key: gh repo edit", "gh repo edit owner/repo --visibility public", None, True, True, False),
+    ("no key: gh gist create", "gh gist create --public notes.txt", None, True, True, False),
+    ("no key: gh workflow run", "gh workflow run deploy.yml", None, True, True, False),
+    ("no key: gh secret set", "gh secret set TOKEN --body x", None, True, True, False),
+    ("no key: a gh extension", "gh my-extension --flag", None, True, True, False),
+    ("pr_writes: revert", "gh pr revert 5", None, True, False, False),
+    ("reads never ask: gh repo view", "gh repo view", None, False, False, False),
+    ("reads never ask: gh run list", "gh run list", None, False, False, False),
+    ("reads never ask: gh workflow list", "gh workflow list", None, False, False, False),
+    ("reads never ask: gh gist list", "gh gist list", None, False, False, False),
     ("no key: gh subcommand from a variable", "gh pr $action 5", None, True, True, False),
     ("unchecked: a shell reading a pipe", "echo 'git push' | bash", None, True, True, False),
     ("unchecked: an unclosed quote", "git push 'origin", None, True, True, False),

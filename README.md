@@ -383,9 +383,9 @@ agent must ask you instead of trying another way. The prompt names the profile: 
 | A merge landing on any other branch (an integration branch, or a stack based on one) | `merge_to_branch` | asks | — | — |
 | `gh pr` / `gh issue` comment, `gh pr review` | `comments` | asks | asks | — |
 | `gh issue` create, edit, close, reopen, delete, transfer, … | `issue_writes` | asks | — | — |
-| `gh pr` create, edit, ready, close, reopen, update-branch (an edit with `--base` also needs `merge_to_main`) | `pr_writes` | asks | — | — |
+| `gh pr` create, edit, ready, close, reopen, update-branch, revert (an edit with `--base` also needs `merge_to_main`) | `pr_writes` | asks | — | — |
 | Removing finished worktrees: `tower clean` (never `tower clean --dry-run`) | `cleanup` | asks | asks | — |
-| Other `gh api` writes, `gh release` / `gh label` writes, `gh pr lock`/`unlock`, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
+| Every other `gh` command that isn't a known read (`gh release`, `label`, `repo`, `gist`, `secret`, `variable`, `workflow`, `run`, `cache` writes, an extension or alias, anything a newer `gh` adds), other `gh api` writes, `gh pr lock`/`unlock`, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
 | Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs) | none: ask unless every profile a repo can get lets everything through | asks | asks | — (asks if a `[repos]` entry is stricter) |
 | **Safety floor:** any edit to the policy file, `tower.conf`, a rule file or a `CLAUDE.local.md`; Bash commands naming a rule file, writing `tower.conf` or anything in `~/.claude/tower/` (reading with `cat`, `grep`, `tail` is fine), running `tower policy use` (or code using tower's policy module) or tower's `setup.sh` (other than `--dry-run`), which rewrites `tower.conf` and sets the profile | always | asks | asks | asks |
 
@@ -397,8 +397,9 @@ say, it asks unless both keys are `auto`. A repo is judged by every remote it ha
 profile wins), so re-pointing or adding a remote can only tighten it. A command that reaches another repo gets the
 stricter of that repo's policy and this one's, key by key: a `gh` command naming one (`-R owner/repo`, a PR or issue
 URL, a `gh api repos/OWNER/REPO/...` endpoint), a `git push` to a URL, `git -C`, or a `cd` into another checkout. A
-repo or folder from a variable gets `work`. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs,
-GraphQL queries) never ask.
+repo or folder from a variable gets `work`. Reads never ask: the `gh` commands the hook knows only read or work
+locally (`view`, `list`, `status`, `diff`, `checks`, `gh repo clone`, `gh pr checkout`, ...; the list is
+`GH_READS` in `confirm-public.py`), `gh api` GETs and GraphQL queries.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
