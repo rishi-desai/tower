@@ -145,6 +145,17 @@ def test_a_relative_worktrees_folder_stops_before_anything_changes(home: Path) -
     assert not (home / ".claude" / "tower.conf").exists()
 
 
+def test_a_tower_conf_that_isnt_utf8_stops_setup_and_names_the_line(home: Path) -> None:
+    conf = home / ".claude" / "tower.conf"
+    conf.write_bytes(b"wip_limit=3\nprojects_dir=/Users/caf\xe9/vault\n")
+
+    proc = setup(home)
+
+    assert proc.returncode == 1
+    assert proc.stderr == f"setup.sh: {conf} isn't UTF-8 text (line 2); fix or remove it, then run setup.sh again\n"
+    assert conf.read_bytes() == b"wip_limit=3\nprojects_dir=/Users/caf\xe9/vault\n"
+
+
 def test_a_dry_run_doesnt_create_the_worktrees_folder(home: Path) -> None:
     proc = setup(home, "--dry-run", "--worktrees-dir", str(home / "worktrees"))
 

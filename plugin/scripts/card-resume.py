@@ -10,8 +10,9 @@ as an event by record-event.py, the next hook in the same list; this one has tow
 and the body kept, so the card's Needs you section keeps the old question until the session rewrites the card itself.
 
 Stays quiet (exit 0, no output) whenever there's nothing to do or it can't tell: not a git repo, tower not set up on
-this machine, no card, or a card that doesn't say needs-you. A core that won't import, or a card it can't write, is
-said on stderr (Claude Code's debug log), still with exit 0, so the user's answer always goes through.
+this machine, no card, or a card that doesn't say needs-you. A core that won't import, a tower.conf that can't be read,
+or a card it can't write, is said on stderr (Claude Code's debug log), still with exit 0, so the user's answer always
+goes through.
 """
 
 from __future__ import annotations
@@ -41,6 +42,9 @@ def main() -> int:
         return 0
     try:
         path = card.resume(Path(event.get("cwd") or os.getcwd()))
+    except ledger.ConfUnreadable as error:
+        print(f"tower: card-resume: {error}", file=sys.stderr)
+        return 0  # the hub's scan and `tower state` report it too
     except (NotARepo, ledger.LedgerError):
         return 0  # not a repo, or tower isn't set up on this machine
     except OSError as error:

@@ -48,8 +48,8 @@ _Avoid_: board, tracker
 
 **Machine config** (`tower.conf`):
 This machine's own settings, written by setup.sh: where the vault's projects live, which project folder a repo maps
-to, the WIP limit. One that can't be read, or isn't UTF-8 text, never passes for an empty one: a report notes why and
-goes on without its settings, and a command that needs the ledger stops and says why.
+to, the worktrees folder, the WIP limit. One that can't be read, or isn't UTF-8 text, is broken, never mistaken for a
+machine that was never set up: tower says why wherever it needed it.
 _Avoid_: config (alone: it reads as runtime config), settings
 
 **Event**:

@@ -20,6 +20,10 @@ class LedgerError(Exception):
     """The ledger can't be found: no projects_dir in the config, or that folder doesn't exist."""
 
 
+class ConfUnreadable(LedgerError):
+    """tower.conf exists but can't be read or isn't UTF-8: a broken config to report, unlike a machine never set up."""
+
+
 def conf_path() -> Path:
     """tower's per-machine config: $TOWER_CONF if set, else ~/.claude/tower.conf."""
     return Path(os.environ.get("TOWER_CONF") or Path.home() / ".claude" / "tower.conf")
@@ -28,19 +32,19 @@ def conf_path() -> Path:
 def read_conf(path: Path) -> dict[str, str]:
     """The config's `key=value` lines as a dict; the last line for a key wins. It's parsed, never run, so a typo in it
     can't run as a command. Values may hold spaces (iCloud paths do). A missing file is an empty config; one that
-    exists but can't be read, or isn't UTF-8 (LedgerError names the line), raises LedgerError, so it never passes for a
-    machine that was never set up."""
+    exists but can't be read, or isn't UTF-8 (the error names the line), raises ConfUnreadable, so it never passes for
+    a machine that was never set up."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return {}
     except OSError as error:
-        raise LedgerError(f"can't read {path} ({error.strerror or type(error).__name__})") from error
+        raise ConfUnreadable(f"can't read {path} ({error.strerror or type(error).__name__})") from error
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
         line_number = data.count(b"\n", 0, error.start) + 1
-        raise LedgerError(f"{path} isn't UTF-8 text (line {line_number})") from error
+        raise ConfUnreadable(f"{path} isn't UTF-8 text (line {line_number})") from error
     conf: dict[str, str] = {}
     for line in text.splitlines():
         key, sep, value = line.partition("=")
