@@ -212,4 +212,4 @@ sys.exit(0 if any(p.get("id") == sys.argv[1] for p in plugins) else 1)' "$1"
 fi
 
 echo
-if [ "$dry_run" -eq 1 ]; then echo "Dry run: nothing was changed."; else echo "Set up. Restart Claude Code, open a repo, and run /tower:hub (or /tower:adopt on a messy one)."; fi
+if [ "$dry_run" -eq 1 ]; then echo "Dry run: nothing was changed."; else echo "Set up. Restart Claude Code, open a repo, and run /tower:hub (it adopts a messy one first)."; fi

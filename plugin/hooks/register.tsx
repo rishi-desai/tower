@@ -5,7 +5,7 @@ import type { GithubSection, Scan, StateSession, StateWorktree, Status, TowerSta
 
 // The pane mod: tower's hub report as a live pane beside the chat, a status-line summary, a toast when something new
 // needs the user, and in each worker a "0: back to the hub" band. Read-only by design: it only ever runs tower's own
-// `tower state --json` (through this plugin's run-tower.py) and hub-scan.sh (for GitHub only), `orca terminal
+// `tower state --json` and `tower scan` (for GitHub only), both through this plugin's run-tower.py, `orca terminal
 // list/switch` and `orca worktree ps` (which only change the tab Orca shows), and reads
 // the ledger's backlog file. These commands don't go through the Bash tool, so tower's approval hook never sees them;
 // nothing here may write anything.
@@ -16,7 +16,7 @@ const LOCAL_EVERY_MS = 30_000 // cards, worktrees, live sessions: cheap, so ofte
 // this paints over it with Ghostty's background (~/.config/ghostty/config). '' keeps Claude Code's fill.
 const PANE_BACKGROUND = '#0e0e0e'
 const ISSUES_SHOWN = 10 // the GitHub list stays short: the newest ten, then "+ N more"
-const HUB_SCAN_ISSUE_LIMIT = 30 // hub-scan.sh's `gh issue list --limit`: a full list may mean there are more
+const SCAN_ISSUE_LIMIT = 30 // `tower scan`'s `gh issue list --limit`: a full list may mean there are more
 const scanAtom = atom({ plugin: 'tower', key: 'scan' } as const, null)
 const parkAtom = atom({ plugin: 'tower', key: 'park' } as const, 0) // bumped to clear the park field
 const githubAtom = atom({ plugin: 'tower', key: 'github' } as const, null)
@@ -62,12 +62,12 @@ export function worktreeAt(state: TowerState, cwd: string): StateWorktree | unde
     .find(w => w.path !== '' && (cwd === w.path || cwd.startsWith(`${w.path}/`)))
 }
 
-// ---------- reading hub-scan.sh's GitHub section ----------
+// ---------- reading `tower scan`'s GitHub section ----------
 
 export type Issue = { number: string; title: string; isReady: boolean }
 export type Github = { prs: string[]; issues: Issue[]; note: string }
 
-/** Lines of one "== NAME ==" section of hub-scan.sh's report, without its header. */
+/** Lines of one "== NAME ==" section of `tower scan`'s report, without its header. */
 function sectionLines(text: string, name: string): string[] {
   const lines = text.split('\n')
   const start = lines.findIndex(line => line.startsWith(`== ${name}`))
@@ -95,7 +95,7 @@ export function parseGithub(lines: string[]): Github {
 
 /**
  * The issue rows the pane draws: every ready-for-agent issue (each must stay startable), then the newest others until
- * there are ISSUES_SHOWN rows. Within each group, the newest first, as hub-scan.sh lists them.
+ * there are ISSUES_SHOWN rows. Within each group, the newest first, as `tower scan` lists them.
  */
 export function issuesToShow(issues: Issue[]): Issue[] {
   const ready = issues.filter(i => i.isReady)
@@ -302,7 +302,7 @@ async function refresh($: EngineInterface, withGithub: boolean): Promise<void> {
     await update($, scanAtom, () => ({ ok: false, state: null, error: `scan didn't run: ${String(error).slice(0, 200)}`, at }))
     $.ui.status(undefined)
   })
-  // hub-scan.sh is slow (it runs every section, GitHub's included): run it beside the local scan, not after it.
+  // `tower scan` is slow (it runs every section, GitHub's included): run it beside the local scan, not after it.
   const github = withGithub ? loadGithub($).catch(error => $.ui.toast(`Couldn't load GitHub: ${String(error).slice(0, 120)}`)) : null
   await Promise.all([local, github])
 }
@@ -357,10 +357,10 @@ async function readBacklog($: EngineInterface, ledger: string | null): Promise<v
   if (JSON.stringify(before) !== JSON.stringify(backlog)) await update($, backlogAtom, () => backlog)
 }
 
-/** Runs hub-scan.sh in full for its GitHub section: the same PR and issue lines the hub reads. */
+/** Runs `tower scan` in full for its GitHub section: the same PR and issue lines the hub reads. */
 async function loadGithub($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
-  const ran = await $.process.run(['bash', `${$.plugin.root}/skills/hub/scripts/hub-scan.sh`], { timeoutMs: 90_000 })
+  const ran = await $.process.run(['python3', '-I', `${$.plugin.root}/scripts/run-tower.py`, 'scan'], { timeoutMs: 90_000 })
   if (ran.exitCode !== 0) {
     $.ui.toast(`Couldn't load GitHub: ${lastLine(ran.stderr, ran.exitCode).slice(0, 120)}`)
     return
@@ -555,7 +555,7 @@ export const register: Register = on => {
           const [number = '', ...words] = prLine(pr).split(' ')
           return bullet(`pr-${number}`, ` ${number}`, words.join(' '))
         })}
-        {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length}${issues.length >= HUB_SCAN_ISSUE_LIMIT ? '+' : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
+        {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length}${issues.length >= SCAN_ISSUE_LIMIT ? '+' : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
         {shownIssues.map(issue => (
           <Box key={`issue-${issue.number}`} flexDirection="row" columnGap={1}>
             <Box flexShrink={0}>
@@ -567,7 +567,7 @@ export const register: Register = on => {
             <Text wrap="wrap">{issue.title}</Text>
           </Box>
         ))}
-        {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= HUB_SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
+        {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
         {storedGithub && <Text italic>{`as of ${clockTime(storedGithub.at)}`}</Text>}
 
         {gap()}

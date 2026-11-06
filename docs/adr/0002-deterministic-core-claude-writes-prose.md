@@ -14,7 +14,7 @@ core depend on this shape: add fields, don't rename or remove them.
 
 The core is standard library only, because the plugin's hooks import it straight from the plugin through the
 `plugin/lib/tower` symlink, with nothing installed. For the same reason the modules a hook imports stay importable
-on Python 3.9, the `python3` a stock Mac gives a hook. Since T06 (#24) the whole core does, because hub-scan.sh (and,
+on Python 3.9, the `python3` a stock Mac gives a hook. Since T06 (#24) the whole core does, because the hub's scan (and,
 since T11 (#29), the pane) runs the `tower` CLI from the plugin the same way (`plugin/scripts/run-tower.py`); only the
 installed dev command needs 3.11+.
 

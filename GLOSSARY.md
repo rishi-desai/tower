@@ -14,6 +14,12 @@ The one session in a repo's main checkout that reports what every worker is doin
 never edits code or reads transcripts.
 _Avoid_: control session, dashboard (that is a separate view)
 
+**Adopt mode**:
+The hub's flow for a repo with work in flight that hasn't been brought under tower: one plan that gives every piece
+of work its own worktree and card, run one approved step at a time. The hub switches to it when `tower scan` says
+`ADOPT: yes` (most worktrees, at least two, have no card, or the main checkout has uncommitted work or other sessions).
+_Avoid_: onboarding, the adopt skill (it is part of the hub since T19)
+
 ## State
 
 **Card**:
