@@ -396,10 +396,14 @@ merge keys differ and the merge is the whole command (`gh pr merge 5 --squash --
 say, it asks unless both keys are `auto`. A repo is judged by every remote it has (fetch and push URLs; the strictest
 profile wins), so re-pointing or adding a remote can only tighten it. A command that reaches another repo gets the
 stricter of that repo's policy and this one's, key by key: a `gh` command naming one (`-R owner/repo`, a PR or issue
-URL, a `gh api repos/OWNER/REPO/...` endpoint), a `git push` to a URL, `git -C`, or a `cd` into another checkout. A
-repo or folder from a variable gets `work`. Reads never ask: the `gh` commands the hook knows only read or work
-locally (`view`, `list`, `status`, `diff`, `checks`, `gh repo clone`, `gh pr checkout`, ...; the list is
-`GH_READS` in `confirm-public.py`), `gh api` GETs and GraphQL queries.
+URL, a `gh api repos/OWNER/REPO/...` endpoint), a `git push` to a URL, `git -C`, a `cd` into another checkout, or a
+command run there with `env -C` (inside `env -S` too) or `sudo -D`. A repo or folder from a variable, and git config
+the hook can't read (`GIT_CONFIG_*`, `HOME` or `XDG_CONFIG_HOME` set on the line, an `include.path`), get `work`, for
+`gh` and `tower merge` too; under `push = "force"`, such config, any `--config-env`, `-c remote.<name>.mirror` or
+`.push`, `-c help.autocorrect`, or a `-c alias.*` that runs shell code (`!`) or sets git's options, makes a push count
+as a force push. Reads never ask: the `gh` commands the hook knows only read or work locally (`view`, `list`,
+`status`, `diff`, `checks`, `gh repo clone`, `gh pr checkout`, ...; the list is `GH_READS` in `confirm-public.py`),
+`gh api` GETs and GraphQL queries.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
