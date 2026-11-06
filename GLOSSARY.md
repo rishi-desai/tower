@@ -41,6 +41,12 @@ _Avoid_: log entry, message
 The machine-wide, append-only record of every event across all repos. Events are added, never changed.
 _Avoid_: history, audit log
 
+**Known repo**:
+A repo `tower state --all` covers: one with events in this machine's event log, the repo it runs in, or a Ledger
+folder in this machine's vault. A Ledger folder with cards that no such checkout maps to is listed as cards only (what
+its cards claim, no worktree facts).
+_Avoid_: tracked repo, project (that is the vault folder, which can be named differently)
+
 **Effective state**:
 The one status tower gives a worktree after weighing every fact it has (card, live sessions, events, git, PR), so the
 hub and the pane always agree. It can differ from what the card says.

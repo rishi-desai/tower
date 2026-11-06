@@ -217,10 +217,17 @@ class Report:
         return sum(1 for _, v in self.worktrees if v.holds_slot)
 
 
-def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> Report:
+def gather(
+    repo_dir: Path,
+    with_pr: bool = False,
+    now: float | None = None,
+    agents_read: tuple[list[object] | None, str] | None = None,
+) -> Report:
     """Gather every fact about repo_dir's worktrees and decide each one's effective state.
 
-    Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR.
+    Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR. agents_read
+    is sessions.read_agents()'s result (the list, or None and why) when the caller already has it (`tower state --all` reads it once for every repo);
+    None reads it here.
     """
     now = time.time() if now is None else now
     worktrees = list_worktrees(repo_dir)
@@ -238,8 +245,8 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         notes.append(ledger_note)
 
     paths = [os.path.realpath(w.path) for w in worktrees]
-    agents, live_note = sessions.read_agents()
-    live = None if agents is None else live_sessions(agents, paths)
+    listed, live_note = sessions.read_agents() if agents_read is None else agents_read
+    live = None if listed is None else live_sessions(listed, paths)
     sessions_source = "live"
     if live is None:
         notes.append(live_note)
@@ -305,7 +312,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         orphan_cards=orphan_cards(ledger_folder, seen_cards, notes) if ledger_folder is not None else [],
         sessions_source=sessions_source,
         notes=notes,
-        agents=agents,
+        agents=listed,
     )
 
 
