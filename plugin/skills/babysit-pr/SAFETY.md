@@ -16,6 +16,11 @@ SHA-256 of the upstream files as reviewed:
   docstring line). Reason: `ready` waits for the Greptile/Macroscope review bots, which neither the
   personal nor the work repos use, so it would never finish.
 - `SKILL.md`: added `effort: high` to the frontmatter (tower sets effort per skill).
+- `SKILL.md` (T08, #50; recorded here later): the approval rule writes the status card with `tower card write
+  --status needs-you --reason "approve: <action>"` instead of setting it by hand.
+- `SKILL.md` (stacked PRs, 2026-11-06): a "Merge with `tower merge`" local rule. `gh pr merge` can't merge a PR in a
+  GitHub stack; `tower merge` (src/tower/merge.py) merges stacked and unstacked PRs, and the approval hook judges it
+  like `gh pr merge`.
 
 ## Local patches (2026-11-06)
 
@@ -24,7 +29,7 @@ SHA-256 of the upstream files as reviewed:
   written by the user, the only author. Don't re-apply the note when pulling a newer upstream.
 
 SHA-256 after patching:
-- `babysit-pr/SKILL.md` 516dd59552ab6a26ca07b317f8ae83a7f1be488cbb2042a8c2ba579f063f8365
+- `babysit-pr/SKILL.md` 5af187ec41e1fc58b15384508c9a4ce7fd9f100f2009654138f3417129ee7cf5
 - `babysit-pr/scripts/pr-wait` 6ae4ef3f9761a5223e454d0f32a174919bd72711bc315992c5e842485009f229
 - `leaving-pr-comments/SKILL.md` cc1996158a8349cd153d03fa4c55faeb69eeb8825c5e9dcef312f2daa6840b90
 
@@ -49,7 +54,8 @@ PreToolUse hook that forces an approval prompt for GitHub writes and pushes (see
 - **Push** fixes for real CI failures and review findings, and **rebase + push** when the branch falls behind.
 - **Reply to and resolve** review-bot comments it judges not worth fixing, with a written reason.
   `leaving-pr-comments` keeps each one short and direct and checks it for secrets.
-- **Merge only if you explicitly asked**; otherwise it reports "ready". Asks before closing an obsolete PR.
+- **Merge only if you explicitly asked**, with `tower merge`; otherwise it reports "ready". Asks before closing an
+  obsolete PR.
 
 On the work repo, those replies and pushes are visible to your team. With the approval hook installed, each one
 needs your OK first.

@@ -13,3 +13,5 @@ The hook runs under macOS's Python 3.9, which has no `tomllib`, so the core read
 - **JSON**: the standard library reads it everywhere, but it has no comments, and the file is meant to be edited by hand.
 - **Treat every merge as a merge into main**: no network call, but `merge_to_branch` would never apply, and the stacked-PR flow (T12) needs it.
 - **Infer the base from git** (the branch's upstream or git-spice's parent): only correct for the current branch, and not what GitHub will actually merge into.
+
+Amended by ADR 0005: the base lookup reads `gh api repos/OWNER/REPO/pulls/N` instead of `gh repo view`, and a PR in a GitHub stack is judged by the stack's base, where it lands.

@@ -28,7 +28,7 @@ Write it so I don't need a follow-up question; when that and brevity conflict, c
 
 Before anything other people can see — a PR or issue comment, a reply, resolving a thread, opening/editing/closing/merging a PR, an issue change, a push — show me the exact text or change first. A hook will also ask me to approve the command; if I decline, don't try another way, ask me.
 
-Exception: what tower's policy for this repo lets through without asking (the `tower policy for this repo` line at the start of the session lists it) needs no OK from me first: just do it. When it lets your PR's merge through, squash-merge your own PR once `/code-review` passes and its checks are green. Everything it says asks still needs my OK, and never change tower's policy, `tower.conf` or rule files yourself (`tower policy use` is mine to run).
+Exception: what tower's policy for this repo lets through without asking (the `tower policy for this repo` line at the start of the session lists it) needs no OK from me first: just do it. When it lets your PR's merge through, merge your own PR (squash a single-ticket PR; use a merge commit for a PR in a stack or one whose head is an integration branch) once both reviews pass (`mattpocock-skills:code-review` since `origin/<base>`, then the built-in `/code-review high origin/<base>...HEAD`) and its checks are green. Everything it says asks still needs my OK, and never change tower's policy, `tower.conf` or rule files yourself (`tower policy use` is mine to run).
 
 ## Things I never want
 

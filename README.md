@@ -181,16 +181,29 @@ worktree, never on main.
 
 ### Shipping
 
-1. The worker reviews its own work before the PR, because the kickoff prompt tells it to: Matt Pocock's
-   `mattpocock-skills:code-review` (named in full: `/implement` asks for plain "code-review", which can resolve to the built-in one), then the built-in `/code-review high` (`xhigh` if it
-   touches security). Without the kickoff, type those yourself.
+1. The worker reviews its own work before the PR, because the kickoff prompt tells it to, both reviews on exactly
+   its branch's commits against the PR's base: Matt Pocock's `mattpocock-skills:code-review` since `origin/<base>`
+   (named in full: `/implement` asks for plain "code-review", which can resolve to the built-in one), then the
+   built-in `/code-review high origin/<base>...HEAD` (`xhigh` if it touches the approval hook, the policy or other
+   security code). Without the kickoff, type those yourself.
 2. It opens the PR: it drafts the title and description and asks before creating it.
 3. It babysits the PR (the kickoff says so; otherwise say **"babysit the PR"**). It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
 4. When checks are green, its card says `done` with the PR number. You merge.
 
 When the repo's policy lets the merge through without asking (`merge_to_main = "auto"`, or `merge_to_branch` for a
-PR into a stack or integration branch), steps 2–4 collapse: once `/code-review` passes, the worker opens the PR and
-squash-merges it itself after the checks pass, with no prompts and no babysitting. The hub's kickoff line says so.
+PR that lands on an integration branch), steps 2–4 collapse: once both reviews pass, the worker opens the PR and
+merges it itself with `tower merge` after the checks pass, with no prompts and no babysitting. The hub's
+kickoff line says so.
+
+**Stacked PRs.** When a stack of PRs is submitted with git-spice or `gh stack`, GitHub groups them into a stack and
+refuses `gh pr merge` for them. Workers merge with `tower merge [PR]` (`python3 -I <plugin>/scripts/run-tower.py merge
+5`), which handles every kind: a ticket's PR with `gh pr merge --squash --delete-branch` as before, a stacked one
+through GitHub's asynchronous merge API, from the bottom, one PR per run. It uses a merge commit for a stacked PR,
+chained PRs (others based on its branch) and an integration branch's PR (`integration/a-plus` → `main`, whose branch it
+keeps), so commits other branches hold survive. A branch is deleted only once no open PR is based on it: deleting it
+first closes those PRs. On chained PRs, move the PR above to the next base (`tower merge` prints the `gh pr edit`
+command) before merging it. Merging a stacked PR also merges every PR below it, onto the stack's base,
+so the policy judges it by that branch: a PR based on `feat1` in a stack on `main` is a merge into `main`.
 Under `personal`, PRs into branches merge themselves and PRs into `main` wait for you; under `work` you approve every
 PR change.
 
@@ -232,7 +245,7 @@ PR change.
 | 3. Pick a ticket | hub | "what's next?" | — |
 | 4. Build it | new worktree, new session | "start #42": the hub runs `orca worktree create … --effort <level> --prompt <the /implement #42 … kickoff>` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
-| 6. Verify | the worktree's session | the kickoff has it run `mattpocock-skills:code-review`, then `/code-review high` (`xhigh` if it touches security) | high / xhigh |
+| 6. Verify | the worktree's session | the kickoff has it run `mattpocock-skills:code-review` since `origin/<base>`, then `/code-review high origin/<base>...HEAD` (`xhigh` if it touches the approval hook, the policy or other security code) | high / xhigh |
 | 7. Ship | same session | open the PR (asks you unless the policy says auto), then "babysit the PR"; when the policy lets the merge through, the worker merges it itself | — |
 | 8. Stop for the day | each session | `/handoff` | — |
 | Weekly | any | `/retro` to improve skills, checks, and gotchas from real failures | — |
@@ -304,7 +317,7 @@ description, or you type `/tower:<name>`.
 | `/retro` | weekly | Suggests environment fixes: checks, coding standards, gotchas. |
 | `/setup-matt-pocock-skills` | once per repo | Configures tracker and labels. **Writes files into the repo — ask first on work repos.** |
 
-**Which `/code-review`?** Several are installed. `/code-review high` (with an effort level) is Claude Code's built-in reviewer, the one the daily loop means. Matt's is `mattpocock-skills:code-review`; `/implement` asks for plain "code-review", which can resolve to the built-in one, so the hub's kickoff names Matt's in full.
+**Which `/code-review`?** Several are installed. `/code-review high` (with an effort level) is Claude Code's built-in reviewer, the one the daily loop means. Matt's is `mattpocock-skills:code-review`; `/implement` asks for plain "code-review", which can resolve to the built-in one, so the hub's kickoff names Matt's in full. Give each its range, since `origin/<base>` for Matt's and `/code-review high origin/<base>...HEAD` for the built-in: with no target the built-in reviews `@{upstream}...HEAD`, and a branch name is the branch to review, not its base (`/code-review high integration/a-plus` reviews that branch, not yours).
 
 ### Always on (not skills)
 
@@ -347,19 +360,20 @@ agent must ask you instead of trying another way. The prompt names the profile: 
 | Action | Policy key | work | personal | sandbox |
 |---|---|---|---|---|
 | `git push` | `push` | every push | force pushes, deletes, `+refspec` | never |
-| `gh pr merge` into the repo's default branch | `merge_to_main` | asks | asks | — |
-| `gh pr merge` into any other branch (a stack, an integration branch) | `merge_to_branch` | asks | — | — |
+| A merge landing on the repo's default branch: `gh pr merge`, `tower merge`, a `gh api` merge (`pulls/N/merge`, `merge-async`). A stacked PR lands on its stack's base | `merge_to_main` | asks | asks | — |
+| A merge landing on any other branch (an integration branch, or a stack based on one) | `merge_to_branch` | asks | — | — |
 | `gh pr` / `gh issue` comment, `gh pr review` | `comments` | asks | asks | — |
 | `gh issue` create, edit, close, reopen, delete, transfer, … | `issue_writes` | asks | — | — |
 | `gh pr` create, edit, ready, close, reopen, update-branch (an edit with `--base` also needs `merge_to_main`) | `pr_writes` | asks | — | — |
 | Removing finished worktrees (`tower clean`, coming in T10) | `cleanup` | asks | asks | — |
-| `gh api` writes, `gh release` / `gh label` writes, `gh pr lock`/`unlock`, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
+| Other `gh api` writes, `gh release` / `gh label` writes, `gh pr lock`/`unlock`, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
 | Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs) | none: ask unless every profile a repo can get lets everything through | asks | asks | — (asks if a `[repos]` entry is stricter) |
 | **Safety floor:** any edit to the policy file, `tower.conf`, a rule file or a `CLAUDE.local.md`; Bash commands naming a rule file, writing `tower.conf` or anything in `~/.claude/tower/` (reading with `cat`, `grep`, `tail` is fine), running `tower policy use` (or code using tower's policy module) or tower's `setup.sh` (other than `--dry-run`), which rewrites `tower.conf` and sets the profile | always | asks | asks | asks |
 
-For a merge, the hook asks `gh` which branch the PR goes into (`gh pr view`, then `gh repo view` for the default
-branch), with the same PR and `-R` the merge uses, but only when the two merge keys differ and the merge is the
-whole command (`gh pr merge 5 --squash --delete-branch`, nothing chained before it). Otherwise, or when `gh` can't
+For a merge, the hook asks `gh` where the PR lands (`gh pr view` for the PR, then `gh api repos/OWNER/REPO/pulls/N`
+for its base, its stack and the default branch), with the same PR and `-R` the merge uses, but only when the two
+merge keys differ and the merge is the whole command (`gh pr merge 5 --squash --delete-branch` or
+`python3 -I <plugin>/scripts/run-tower.py merge 5`, nothing chained before it). Otherwise, or when `gh` can't
 say, it asks unless both keys are `auto`. A repo is judged by every remote it has (fetch and push URLs; the strictest
 profile wins), so re-pointing or adding a remote can only tighten it. A command that reaches another repo gets the
 stricter of that repo's policy and this one's, key by key: a `gh` command naming one (`-R owner/repo`, a PR or issue

@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -135,6 +136,13 @@ PR_CHANGES = [
     "gh pr create --fill",
     "gh pr edit 5 --base main",
     "gh pr merge 5 --squash --delete-branch",
+    # tower merge (stacked PRs need it) and gh api's REST merges are merges too, judged like gh pr merge
+    "python3 -I /opt/tower/plugin/scripts/run-tower.py merge 5",
+    "tower merge",
+    "bash -c 'tower merge 5'",
+    "env NO_COLOR=1 tower merge 5",
+    "gh api -X PUT repos/a/b/pulls/5/merge-async -f merge_method=squash -f merge_action=direct_merge",
+    "gh api --method PUT /repos/a/b/pulls/5/merge -f merge_method=squash",
     "gh pr close 5",
     "gh pr reopen 5",
     "gh pr ready 5",
@@ -640,8 +648,18 @@ def test_random_commands_never_crash_or_hang() -> None:
 # the code: work asks for everything; personal asks for force pushes, merges into the default branch (and edits
 # that can retarget a PR there) and comments; sandbox asks for nothing. Writes no single key covers (gh api,
 # releases, labels) and commands that can't be checked ask unless nothing else does.
-POLICY_MATRIX = [
-    # (id, command, base gh reports for a merge or None, asks in work, personal, sandbox)
+RUN_TOWER = "/Users/x/.claude/plugins/tower/plugin/scripts/run-tower.py"
+T = f"python3 -I {RUN_TOWER}"
+M = MERGE_ASYNC = "repos/acme/widget/pulls/5/merge-async"
+ASKS = (True, True, False)  # asks in work and personal, not sandbox
+NEVER = (False, False, False)
+# tower merge from interpreter code: the subcommand from argv, run-tower.py through runpy, code with no spaces
+ARGV_CODE = "python3 -c 'from tower import cli; import sys; cli.main(sys.argv[1:])' merge 5"
+RUNPY_CODE = """python3 -I -c 'import runpy; runpy.run_path("/x/scripts/run-tower.py", run_name="__main__")' merge 5"""
+TIGHT_CODE = "python3 -c \"__import__('tower.cli').cli.main(['merge','5'])\""
+POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bool]] = [
+    # (id, command, base gh reports for a merge (with its stack's base for a stacked PR) or None, asks in work,
+    # personal, sandbox)
     ("push: plain", "git push origin feat", None, True, False, False),
     ("push: force", "git push --force origin feat", None, True, True, False),
     ("push: delete", "git push origin --delete old", None, True, True, False),
@@ -660,6 +678,41 @@ POLICY_MATRIX = [
     ("merge: not the whole command", "gh pr checks 5 && gh pr merge 5 --squash", "feat-base", True, True, False),
     ("merge: an unknown flag", "gh pr merge 5 --squash --frobnicate", "feat-base", True, True, False),
     ("merge: PR from a variable", 'gh pr merge "$PR" --squash', "feat-base", True, True, False),
+    # tower merge, the workers' merge path (T = python3 -I <plugin>/scripts/run-tower.py), is judged like gh pr merge
+    ("merge_to_main: tower merge", f"{T} merge 5", "main", True, True, False),
+    ("merge_to_branch: tower merge", f"{T} merge 5", "integration/a-plus", True, False, False),
+    ("merge_to_branch: tower merge, this branch's PR", "tower merge", "integration/a-plus", True, False, False),
+    ("merge: tower merge not the whole command", f"git fetch && {T} merge 5", "feat-base", True, True, False),
+    ("merge: tower merge through another launcher", "uv run tower merge 5", "feat-base", True, True, False),
+    ("merge: tower merge of a PR from a variable", f'{T} merge "$PR"', "feat-base", True, True, False),
+    ("merge: tower with a subcommand from a variable", 'tower "$CMD" 5', "feat-base", True, True, False),
+    ("merge: tower merge in python code", "python3 -c 'from tower import cli; cli.main([\"merge\"])'", "x", *ASKS),
+    ("merge: tower merge in python code, merge from argv", ARGV_CODE, "x", *ASKS),
+    ("merge: run-tower.py through runpy", RUNPY_CODE, "x", *ASKS),
+    ("merge: tower merge in python code with no spaces", TIGHT_CODE, "x", *ASKS),
+    # words that only name tower and merge run no tower merge
+    ("local: git merge in a folder named tower", "git -C /code/tower merge --ff-only origin/main", None, *NEVER),
+    ("local: echo tower merge", "echo tower merge", None, *NEVER),
+    (
+        "local: a card whose reason names tower merge",
+        f'{T} card write --reason "approve: tower merge 57"',
+        None,
+        *NEVER,
+    ),
+    # a stacked PR lands on its stack's base (GitHub merges every PR below it too), whatever its own base says
+    ("merge_to_main: a stacked PR", f"{T} merge 5", ("feat1", "main"), True, True, False),
+    ("merge_to_main: gh pr merge of a stacked PR", "gh pr merge 5 --auto -s", ("feat1", "main"), True, True, False),
+    ("merge_to_branch: a stack on another branch", "tower merge 5", ("feat1", "release"), True, False, False),
+    # gh api's merge endpoints (M = repos/acme/widget/pulls/5/merge-async): merge-async and the synchronous merge
+    ("merge_to_main: gh api merge-async", f"gh api -X PUT {M} -f merge_method=squash", "main", True, True, False),
+    ("merge_to_branch: gh api merge-async", f"gh api -X PUT {M} -f merge_method=rebase", "dev", True, False, False),
+    ("merge_to_main: gh api merge-async, stacked", f"gh api -XPUT {M}", ("feat1", "main"), True, True, False),
+    ("merge_to_branch: gh api merge", "gh api --method=put repos/acme/widget/pulls/5/merge", "dev", True, False, False),
+    ("merge_to_branch: gh api merge, fields (POST)", f"gh api {M} -f merge_method=squash", "dev", True, False, False),
+    ("merge: gh api merge, gh's placeholders", "gh api -X PUT repos/{owner}/{repo}/pulls/5/merge", "x", *ASKS),
+    ("merge: gh api merge on another host", f"gh api --hostname ghe.example.com -X PUT {M}", "x", True, True, False),
+    ("unchecked: gh api merge, PR from a variable", 'gh api -X PUT "repos/acme/widget/pulls/$N/merge"', None, *ASKS),
+    ("reads never ask: a merge-async's status", f"gh api {M}/0b5e-uuid", None, False, False, False),
     ("no key: gh api write", "gh api -X POST repos/acme/widget/issues -f title=x", None, True, True, False),
     ("no key: release", "gh release create v1.0.0", None, True, True, False),
     ("no key: label", "gh label create triage", None, True, True, False),
@@ -675,10 +728,11 @@ import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_GH_LOG"], "a") as log:
     log.write(json.dumps(args) + "\\n")
-if args[:2] == ["pr", "view"] and os.environ.get("FAKE_GH_BASE"):
-    print(os.environ["FAKE_GH_BASE"] + " https://github.com/acme/widget/pull/5")
-elif args[:2] == ["repo", "view"]:
-    print("main")
+base, stack = os.environ.get("FAKE_GH_BASE"), os.environ.get("FAKE_GH_STACK") or None
+if args[:2] == ["pr", "view"] and base:
+    print("https://github.com/acme/widget/pull/5")
+elif args[:4] == ["api", "--hostname", "github.com", "repos/acme/widget/pulls/5"] and base:
+    print(json.dumps([base, "main", stack]))
 else:
     sys.exit(1)
 """
@@ -706,12 +760,15 @@ def in_widget(widget: Path, command: str) -> dict[str, object]:
     return {**bash(command), "cwd": str(widget)}
 
 
-def widget_env(widget: Path, base: str | None) -> dict[str, str]:
-    """The hook's environment for the widget fixture: the fake gh first on PATH, reporting BASE for a PR."""
+def widget_env(widget: Path, base: str | tuple[str, str] | None) -> dict[str, str]:
+    """The hook's environment for the widget fixture: the fake gh first on PATH, reporting BASE for a PR, given as
+    (its base, its stack's base) for a stacked PR."""
+    base, stack = base if isinstance(base, tuple) else (base, None)
     return {
         "PATH": f"{widget.parent / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin",
         "FAKE_GH_LOG": str(widget.parent / "gh.log"),
         "FAKE_GH_BASE": base or "",
+        "FAKE_GH_STACK": stack or "",
     }
 
 
@@ -721,7 +778,7 @@ def widget_env(widget: Path, base: str | None) -> dict[str, str]:
     [pytest.param(command, base, dict(zip(PROFILES, row)), id=case) for case, command, base, *row in POLICY_MATRIX],
 )
 def test_each_key_in_each_profile_chosen_by_default_profile(
-    widget: Path, profile: str, command: str, base: str | None, expected: dict[str, bool]
+    widget: Path, profile: str, command: str, base: str | tuple[str, str] | None, expected: dict[str, bool]
 ) -> None:
     policy = f'default_profile = "{profile}"\n'
     decision = run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, base))
@@ -734,7 +791,7 @@ def test_each_key_in_each_profile_chosen_by_default_profile(
     [pytest.param(command, base, dict(zip(PROFILES, row)), id=case) for case, command, base, *row in POLICY_MATRIX],
 )
 def test_each_key_in_each_profile_chosen_by_a_repo_override(
-    widget: Path, profile: str, command: str, base: str | None, expected: dict[str, bool]
+    widget: Path, profile: str, command: str, base: str | tuple[str, str] | None, expected: dict[str, bool]
 ) -> None:
     """The session's repo (acme/widget, from its origin) picks the profile over a different default_profile. A
     command that can't be checked asks even in sandbox here: it could reach a repo the policy makes stricter."""
@@ -772,7 +829,41 @@ def test_a_merge_asks_gh_about_the_same_pr_and_repo_it_merges(widget: Path) -> N
 
     calls = [json.loads(line) for line in (widget.parent / "gh.log").read_text(encoding="utf-8").splitlines()]
     assert calls[0][:2] == ["pr", "view"] and calls[0][-3:] == ["--repo=acme/widget", "--", "7"]
-    assert calls[1][:3] == ["repo", "view", "https://github.com/acme/widget"]
+    assert calls[1][:4] == ["api", "--hostname", "github.com", "repos/acme/widget/pulls/5"]  # the PR gh found
+
+
+@pytest.mark.parametrize(
+    ("command", "view_args"),
+    [
+        (f"python3 -I {RUN_TOWER} merge 7", ["--", "7"]),
+        # a worktree path holding "tower" and "merge" is still a plain path, not interpreter code
+        ("python3 -I /code/tower/worktrees/fix-stacked-pr-merge/plugin/scripts/run-tower.py merge 7", ["--", "7"]),
+        ("tower merge", []),
+        ("gh api -X PUT repos/Acme/Widget/pulls/7/merge-async", ["--repo=Acme/Widget", "--", "7"]),
+    ],
+)
+def test_tower_merge_and_gh_api_merges_ask_gh_about_the_pr_they_merge(
+    widget: Path, command: str, view_args: list[str]
+) -> None:
+    policy = 'default_profile = "personal"\n'
+    assert not asks(run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, "dev")))
+
+    calls = [json.loads(line) for line in (widget.parent / "gh.log").read_text(encoding="utf-8").splitlines()]
+    assert calls[0] == ["pr", "view", "--json", "url", "--jq", ".url", *view_args]
+
+
+@pytest.mark.parametrize(
+    "command", [f"python3 -I {RUN_TOWER} merge 5", "gh pr merge 5 --squash", f"gh api -X PUT {MERGE_ASYNC}"]
+)
+def test_the_prompt_for_a_stacked_merge_says_it_lands_on_the_stacks_base(widget: Path, command: str) -> None:
+    decision = run_hook(
+        widget.parent,
+        in_widget(widget, command),
+        policy='default_profile = "personal"\n',
+        env=widget_env(widget, ("feat1", "main")),
+    )
+    assert decision is not None
+    assert "onto its stack's base, the default branch (merge_to_main=ask)" in str(decision["permissionDecisionReason"])
 
 
 @pytest.mark.parametrize(
@@ -812,6 +903,9 @@ def test_no_gh_lookup_when_both_merge_keys_agree(widget: Path) -> None:
         ('gh pr merge https://github.com/acme/widget/pull/5 -R "$X"', True),
         ("gh api -X POST repos/{owner}/{repo}/issues -f title=x", False),  # gh's placeholders: this repo
         ("gh api -X POST repos/acme/widget/issues -f title=x", False),
+        ("tower merge 5", False),
+        ("GH_REPO=acme/other tower merge 5", True),  # gh in tower merge reads GH_REPO too: the strictest
+        (f"env GH_HOST=ghe.example.com {T} merge 5", True),
     ],
 )
 def test_a_gh_command_naming_another_repo_gets_the_stricter_policy(
@@ -1083,3 +1177,11 @@ def test_the_prompt_names_a_stricter_profile_reached_in_another_repo(fork: Path)
     assert str(decision["permissionDecisionReason"]).startswith(
         "Public action or rule change (tower policy: personal; it reaches another repo: personal+work) — approve? "
     )
+
+
+def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
+    """The tower-merge check on interpreter code stays linear: a quadratic one ran 45 s on this, past the timeout."""
+    code = "tower " * 40_000
+    start = time.monotonic()
+    run_hook(tmp_path, bash(f"python3 -c '{code}' merge 5"), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10

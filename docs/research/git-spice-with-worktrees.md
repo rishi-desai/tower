@@ -58,6 +58,10 @@ detaches *another* live worker's worktree, and that worker's next commits land o
 
 ## Unexpected: GitHub now stacks the PRs itself
 
+> **Correction (2026-11-06, [stacked-merge.md](stacked-merge.md)):** GitHub doesn't group PRs whose bases merely
+> chain: three PRs opened one by one with `gh pr create` had `"stack": null`. The stack came from `git-spice stack
+> submit` (0.33.0). The rest of this section holds for such a stack. Tower now merges with `tower merge`.
+
 When `git-spice stack submit` opens PRs whose bases chain (`feat2 -> feat1 -> main`), GitHub groups them into a native
 stack. The REST PR object gets a `stack` field (`{"base":{"ref":"main"},"position":2,"size":3,...}`). We didn't enable
 anything in the scratch repos; whether every account gets this is unknown. From then on:
