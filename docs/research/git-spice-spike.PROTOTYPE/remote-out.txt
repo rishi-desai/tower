@@ -1,0 +1,119 @@
+$ gh repo create rishi-desai/gs-spike-30-prototype-3 --private
+https://github.com/rishi-desai/gs-spike-30-prototype-3
+[exit 0]
+$ git-spice --no-prompt repo init --trunk main --remote origin
+INF Using remote: origin
+INF Initialized repository  trunk=main
+[exit 0]
+
+=== Q3: stack submit from wt-feat1 while feat2/feat3 are checked out in other worktrees
+$ git-spice --no-prompt stack submit --fill --no-draft --nav-comment=false
+INF Created #1: https://github.com/rishi-desai/gs-spike-30-prototype-3/pull/1
+INF Created #2: https://github.com/rishi-desai/gs-spike-30-prototype-3/pull/2
+INF Created #3: https://github.com/rishi-desai/gs-spike-30-prototype-3/pull/3
+[exit 0]
+#1 feat1 -> main [OPEN]
+#2 feat2 -> feat1 [OPEN]
+#3 feat3 -> feat2 [OPEN]
+
+=== GitHub's own view of PR 2 (base + native stack membership)
+{"base":"feat1","stack":{"base":{"ref":"main","sha":"8fa5e890111f4457facae5458f181685455ad831"},"id":3142959,"number":4,"position":2,"size":3}}
+
+=== Plain gh pr merge on a stacked PR
+$ gh pr merge -R rishi-desai/gs-spike-30-prototype-3 1 --squash
+GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API. For more information, see https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously (mergePullRequest)
+[exit 1]
+
+=== Q4: merge feat1's PR; is feat2's PR retargeted?
+$ PUT pulls/1/merge-async (squash)
+merge-async: merged
+#1 feat1 -> main [MERGED]
+#2 feat2 -> main [OPEN]
+#3 feat3 -> feat2 [OPEN]
+origin/feat2 before merge b216f81, after c2553e3 (GitHub rebased it server-side)
+
+=== repo sync, default config: feat1 is checked out in wt-feat1, so it is skipped and feat2 is NOT retargeted locally
+$ git-spice --no-prompt repo sync
+INF main: pulled 1 new commit(s)
+INF feat1: #1 was merged
+WRN feat1: checked out in another worktree ($ROOT/wt-feat1), skipping deletion.
+WRN Run 'git-spice branch delete' or run 'git-spice repo sync' again from that worktree to delete it.
+INF feat2: retargeting #2 onto main...
+WRN Retarget failed  branch=feat2 error=edit pull request: updatePullRequest: UNPROCESSABLE: Cannot change the base branch because the pull request is part of a stack.
+[exit 0]
+$ git-spice --no-prompt log short --all
+    ┏━━□ feat3 (#3) [wt: $ROOT/wt-feat3] (needs push)
+  ┏━┻□ feat2 (#2) [wt: $ROOT/wt-feat2] (needs push)
+┏━┻□ feat1 (#1) [wt: $ROOT/wt-feat1] (needs restack)
+main ◀
+[exit 0]
+$ git-spice --no-prompt branch submit
+WRN Branch has stale base  branch=feat2 base=feat1
+FTL git-spice: 1 branches with stale bases were found; run 'gs repo sync' first, or use --force to submit anyway
+[exit 1]
+
+=== repo sync with spice.repoSync.detachWorktrees=true: detaches wt-feat1, deletes feat1, retargets feat2
+$ git-spice --no-prompt repo sync
+INF main: already up-to-date
+INF feat1: #1 was merged
+INF feat1: detached worktree $ROOT/wt-feat1 at 71f4240e39436a5fab116a187779c3342d04c8df.
+INF feat2: retargeted upstack onto main
+INF feat1: deleted (was 71f4240)
+INF feat2: retargeting #2 onto main...
+WRN Retarget failed  branch=feat2 error=edit pull request: updatePullRequest: UNPROCESSABLE: Cannot change the base branch because the pull request is part of a stack.
+[exit 0]
+$ git -C $ROOT/wt-feat1 status --short --branch
+## HEAD (no branch)
+[exit 0]
+$ git-spice --no-prompt log short --all
+  ┏━━□ feat3 (#3) [wt: $ROOT/wt-feat3] (needs push)
+┏━┻□ feat2 (#2) [wt: $ROOT/wt-feat2] (needs restack) (needs push)
+main ◀
+[exit 0]
+
+=== Restack + submit the git-spice way: push rejected, GitHub already rewrote the branch
+$ git-spice --no-prompt branch restack
+INF feat2: restacked on main
+[exit 0]
+$ git-spice --no-prompt branch submit
+INF Updated #2: https://github.com/rishi-desai/gs-spike-30-prototype-3/pull/2
+[exit 0]
+
+=== Recovery: take GitHub's rebased branches (same trees); git-spice agrees nothing needs restacking
+$ git-spice --no-prompt branch restack
+INF feat2: branch does not need to be restacked.
+[exit 0]
+$ git-spice --no-prompt branch restack
+INF feat3: restacked on feat2
+[exit 0]
+$ git-spice --no-prompt log short --all
+  ┏━━□ feat3 (#3) [wt: $ROOT/wt-feat3] (needs push)
+┏━┻□ feat2 (#2) [wt: $ROOT/wt-feat2]
+main ◀
+[exit 0]
+
+=== Amend feat3 and resubmit: force-pushing a stacked branch works
+$ git-spice --no-prompt branch submit
+INF Updated #3: https://github.com/rishi-desai/gs-spike-30-prototype-3/pull/3
+[exit 0]
+
+=== Merge feat2's PR, sync from the main checkout, check feat3's PR
+$ PUT pulls/2/merge-async (squash)
+merge-async: merged
+$ git-spice --no-prompt repo sync
+INF main: pulled 1 new commit(s)
+INF feat2: #2 was merged
+INF feat2: detached worktree $ROOT/wt-feat2 at a222df6e76972422eb88f48d904fce7a20b22689.
+INF feat3: retargeted upstack onto main
+INF feat2: deleted (was a222df6)
+INF feat3: retargeting #3 onto main...
+WRN Retarget failed  branch=feat3 error=edit pull request: updatePullRequest: UNPROCESSABLE: Cannot change the base branch because the pull request is part of a stack.
+[exit 0]
+#1 feat1 -> main [MERGED]
+#2 feat2 -> main [MERGED]
+#3 feat3 -> main [OPEN]
+$ git-spice --no-prompt log short --all
+┏━━□ feat3 (#3) [wt: $ROOT/wt-feat3] (needs restack)
+main ◀
+[exit 0]
+Workdir: $ROOT

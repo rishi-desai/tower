@@ -1,0 +1,135 @@
+$ git-spice --no-prompt repo init --trunk main
+WRN No remotes found. Commands that require a remote will fail.
+INF Initialized repository  trunk=main
+[exit 0]
+
+=== Build stack feat1 -> feat2 -> feat3 in the main checkout
+$ git-spice --no-prompt branch create feat1 -m feat1
+[detached HEAD 4219fa6] feat1
+ 1 file changed, 1 insertion(+)
+ create mode 100644 feat1.txt
+[exit 0]
+$ git-spice --no-prompt branch create feat2 -m feat2
+[detached HEAD 7206cb0] feat2
+ 1 file changed, 1 insertion(+)
+ create mode 100644 feat2.txt
+[exit 0]
+$ git-spice --no-prompt branch create feat3 -m feat3
+[detached HEAD 7271177] feat3
+ 1 file changed, 1 insertion(+)
+ create mode 100644 feat3.txt
+[exit 0]
+
+=== Q1: one worktree per branch; is tracking shared?
+$ git for-each-ref refs/spice
+43584e481954b9740f199f3f6d8fb9c45f19a0d5 commit	refs/spice/data
+[exit 0]
+$ git-spice --no-prompt log short
+    ┏━━□ feat3 [wt: $ROOT/wt-feat3]
+  ┏━┻■ feat2 ◀
+┏━┻□ feat1 [wt: $ROOT/wt-feat1]
+main
+[exit 0]
+$ git-spice --no-prompt branch create feat4 -m feat4
+[detached HEAD 80374c3] feat4
+ 1 file changed, 1 insertion(+)
+ create mode 100644 f4.txt
+[exit 0]
+
+=== feat4 was created inside wt-feat3; seen from the main checkout?
+$ git-spice --no-prompt log short --all
+      ┏━━□ feat4 [wt: $ROOT/wt-feat3]
+    ┏━┻□ feat3
+  ┏━┻□ feat2 [wt: $ROOT/wt-feat2]
+┏━┻□ feat1 [wt: $ROOT/wt-feat1]
+main ◀
+[exit 0]
+
+=== Q1b: a worktree made outside git-spice (what 'orca worktree create --base-branch feat1' does) is untracked until 'branch track'
+$ git-spice --no-prompt log short
+      ┏━━□ feat4 [wt: $ROOT/wt-feat3]
+    ┏━┻□ feat3
+  ┏━┻□ feat2 [wt: $ROOT/wt-feat2]
+┏━┻□ feat1 [wt: $ROOT/wt-feat1]
+main
+[exit 0]
+$ git-spice --no-prompt branch track
+INF orcaish: using base branch: feat1
+INF orcaish: tracking with base feat1
+[exit 0]
+$ git-spice --no-prompt log short
+  ┏━━■ orcaish ◀
+┏━┻□ feat1 [wt: $ROOT/wt-feat1]
+main
+[exit 0]
+
+=== Q2: trunk moves; restack from wt-feat1 while feat2/feat3/feat4 are checked out elsewhere
+$ git-spice --no-prompt stack restack
+WRN feat2: checked out in another worktree ($ROOT/wt-feat2), skipping
+WRN feat3: base branch feat2 was not restacked, skipping
+WRN feat4: base branch feat3 was not restacked, skipping
+INF feat1: restacked on main
+[exit 0]
+$ git-spice --no-prompt log short
+      ┏━━□ feat4 [wt: $ROOT/wt-feat3]
+    ┏━┻□ feat3
+  ┏━┻□ feat2 [wt: $ROOT/wt-feat2] (needs restack)
+┏━┻■ feat1 ◀
+main
+[exit 0]
+
+=== repo restack from the main checkout (on main)
+$ git-spice --no-prompt repo restack
+WRN feat1: checked out in another worktree ($ROOT/wt-feat1), skipping
+WRN feat2: base branch feat1 was not restacked, skipping
+WRN feat3: base branch feat2 was not restacked, skipping
+WRN feat4: base branch feat3 was not restacked, skipping
+INF Nothing to restack: no tracked branches available
+[exit 0]
+$ git-spice --no-prompt log short --all
+      ┏━━□ feat4 [wt: $ROOT/wt-feat3]
+    ┏━┻□ feat3
+  ┏━┻□ feat2 [wt: $ROOT/wt-feat2] (needs restack)
+┏━┻□ feat1 [wt: $ROOT/wt-feat1]
+main ◀
+[exit 0]
+
+=== Restack bottom up, one worktree at a time (wt-feat3 now holds feat4: branch create moved it)
+$ git-spice --no-prompt branch restack
+INF feat1: branch does not need to be restacked.
+[exit 0]
+$ git-spice --no-prompt branch restack
+INF feat2: restacked on feat1
+[exit 0]
+$ git-spice --no-prompt upstack restack --branch feat3
+INF feat3: restacked on feat2
+INF feat4: restacked on feat3
+[exit 0]
+$ git-spice --no-prompt log short --all
+      ┏━━□ feat4
+    ┏━┻□ feat3 [wt: $ROOT/wt-feat3]
+  ┏━┻□ feat2 [wt: $ROOT/wt-feat2]
+┏━┻□ feat1 [wt: $ROOT/wt-feat1]
+main ◀
+[exit 0]
+
+=== Q2b: one worktree per stack (branches not checked out anywhere else)
+$ git-spice --no-prompt stack restack
+INF feat1: restacked on main
+INF feat2: restacked on feat1
+INF feat3: restacked on feat2
+INF feat4: restacked on feat3
+[exit 0]
+$ git-spice --no-prompt log short --all
+      ┏━━□ feat4
+    ┏━┻□ feat3
+  ┏━┻□ feat2
+┏━┻■ feat1 ◀
+main
+[exit 0]
+
+=== Plain git, for comparison: rebase a branch checked out in another worktree
+$ git rebase main feat2
+fatal: 'feat2' is already used by worktree at '$ROOT/wt-plain'
+[exit 128]
+Workdir: $ROOT
