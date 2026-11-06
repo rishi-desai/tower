@@ -164,6 +164,7 @@ def check_rule_edit(file_path: str) -> str | None:
 
 
 def ask(reasons: list[str], prefix: str) -> None:
+    """Print the "ask" decision that makes Claude Code show an approval prompt, with PREFIX and the REASONS."""
     print(
         json.dumps(
             {
@@ -178,6 +179,7 @@ def ask(reasons: list[str], prefix: str) -> None:
 
 
 def main() -> int:
+    """Read one tool call from stdin and print an ask decision if it is a public action or a rule-file change."""
     try:
         call = json.load(sys.stdin)
     except ValueError:

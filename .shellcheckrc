@@ -1,3 +1,4 @@
-# The skill scripts source ledger-lib.sh through ${TOWER_LIB:-<path>}, a path shellcheck can't resolve.
-# SC1091 only says it didn't follow that file; ledger-lib.sh is checked on its own.
-disable=SC1091
+# Follow sourced files, so each skill script is checked together with ledger-lib.sh. The scripts already name it
+# with `# shellcheck source=` relative to their own folder, which SCRIPTDIR makes shellcheck resolve.
+external-sources=true
+source-path=SCRIPTDIR

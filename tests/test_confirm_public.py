@@ -241,6 +241,8 @@ BYPASSES = [
     pytest.param("gh pr --repo owner/repo merge 3", id="gh --repo after the subcommand"),
     pytest.param("gh api -XPOST repos/a/b/issues", id="gh api -X attached to its method"),
     pytest.param("echo x > ~/.claude/tower.conf", id="write to tower.conf"),
+    pytest.param("git --no-pager push origin x", id="git global option before push"),
+    pytest.param("gh api repos/a/b/issues -ftitle=x", id="gh api -f attached to its value"),
 ]
 
 
@@ -249,3 +251,27 @@ BYPASSES = [
 def test_known_bypass_asks(tmp_path: Path, command: str) -> None:
     """Each known bypass should ask; today it doesn't."""
     assert asks(run_hook(tmp_path, bash(command), push="every", pr="every"))
+
+
+@pytest.mark.xfail(raises=AssertionError, reason="known bypass, fixed by T04 (#21)")
+def test_known_bypass_write_tool_on_tower_conf_asks(tmp_path: Path) -> None:
+    """A Write of tower.conf could set push_approval=none silently; it should ask like a rule-file edit."""
+    call = {"tool_name": "Write", "tool_input": {"file_path": "~/.claude/tower.conf"}}
+    assert asks(run_hook(tmp_path, call))
+
+
+# The hook fails open today: input it doesn't expect makes it crash (exit 1), which Claude Code treats as a
+# non-blocking error, so the command runs with no prompt. It should ask instead.
+@pytest.mark.xfail(raises=subprocess.CalledProcessError, reason="hook fails open on a crash, fixed by T04 (#21)")
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param([], id="JSON that is not an object"),
+        pytest.param(
+            {"tool_name": "Bash", "tool_input": {"command": ["git", "push"]}}, id="command that is not a string"
+        ),
+    ],
+)
+def test_unexpected_input_asks(tmp_path: Path, call: object) -> None:
+    """Input the hook can't read should end in a prompt, not a crash that lets the command through."""
+    assert asks(run_hook(tmp_path, call))

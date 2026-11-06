@@ -25,7 +25,9 @@ run = [
   "uv run mypy",
   "uv run pytest",
   "git ls-files -z '*.sh' | xargs -0 shellcheck",
-  "gitleaks git --redact --no-banner .",
+  # The files as checked out (git-ignored ones skipped), so local and CI scan the same tree; CI's checkout has
+  # no history. Secrets in pushed history are GitHub push protection's job (T03, #20).
+  "gitleaks dir --redact --no-banner .",
   "claude plugin validate --strict .",
   "claude plugin validate --strict plugin",
   "claude plugin validate --strict pane",
