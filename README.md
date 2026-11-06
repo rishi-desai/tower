@@ -240,7 +240,7 @@ approach, which is what grilling and the spec are for.
 
 `/tower:adopt` (run from the main checkout) is for a repo where work is already in flight and you've lost track.
 
-1. **Scan (read-only).** `adopt-scan.sh` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state).
+1. **Scan (read-only).** `adopt-scan.sh` (`tower adopt-scan`) lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
 2. **One plan, which you approve.** In order:
    - a **paste-in prompt for every live session**: it writes its own first card and, if it's in the main checkout, lists exactly which uncommitted files are its work;
    - **untangling the main checkout**: each session's files move to their own branch + worktree (`git stash push -- <its files>` → `git stash pop` in the new worktree; never `reset`, `checkout .`, or `clean`);
@@ -381,15 +381,17 @@ tower/
   plugin/
     .claude-plugin/plugin.json
     hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
-    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for hub-scan.sh and the pane)
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
+                                      (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
+                                      `card-path` and `rules`, kept for one release)
   pane/                               the tower-pane mod
     hooks/register.tsx                the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  its saved state, as Claude Code checks it
     tests/                            claude plugin test pane; fixtures/ holds `tower state --json` output tests/test_state.py checks
-  src/tower/                          tower's core (standard library only): the event log, effective state, the `tower` CLI
-  tests/                              pytest: the approval hook's cases, the event log, effective state, the CLI
+  src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
+  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`

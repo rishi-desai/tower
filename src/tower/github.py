@@ -1,4 +1,5 @@
-"""github.py: the merged PRs `tower stats` measures, read from GitHub with the gh CLI (read-only calls only).
+"""github.py: the merged PRs `tower stats` measures, read from GitHub with the gh CLI (read-only calls only), and
+try_gh() for the scans' GitHub facts.
 
 A PR's tickets are the "Closes/Fixes/Resolves #N" in its body, read here rather than from GitHub's
 closingIssuesReferences: GitHub links a closing keyword only for PRs into the default branch (tower's workers often
@@ -12,6 +13,7 @@ import json
 import re
 import subprocess
 from datetime import datetime
+from pathlib import Path
 
 from tower.stats import MergedPr
 
@@ -97,3 +99,19 @@ def gh(repo: str, *args: str) -> str:
     if proc.returncode != 0:
         raise GhError(f"gh {args[0]} in {repo}: {proc.stderr.strip() or f'exit {proc.returncode}'}")
     return proc.stdout
+
+
+def try_gh(cwd: Path, *args: str) -> tuple[str | None, str]:
+    """Run gh with args in cwd, for reports that show a failure and go on: (stdout, "") or (None, the last line of
+    gh's error, its real reason rather than a guess)."""
+    try:
+        proc = subprocess.run(
+            ["gh", *args], cwd=cwd, check=False, capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS
+        )
+    except FileNotFoundError:
+        return None, "gh not installed"
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, f"gh {args[0]} didn't run ({type(error).__name__})"
+    if proc.returncode != 0:
+        return None, (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
+    return proc.stdout, ""
