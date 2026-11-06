@@ -285,6 +285,12 @@ description, or you type `/tower:<name>`.
   `status` and `updated` lines). The session rewrites the rest when it next stops. Without it, a card stayed
   needs-you for the whole stretch between your answer and the session's next stop.
 - **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
+- **The event log** (`record-event.py`, on SessionStart, UserPromptSubmit, Notification, PostToolUse on
+  AskUserQuestion, Stop and SessionEnd): appends one line per event (`session-start`, `prompt`, `needs-you`,
+  `answer`, `stop`, `session-end`) to `~/.claude/tower/events.jsonl`, one file for every repo, tagged with repo,
+  worktree and branch. It records the length of your prompts, never their text. Nothing reads the log yet; it's the
+  history later parts of tower's core will compute status and metrics from. It never blocks or fails a session:
+  problems go to `~/.claude/tower/errors.log`. To look at it from this checkout: `uv run tower events tail -n 20`.
 
 ## Approvals: public actions and rule changes
 
@@ -349,6 +355,8 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
 | `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
+| `~/.claude/tower/events.jsonl` | the event log, this month (UTC); earlier months are `events-YYYY-MM.jsonl` beside it |
+| `~/.claude/tower/errors.log` | anything the event-log hook couldn't do (it never fails the session instead) |
 | `~/.claude/tower/questions/<session id>.json` | a pop-up question waiting for an answer from the pane; removed once answered |
 | `~/.claude/CLAUDE.md` | the tower block; your original is in `CLAUDE.md.pre-tower.bak` |
 | `~/.local/state/pr-wait/` | `pr-wait`'s lock and event memory |
@@ -360,14 +368,17 @@ tower/
   .claude-plugin/marketplace.json     this repo is its own marketplace: plugins tower and tower-pane
   plugin/
     .claude-plugin/plugin.json
-    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification
-    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py
+    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
+    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py
+    lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
   pane/                               the tower-pane mod
     hooks/register.tsx                the pane, status line, toasts, Orca jump, question relay
     types/index.d.ts                  its saved state, as Claude Code checks it
     tests/                            claude plugin test pane
-  tests/                              pytest: the approval hook's cases (tests/test_confirm_public.py)
+  src/tower/                          tower's core (standard library only): the event log, the `tower` CLI
+  tests/                              pytest: the approval hook's cases, the event log, the CLI
+  GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`
   setup.sh  CLAUDE.global.md  README.md  HANDOFF.md

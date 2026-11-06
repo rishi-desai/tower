@@ -1,5 +1,5 @@
 {
-  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you",
+  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you; record each session's events in tower's event log",
   "hooks": {
     "PreToolUse": [
       {
@@ -19,6 +19,11 @@
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-reminder.py\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -31,6 +36,11 @@
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/notify-needs-you.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -41,6 +51,11 @@
           {
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-resume.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
             "timeout": 10
           }
         ]
@@ -53,6 +68,33 @@
           {
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-resume.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
             "timeout": 10
           }
         ]
