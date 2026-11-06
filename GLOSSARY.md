@@ -55,3 +55,14 @@ Commits on a worktree's branch that aren't on the base branch (origin's default 
 execution slots: a parked branch has unshipped work but holds no slot. Squash-merged work still shows until the
 worktree is removed.
 _Avoid_: open work, WIP
+
+## Metrics
+
+**Accepted change**:
+A merged PR: the unit `tower stats` measures. Its events are the ones on its head branch in its repo, up to the
+merge.
+_Avoid_: task, ticket (a ticket can take several changes)
+
+**Report**:
+A worker's turn that ended with it stopping for you. A prompt you type after one is a follow-up.
+_Avoid_: card (that is the written note), summary
