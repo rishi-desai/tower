@@ -47,11 +47,11 @@ On each Mac (after Claude Code, `gh`, and git are set up):
 ```bash
 gh repo clone rishi-desai/tower ~/Developer/personal/tower
 ~/Developer/personal/tower/setup.sh --dry-run     # shows every change; changes nothing
-~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, this machine's profile
+~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, this machine's profile, worktrees folder
 ```
 
 `setup.sh` writes `~/.claude/tower.conf` and the default profile in `~/.claude/tower/policy.toml` (see
-[Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
+[Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates the worktrees folder and `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
 global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the one plugin:
 
 ```bash
@@ -572,8 +572,12 @@ which needs no login). Run `mise install` once first.
 - **Orca names the branch, not the hub.** `--name feat/42-x` is Orca's display name; with Orca's Branch prefix set to
   your git username the branch is `rishi-desai/feat-42-x`, and the card is named after that branch. Set the prefix to
   none in Orca's settings if you want the two to match.
-- **Orca's `./worktrees` folder sits inside the repo**, so main shows `worktrees/` as untracked. Add it to main's
-  `.git/info/exclude` (local, never committed), not to `.gitignore`.
+- **Keep worktrees out of the repo.** With Orca's workspace folder set to `./worktrees`, every worktree sits inside
+  the main checkout, which then shows `worktrees/` as untracked. `setup.sh` asks for one global worktrees folder
+  instead (`worktrees_dir` in `tower.conf`; `--worktrees-dir` for scripted runs; Tab completes the path) and creates
+  it. Orca's CLI can't set its own folder, so set it once in Orca: Settings > General > Workspace > **Workspace
+  Directory**, with **Nest Workspaces** on so each repo gets its own subfolder. For worktrees already inside a repo,
+  add `worktrees/` to main's `.git/info/exclude` (local, never committed), not to `.gitignore`.
 - **Background sessions** (`claude --bg`) create their own worktrees under `.claude/worktrees/`. Add that path to the repo's ignore file if it shows up in `git status`.
 - **Project names can't contain spaces** (the rules import path would break). Map to a name without spaces with `project.<repo>=`.
 - Card time comes from `date`, never from the model's memory, because models often get today's date wrong.

@@ -30,7 +30,7 @@ Then ask which steps to do. Do only the approved ones, one at a time, and report
 
 For one piece of work owned by one session, with the user's yes for each step:
 
-1. `git worktree add -b <branch> <worktrees-dir>/<slug>` — use the folder where the user's other worktrees live (in Orca, they may prefer to create it there; ask).
+1. `git worktree add -b <branch> <worktrees_dir>/<repo>/<slug>` — `worktrees_dir` is the global worktrees folder in `~/.claude/tower.conf`; if it isn't set, use the folder where the user's other worktrees live (in Orca, they may prefer to create it there; ask).
 2. `git stash push -m "adopt: <branch>" -- <only that work's files>` in the main checkout.
 3. In the new worktree: `git stash pop`. If it conflicts, stop and show the user; the stash is kept until a clean pop.
 4. Tell the user to continue that work in a new session in the new worktree (give the kickoff prompt), and to end the old session in main.
