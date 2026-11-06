@@ -133,12 +133,17 @@ to `Ledger/_backlog.md`, then goes back to what you were doing. Nothing starts u
 ### Discussing an idea into a spec
 
 Tell the hub **"discuss: worm theme for the dashboard"**. It reads code if that helps but never edits or commits on
-main. It grills the idea one question at a time (`/wayfinder`, typed by you, for a huge, foggy effort), and the
-discussion ends one of two ways: **park it** (an issue with what was settled), or **spec it**: you type `/to-spec`,
+main. It grills the idea one question at a time, and the discussion ends one of two ways: **park it** (an issue with what was settled), or **spec it**: you type `/to-spec`,
 which writes the spec into an issue labelled `ready-for-agent` (read it in the approval prompt), then `/to-tickets`
 if it's too big for one session. Then "start #N". If the discussion needs a prototype or spike to answer, the hub
 parks the question as its own issue and starts a worktree for it early; the discussion moves there, and its answer
 comes back to the hub with `/handoff`.
+
+For a huge, foggy effort, the hub hands off to `/wayfinder` instead of grilling: it starts a worktree on its own
+branch (`chore/wayfinder-<slug>`) with `/wayfinder` as the prompt, never in the hub session, because wayfinder
+writes GLOSSARY.md and ADRs into the repo. First it creates any of the five `wayfinder:*` labels the repo is missing
+(after you approve; decline and it shows you the `gh label create` commands), since wayfinder fails without them.
+You go back to that worktree for each wayfinder ticket.
 
 The first `/to-spec` in a repo needs `/setup-matt-pocock-skills` to have run; the hub suggests running it in a
 worktree, never on main.
