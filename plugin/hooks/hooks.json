@@ -1,5 +1,6 @@
 {
-  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you; record each session's events in tower's event log",
+  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you; record each session's events in tower's event log; and the pane mod (register.tsx), tower's hub beside the chat",
+  "modules": ["./register.tsx"],
   "hooks": {
     "PreToolUse": [
       {

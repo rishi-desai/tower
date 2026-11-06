@@ -19,7 +19,7 @@ from tower import cli, events, ledger
 
 ROOT = Path(__file__).resolve().parent.parent
 HUB_SCAN = ROOT / "plugin" / "skills" / "hub" / "scripts" / "hub-scan.sh"
-PANE_FIXTURE = ROOT / "pane" / "tests" / "fixtures" / "tower-state.ts"
+PANE_FIXTURE = ROOT / "plugin" / "tests" / "fixtures" / "tower-state.ts"
 
 
 def tower_state(capsys: pytest.CaptureFixture[str], *args: str) -> dict[str, object]:
@@ -268,7 +268,7 @@ PANE_FIXTURE_START = "export const SHARED: TowerState = "
 
 def test_the_pane_is_tested_on_tower_states_own_output(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     """`tower state --json` for the shared fixture is exactly what the pane's tests feed the pane (SHARED in
-    pane/tests/fixtures/tower-state.ts), so the pane test proves the pane draws what the core decided. If the JSON
+    plugin/tests/fixtures/tower-state.ts), so the pane test proves the pane draws what the core decided. If the JSON
     changes on purpose, paste the new output (printed below on failure) there."""
     shared_fixture(repo)
     produced = shortened(tower_state(capsys), repo)
@@ -293,7 +293,7 @@ def test_the_panes_issue_limit_matches_hub_scans() -> None:
     allows."""
     from tower import scan
 
-    pane = (ROOT / "pane" / "hooks" / "register.tsx").read_text(encoding="utf-8")
+    pane = (ROOT / "plugin" / "hooks" / "register.tsx").read_text(encoding="utf-8")
     assert int(pane.split("const HUB_SCAN_ISSUE_LIMIT = ")[1].split(" ")[0]) == scan.ISSUE_LIMIT
 
 
