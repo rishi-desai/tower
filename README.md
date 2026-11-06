@@ -47,11 +47,11 @@ On each Mac (after Claude Code, `gh`, and git are set up):
 ```bash
 gh repo clone rishi-desai/tower ~/Developer/personal/tower
 ~/Developer/personal/tower/setup.sh --dry-run     # shows every change; changes nothing
-~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, this machine's profile
+~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, this machine's profile, worktrees folder
 ```
 
 `setup.sh` writes `~/.claude/tower.conf` and the default profile in `~/.claude/tower/policy.toml` (see
-[Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
+[Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates the worktrees folder and `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
 global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the one plugin:
 
 ```bash
@@ -299,7 +299,7 @@ description, or you type `/tower:<name>`.
 | `tower:adopt` | you type `/tower:adopt` | The old name for the hub's adopt mode, kept for one release. |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
 | `tower:babysit-pr` | you say "babysit / watch / monitor the PR" | Runs `pr-wait` (one line per real event: check failed, comment, review, base moved, merged) and fixes real CI failures and review findings. Drafts every public action and waits for your approval. Waits on your repo's own required checks (`--until green`). |
-| `tower:leaving-pr-comments` | any agent comment on GitHub | Starts each comment with "🤖 <model> responding on behalf of <you>", keeps it short, checks for secrets. |
+| `tower:leaving-pr-comments` | any agent comment on GitHub | Keeps each comment short and direct, checks it for secrets, previews it, and confirms GitHub posted it before resolving a thread. |
 | `tdd`, `code-review`, `grilling`, `diagnosing-bugs`, `domain-modeling`, `research`, `prototype` (Matt Pocock) | their descriptions match what you're doing | `/implement` calls `tdd` and `code-review` itself. |
 
 ### Run only when you type them (Matt Pocock, `disable-model-invocation`)
@@ -321,7 +321,7 @@ description, or you type `/tower:<name>`.
 
 ### Always on (not skills)
 
-- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
+- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, keeping personal rules out of repos, and no AI attribution (no co-author trailers, "Generated with" lines, "on behalf of" notes or 🤖 in commits, PRs, comments, issues or branch names).
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
 - **The policy line** (`policy-context.py`, a SessionStart hook): one line added to each session's context saying
   which profile applies to its repo, what it may do without asking, and what asks you first, so a worker doesn't
@@ -508,6 +508,8 @@ API_URL = "http://localhost:{port}/api"
 ```ini
 projects_dir=/Users/rishi/Library/Mobile Documents/com~apple~CloudDocs/Vault/Projects
 wip_limit=3                # unless the repo's profile sets its own
+# every project's worktrees, one subfolder per repo (match Orca's); comments go on their own line, as here
+worktrees_dir=/Users/rishi/worktrees
 project.poot=Poot          # optional: repo folder name -> project folder name
 ```
 
@@ -521,6 +523,7 @@ once and then ignored.
 |---|---|
 | `<projects_dir>/<Project>/Ledger/<branch>.md` | status cards (`/` in branch names becomes `__`; detached HEAD → `detached-<sha>`) |
 | `<projects_dir>/<Project>/Ledger/_backlog.md` | parked ideas, only for repos without GitHub |
+| `<worktrees_dir>/<repo>/<worktree>` | every project's worktrees, outside the repos (Orca: Workspace Directory, Nest Workspaces on) |
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/policy.toml` | which approvals ask, per profile and per repo |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
@@ -586,8 +589,12 @@ which needs no login). Run `mise install` once first.
 - **Orca names the branch, not the hub.** `--name feat/42-x` is Orca's display name; with Orca's Branch prefix set to
   your git username the branch is `rishi-desai/feat-42-x`, and the card is named after that branch. Set the prefix to
   none in Orca's settings if you want the two to match.
-- **Orca's `./worktrees` folder sits inside the repo**, so main shows `worktrees/` as untracked. Add it to main's
-  `.git/info/exclude` (local, never committed), not to `.gitignore`.
+- **Keep worktrees out of the repo.** With Orca's workspace folder set to `./worktrees`, every worktree sits inside
+  the main checkout, which then shows `worktrees/` as untracked. `setup.sh` asks for one global worktrees folder
+  instead (`worktrees_dir` in `tower.conf`; `--worktrees-dir` for scripted runs; Tab completes the path) and creates
+  it. Orca's CLI can't set its own folder, so set it once in Orca: Settings > General > Workspace > **Workspace
+  Directory**, with **Nest Workspaces** on so each repo gets its own subfolder. For worktrees already inside a repo,
+  add `worktrees/` to main's `.git/info/exclude` (local, never committed), not to `.gitignore`.
 - **Background sessions** (`claude --bg`) create their own worktrees under `.claude/worktrees/`. Add that path to the repo's ignore file if it shows up in `git status`.
 - **Project names can't contain spaces** (the rules import path would break). Map to a name without spaces with `project.<repo>=`.
 - Card time comes from `date`, never from the model's memory, because models often get today's date wrong.

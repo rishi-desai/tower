@@ -14,6 +14,8 @@ import pytest
 from tower import cli, events, merge
 
 PLUGIN_JSON = Path(__file__).resolve().parent.parent / "plugin" / ".claude-plugin" / "plugin.json"
+RUN_TOWER = Path(__file__).resolve().parent.parent / "plugin" / "scripts" / "run-tower.py"
+SYSTEM_PYTHON = "/usr/bin/python3"  # what the plugin's `python3` can resolve to; 3.9 on macOS
 
 
 def test_version_is_the_plugins_version() -> None:
@@ -82,9 +84,11 @@ def iso(when: datetime) -> str:
     return when.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def test_stats_prints_one_row_per_merged_pr_from_the_log_and_github(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+@pytest.fixture
+def stats_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A repo whose branch feat-7 has four events in the log, ending 1h before PR #7 merged a day ago, and a fake gh
+    on PATH that lists #7 (closing #5, reopened since, and #6, which gh can't find), #8 and a fork's PR; returns the
+    repo."""
     repo = tmp_path / "app"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     merged = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=1)
@@ -102,9 +106,30 @@ def test_stats_prints_one_row_per_merged_pr_from_the_log_and_github(
     for offset, event_type in [(0, "prompt"), (30, "stop"), (40, "prompt"), (60, "stop")]:
         when = iso(start + timedelta(minutes=offset))
         events.append(events.Event(when, event_type, "s-1", str(repo), str(repo), "feat-7"), tmp_path / "tower")
+    return repo
 
+
+def test_stats_prints_one_row_per_merged_pr_from_the_log_and_github(
+    stats_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert cli.main(["stats", "--since", "3d"]) == 0
     out, err = capsys.readouterr()
+    assert_stats_output(stats_repo, out, err)
+
+
+@pytest.mark.skipif(not Path(SYSTEM_PYTHON).exists(), reason=f"no {SYSTEM_PYTHON} on this machine")
+def test_stats_works_under_the_system_python3(stats_repo: Path) -> None:
+    """The plugin runs `tower` under whatever `python3` it finds, 3.9 included, whose fromisoformat rejects the "Z"
+    that the event log and GitHub put on every time."""
+    proc = subprocess.run(
+        [SYSTEM_PYTHON, "-I", str(RUN_TOWER), "stats", "--since", "3d"], capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert_stats_output(stats_repo, proc.stdout, proc.stderr)
+
+
+def assert_stats_output(repo: Path, out: str, err: str) -> None:
+    """Check `tower stats --since 3d` over stats_repo printed #7's hand-worked row, #8 as untracked, and #6's warning."""
     assert err.startswith(f"tower: {repo}: reopens of #6 not counted: gh api in {repo}: HTTP 404")
     lines = out.splitlines()
     assert lines[0].split() == [

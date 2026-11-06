@@ -25,7 +25,7 @@ Always in this order, skipping empty groups. The scan's GROUPS section has alrea
 3. **Running** — one line each.
 4. **Waiting on CI or review** — finished work only waiting on CI, a review or a merge, one line each with PR number. These don't hold a WIP slot.
 5. **Done** — one line each with PR number.
-6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged, or every commit on main, with nothing uncommitted: suggest removing the worktree, never do it), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, any worktree where several interactive sessions share one checkout (rule: one main session per worktree), and overlaps: two worktrees changing the same files (`changes the same file(s) as <other>: <files>`, from git, not cards). For an overlap, name both worktrees and what each is for, and suggest who goes first: usually the one closer to merging, while the other waits or rebases after it. Never tell a worker to stop on your own.
+6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged with no commits past the PR's head, or every commit on main, with nothing uncommitted: suggest removing the worktree, never do it), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, any worktree where several interactive sessions share one checkout (rule: one main session per worktree), and overlaps: two worktrees changing the same files (`changes the same file(s) as <other>: <files>`, from git, not cards). For an overlap, name both worktrees and what each is for, and suggest who goes first: usually the one closer to merging, while the other waits or rebases after it. Never tell a worker to stop on your own.
 
 End with **one** suggested next action, not a list.
 
@@ -151,7 +151,7 @@ Two reviews run before the PR, in this order, and the prompt gives each the rang
 
 ### Fallback: the two-step paste
 
-When Orca isn't reachable, the user creates the worktree in their worktree app with the branch name `<short-type>/<ticket>-<slug>` (create it yourself with `git worktree add` only if they ask), opens a new Claude session in it, and pastes two steps, labelled "Step 1" and "Step 2". Anything they paste goes in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
+When Orca isn't reachable, the user creates the worktree in their worktree app with the branch name `<short-type>/<ticket>-<slug>` (create it yourself with `git worktree add` only if they ask, under `<worktrees_dir>/<repo>/`, with `worktrees_dir` read from `~/.claude/tower.conf`; if it isn't set, ask where), opens a new Claude session in it, and pastes two steps, labelled "Step 1" and "Step 2". Anything they paste goes in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
 
 **Step 1: set the effort for this session only.** Type this on its own, pick `<level>` in the slider, and press **s**. If the session already shows that level, skip this step. (Starting Claude by hand instead: `claude --effort <level>`.)
 
@@ -173,4 +173,4 @@ Never write `/effort <level>` for the user to paste: a level typed after `/effor
 - If context is getting long, tell the user to `/clear` and run the hub again — all state is on disk, nothing is lost.
 - Never delete worktrees, branches or cards on your own; suggest it and wait for a yes.
 - Creating a parked-idea issue is a public GitHub write, so it triggers an approval prompt here too unless the repo's policy has `issue_writes: auto`. That's expected.
-- When Orca keeps worktrees inside the repo (its workspace folder set to `./worktrees`), main shows `worktrees/` as untracked. That isn't uncommitted work, and the `ADOPT:` line doesn't count it; suggest adding `worktrees/` to main's `.git/info/exclude` (local only), never to the repo's `.gitignore`.
+- When Orca keeps worktrees inside the repo (its workspace folder set to `./worktrees`), main shows `worktrees/` as untracked. That isn't uncommitted work, and the `ADOPT:` line doesn't count it; suggest adding `worktrees/` to main's `.git/info/exclude` (local only), never to the repo's `.gitignore`. New worktrees belong in the one global folder instead: `worktrees_dir` in `~/.claude/tower.conf`, which re-running `setup.sh` asks for and which Orca's Workspace Directory should match.

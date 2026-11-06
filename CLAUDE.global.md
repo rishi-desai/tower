@@ -30,6 +30,10 @@ Before anything other people can see — a PR or issue comment, a reply, resolvi
 
 Exception: what tower's policy for this repo lets through without asking (the `tower policy for this repo` line at the start of the session lists it) needs no OK from me first: just do it. When it lets your PR's merge through, merge your own PR (squash a single-ticket PR; use a merge commit for a PR in a stack or one whose head is an integration branch) once both reviews pass (`mattpocock-skills:code-review` since `origin/<base>`, then the built-in `/code-review high origin/<base>...HEAD`) and its checks are green. Everything it says asks still needs my OK, and never change tower's policy, `tower.conf` or rule files yourself (`tower policy use` is mine to run).
 
+## Things I never want
+
+- AI attribution anywhere: no `Co-Authored-By: Claude` (or any co-author), "Generated with Claude Code", "on behalf of" notes or 🤖 in commits, PR titles and bodies, comments, issues or branch names. Everything reads as written by me, and I'm the only author.
+
 ## Personal rules stay out of repos
 
 Repos may have a team CLAUDE.md and .claude/settings.json. Never create, edit, or commit those for my personal preferences unless I ask.
