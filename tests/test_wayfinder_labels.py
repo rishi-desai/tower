@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -57,22 +59,25 @@ def run_script(existing: list[str]) -> subprocess.CompletedProcess[str]:
 
 def created_labels(log: Path) -> list[str]:
     """Label names the fake gh was asked to create, in order."""
-    import json
-
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     return [call[2] for call in calls if call[:2] == ["label", "create"]]
+
+
+def printed_labels(stdout: str) -> list[str]:
+    """Label names in the script's printed `gh label create <name> ...` commands, in order."""
+    return [shlex.split(line)[3] for line in stdout.splitlines()]
 
 
 def test_prints_a_create_command_for_every_label_when_none_exist(fake_gh: Path) -> None:
     result = run_script(["bug", "ready-for-agent"])
     assert result.returncode == 0, result.stderr
-    assert [line.split()[3] for line in result.stdout.splitlines()] == WAYFINDER_LABELS
+    assert printed_labels(result.stdout) == WAYFINDER_LABELS
 
 
 def test_prints_only_the_missing_labels(fake_gh: Path) -> None:
     result = run_script(["wayfinder:map", "wayfinder:task", "bug"])
     assert result.returncode == 0, result.stderr
-    assert [line.split()[3] for line in result.stdout.splitlines()] == [
+    assert printed_labels(result.stdout) == [
         "wayfinder:research",
         "wayfinder:prototype",
         "wayfinder:grilling",
