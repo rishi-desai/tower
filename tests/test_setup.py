@@ -43,7 +43,7 @@ def run_setup(env: dict[str, str], tmp_path: Path, plugin_source: Path) -> None:
         [
             str(ROOT / "setup.sh"),
             *("--projects-dir", str(tmp_path / "projects"), "--wip-limit", "3"),
-            *("--push-approval", "every", "--pr-approval", "every", "--plugin-source", str(plugin_source)),
+            *("--profile", "work", "--plugin-source", str(plugin_source)),
         ],
         check=False,  # the assert below shows setup's output when it fails
         env=env,

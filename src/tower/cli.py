@@ -16,6 +16,10 @@ tower env [--dir DIR]      the worktree's runtime slot and the variables its pro
 tower stats [--since 14d] [--repo [PATH]]
                            metrics per PR merged in the window, from the event log and GitHub (see stats.py);
                            every repo in the log, or only PATH's (default: this one) with --repo
+tower policy               the approval profile for this repo, why it applies, and what each key says (see policy.py)
+tower policy use PROFILE [--repo]
+                           make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
+                           terminal (the approval hook asks before an agent runs it)
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from tower import (
     hook_events,
     ledger,
     multirepo,
+    policy,
     rules,
     runtime,
     scan,
@@ -108,6 +113,11 @@ def parser() -> argparse.ArgumentParser:
     stats_parser.add_argument(
         "--repo", nargs="?", const=".", metavar="PATH", help="only this checkout's repo (default with no PATH: here)"
     )
+    policy_parser = commands.add_parser("policy", help="the approval profile for this repo, and why it applies")
+    policy_commands = policy_parser.add_subparsers(dest="policy_command")
+    use = policy_commands.add_parser("use", help="switch the default profile, or this repo's (run it yourself)")
+    use.add_argument("profile", help="work, personal, sandbox, or a profile your policy file defines")
+    use.add_argument("--repo", action="store_true", help="for this repo only (its origin's owner/repo)")
     return top
 
 
@@ -265,6 +275,28 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
     return 1 if failed else 0
 
 
+def show_policy() -> int:
+    """Print the policy for the repo holding the current folder."""
+    loaded = policy.load()
+    repo_policy, slug = loaded.for_folder(Path("."))
+    print("\n".join(policy.describe(repo_policy, slug, sorted(loaded.profiles))))
+    return 0
+
+
+def use_profile(profile: str, for_repo: bool) -> int:
+    """Switch the default profile (or, with for_repo, this repo's) and print the result; exit 1, saying why, when
+    it can't be done (nothing is changed then)."""
+    try:
+        slug = policy.remote_slugs(Path("."))[0] if for_repo else None
+        if for_repo and slug is None:
+            raise policy.PolicyError("this folder isn't in a repo with a GitHub origin, so --repo can't name it")
+        print(f"tower: {policy.use(profile, slug)}")
+    except (policy.PolicyError, policy.RepoUnknown) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    return show_policy()
+
+
 def run_or_explain(action: Callable[[], object]) -> int:
     """Run one scan-family command; exit 1, saying why, when the repo or the ledger can't be found or the rules
     can't be linked safely (nothing is written then)."""
@@ -305,4 +337,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return show_env(args.dir)
     if args.command == "stats":
         return stats_command(args.since, args.repo)
+    if args.command == "policy":
+        return use_profile(args.profile, args.repo) if args.policy_command == "use" else show_policy()
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable
