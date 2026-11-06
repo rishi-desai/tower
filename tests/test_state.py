@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -34,6 +36,19 @@ def rows(result: dict[str, object]) -> dict[str, dict[str, object]]:
     worktrees = result["worktrees"]
     assert isinstance(worktrees, list)
     return {row["label"]: row for row in worktrees}
+
+
+def fake_gh_pr_list(tmp_path: Path, listed: list[dict[str, object]]) -> None:
+    """A fake `gh` on PATH whose `pr list --json <fields>` prints listed with only the fields asked for, as gh does."""
+    program = (
+        "import json, sys\n"
+        "fields = sys.argv[sys.argv.index('--json') + 1].split(',')\n"
+        f"print(json.dumps([{{k: v for k, v in pr.items() if k in fields}} for pr in {listed!r}]))\n"
+    )
+    gh = tmp_path / "bin" / "gh"
+    # sh runs it, not a #! naming this Python: a path with a space or past the #! length limit can't break it
+    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(program)} "$@"\n', encoding="utf-8")
+    gh.chmod(0o755)
 
 
 def test_three_busy_workers_with_no_cards_hold_three_slots(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
@@ -125,12 +140,11 @@ def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_i
             "headRefName": b,
             "headRefOid": heads[b],
             "url": f"https://github.com/o/r/pull/{n}",
+            "isCrossRepository": False,
         }
         for n, b in enumerate(heads, start=7)
     ]
-    gh = tmp_path / "bin" / "gh"
-    gh.write_text(f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(listed)}\nEOF\n", encoding="utf-8")
-    gh.chmod(0o755)
+    fake_gh_pr_list(tmp_path, listed)
 
     found = rows(tower_state(capsys, "--pr"))
 
@@ -152,6 +166,34 @@ def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_i
     )
     not_a_sha_pr = found["not-a-sha"]["pr"]
     assert isinstance(not_a_sha_pr, dict) and not_a_sha_pr["head_oid"] is None
+
+
+def test_a_fork_pr_with_the_worktrees_branch_name_is_not_its_pr(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A stranger's fork can push a branch with any name (patch-1, fix-typo): only a PR from this repo is the
+    worktree's, as in card.branch_pr. A newer open fork PR on the same branch name doesn't hide the worktree's own."""
+    for branch in ("patch-1", "own-work", "shared"):
+        repo.add_worktree(branch, commits=1)
+        repo.write_card(branch, "running")
+    listed: list[dict[str, object]] = [
+        {
+            "number": n,
+            "state": "OPEN",
+            "headRefName": b,
+            "url": f"https://github.com/o/r/pull/{n}",
+            "isCrossRepository": fork,
+        }
+        for n, b, fork in ((20, "patch-1", True), (21, "own-work", False), (22, "shared", False), (23, "shared", True))
+    ]
+    fake_gh_pr_list(tmp_path, listed)
+
+    found = rows(tower_state(capsys, "--pr"))
+
+    assert (found["patch-1"]["status"], found["patch-1"]["pr"]) == ("running", None)
+    own_pr, shared_pr = found["own-work"]["pr"], found["shared"]["pr"]
+    assert isinstance(own_pr, dict) and own_pr["number"] == 21
+    assert isinstance(shared_pr, dict) and shared_pr["number"] == 22
 
 
 def test_cards_without_a_worktree_are_orphans(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
