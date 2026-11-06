@@ -1,0 +1,31 @@
+[project]
+name = "tower"
+version = "0.7.0"
+description = "Run many Claude Code agents in parallel: status cards, a hub, and approval before anything public."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy==2.4.0",
+  "pytest==9.1.1",
+  "ruff==0.17.2",
+]
+
+[tool.uv]
+# The hook scripts run as plain files under `python3 -I`; there is no package to build or install.
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["plugin/scripts", "plugin/skills/hub/scripts", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+xfail_strict = true

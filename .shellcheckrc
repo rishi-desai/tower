@@ -1,0 +1,3 @@
+# The skill scripts source ledger-lib.sh through ${TOWER_LIB:-<path>}, a path shellcheck can't resolve.
+# SC1091 only says it didn't follow that file; ledger-lib.sh is checked on its own.
+disable=SC1091

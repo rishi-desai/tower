@@ -1,0 +1,8 @@
+# Weekly updates for the Python dev tools locked in uv.lock (ruff, mypy, pytest).
+# No github-actions entry: the shared workflow in rishi-desai/ci pins its own actions.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly

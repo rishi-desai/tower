@@ -4,3 +4,8 @@ __pycache__/
 .DS_Store
 # tower-pane: type declarations Claude Code writes when it loads the mod
 pane/.claude-plugin/types/
+# Python tooling (uv, ruff, mypy, pytest)
+.venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
