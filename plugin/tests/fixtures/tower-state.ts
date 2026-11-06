@@ -215,6 +215,7 @@ export const SHARED: TowerState = {
       "path": "/vault/repo/Ledger/feat__2-gone.md"
     }
   ],
+  "overlaps": [],
   "housekeeping": [
     {
       "label": "feat-1",

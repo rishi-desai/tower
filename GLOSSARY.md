@@ -74,6 +74,25 @@ execution slots: a parked branch has unshipped work but holds no slot. Squash-me
 worktree is removed.
 _Avoid_: open work, WIP
 
+**Overlap**:
+Two worktrees that changed the same file, found from git: each branch's own commits (not on the other branch, not on
+the base branch) plus its uncommitted and untracked files. The hub lists each overlap under Housekeeping with the
+files, so the two workers can coordinate before either merges.
+_Avoid_: conflict (git's word for a merge that failed; an overlap only says one might)
+
+## Runtime
+
+**Runtime slot**:
+A worktree's stable number for sharing one machine: 0 for the main checkout, the smallest free number for any other
+worktree, kept until its folder is gone. A project's runtime config turns it into ports and names (`PORT` =
+`port_base` + slot), so two workers' dev servers never clash.
+_Avoid_: slot (alone: it reads as execution slot, what the WIP limit counts), port number
+
+**Runtime config**:
+A project's resources, declared once outside the repo in `~/.claude/tower/projects/<Project>.toml`: base ports, a
+database name, other variables, and the seed command for what only the main checkout has.
+_Avoid_: env file, .env (those live in the repo)
+
 ## Metrics
 
 **Accepted change**:

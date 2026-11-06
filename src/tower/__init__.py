@@ -6,4 +6,4 @@ standard-library calls (ruff checks the syntax against 3.9).
 """
 
 # tower's one version. It must equal plugin/.claude-plugin/plugin.json's (tests/test_cli.py checks).
-__version__ = "0.12.0"
+__version__ = "0.13.0"
