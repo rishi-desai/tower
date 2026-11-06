@@ -43,3 +43,14 @@ _Avoid_: card status (that is only the card's claim), real status
 What the WIP limit counts: a worktree whose session is busy or waiting on you, or whose card says running or
 needs-you. A worktree only waiting on CI or review doesn't hold one.
 _Avoid_: WIP item, active worktree
+
+**Waiting on CI** (`waiting-ci`):
+A worker whose work is finished and whose PR only waits on CI, a review or a merge. It holds no execution slot, even
+while its session watches the PR. A card says it, or tower infers it from an open PR with no session working.
+_Avoid_: blocked (that is waiting on something other than your own PR), done
+
+**Unshipped work**:
+Commits on a worktree's branch that aren't on the base branch (origin's default branch) yet. Reported apart from
+execution slots: a parked branch has unshipped work but holds no slot. Squash-merged work still shows until the
+worktree is removed.
+_Avoid_: open work, WIP

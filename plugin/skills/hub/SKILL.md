@@ -10,19 +10,20 @@ The user runs several worktrees at once and loses track of them. You are the one
 
 ## 1. Gather state
 
-Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints worktrees with their card status and the WIP count, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
+Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints every worktree with its effective state (`status:`, what tower decided from the card, live sessions, the event log and git; `card:` is what the card itself says; `reason:` is why), the WIP count and unshipped work, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. The pane draws the same statuses from the same run, so never re-decide a worktree's status yourself. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
 
 Open a card file only when its status is `needs-you` or `blocked`, or the user asks about it.
 
 ## 2. Report
 
-Always in this order, skipping empty groups. The scan's GROUPS section has already sorted every worktree into these groups, including a waiting session whose card says otherwise; report from it rather than regrouping. Add only what it can't see: PRs with no worktree (Housekeeping), and details from cards you open.
+Always in this order, skipping empty groups. The scan's GROUPS section has already sorted every worktree into these groups by its effective state, each row with the reason (a waiting session whose card says otherwise is under Needs you; a `needs-you` card whose session is busy again is under Running, because the user already answered); report from it rather than regrouping. When a row's reason says the card is out of date, say so in a few words. Add only what it can't see: PRs with no worktree (Housekeeping), and details from cards you open.
 
-1. **Needs you** — cards with `needs-you`, plus any live session with status `waiting` (it's waiting on the user even if its card says otherwise). A `needs-you` card whose worktree has a `busy` session and none waiting is out of date (the user already answered): list it under Running, not here. Each item: branch and what that work is in a few plain words, the exact question, what each option means in practice, your recommendation and why. Most urgent first. A worker about to post on GitHub or push puts the draft in its card and then waits on an approval prompt: show the draft, and tell the user to approve or decline **in that session** (session name from LIVE SESSIONS). You can't approve it from here.
+1. **Needs you** — every row the scan puts under NEEDS YOU. Each item: branch and what that work is in a few plain words, the exact question, what each option means in practice, your recommendation and why. Most urgent first. A worker about to post on GitHub or push puts the draft in its card and then waits on an approval prompt: show the draft, and tell the user to approve or decline **in that session** (session name from LIVE SESSIONS). You can't approve it from here.
 2. **Blocked** — what it's waiting on.
 3. **Running** — one line each.
-4. **Done / ready to merge** — one line each with PR number.
-5. **Housekeeping** — one line each with the suggested cleanup: worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, and any worktree where several interactive sessions share one checkout (rule: one main session per worktree).
+4. **Waiting on CI or review** — finished work only waiting on CI, a review or a merge, one line each with PR number. These don't hold a WIP slot.
+5. **Done** — one line each with PR number.
+6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged, or every commit on main, with nothing uncommitted: suggest removing the worktree, never do it), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, and any worktree where several interactive sessions share one checkout (rule: one main session per worktree).
 
 End with **one** suggested next action, not a list.
 
@@ -30,7 +31,7 @@ Define any acronym or project term the first time it appears. Name every session
 
 ## 3. Work-in-progress limit
 
-The scan prints `WIP: n of limit`. The limit comes from `wip_limit` in `~/.claude/tower.conf` (set per machine). To change it, the user edits that line.
+The scan prints `WIP: n of limit`: n is the execution slots in use, the worktrees (not the main checkout) whose effective state is running or needs-you. A busy worker with no card counts; one only waiting on CI or review doesn't. The `UNSHIPPED:` line after it lists worktrees with commits not on main, which is a different question (work not merged yet), not slots. The limit comes from `wip_limit` in `~/.claude/tower.conf` (set per machine). To change it, the user edits that line.
 
 When the user wants to start something new and the scan says `AT LIMIT`, say so plainly and offer: park it, or name which running item to pause. Don't refuse; let them override.
 
@@ -142,7 +143,8 @@ Never write `/effort <level>` for the user to paste: a level typed after `/effor
 - If most worktrees have no card, or the main checkout has several sessions or uncommitted changes, the repo hasn't been adopted yet: suggest running the `tower:adopt` skill instead of listing every problem.
 - The main checkout is labelled `main checkout (no card expected)`. Don't flag it for having no card.
 - You run in the main checkout yourself, so LIVE SESSIONS counts you there. Only flag main if there are other interactive sessions besides you.
-- LIVE SESSIONS only covers this machine, and its format isn't a documented contract. If it prints a "skipping" line, report from cards alone.
+- LIVE SESSIONS only covers this machine, and its format isn't a documented contract. If it prints a "skipping" line, the WORKTREES section's `NOTE:` lines say what tower used instead (the event log's last 24h, or cards alone): report from GROUPS as usual and mention it once.
+- For a branch's PR state in the statuses (merged → ready to clean up, open with nobody working → waiting on CI), run `python3 -I <plugin>/scripts/run-tower.py state --pr` (from this skill's base directory, `../../scripts/run-tower.py`). hub-scan.sh leaves it out so the pane's 30-second refresh never asks GitHub, and both show the same statuses.
 - If context is getting long, tell the user to `/clear` and run the hub again — all state is on disk, nothing is lost.
 - Never delete worktrees, branches or cards on your own; suggest it and wait for a yes.
 - Creating a parked-idea issue is a public GitHub write, so it triggers an approval prompt here too. That's expected.
