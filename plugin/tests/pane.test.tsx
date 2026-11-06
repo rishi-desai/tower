@@ -23,7 +23,7 @@ const CALM = variant(w => w.status !== 'needs-you' ? w : {
   sessions: w.sessions.map(s => ({ ...s, activity: 'busy', waiting_for: '' })),
 })
 
-// hub-scan.sh's GitHub section (only Refresh GitHub runs it): one PR, twelve open issues, one ready for an agent.
+// `tower scan`'s GitHub section (only Refresh GitHub runs it): one PR, twelve open issues, one ready for an agent.
 const ISSUES = ['- #61 Copilot: analyst [level] calls [ready-for-agent] [enhancement]', ...Array.from({ length: 11 }, (_, i) => `- #${60 - i} idea ${60 - i}`)]
 const githubReport = (issues: string[]) => `REPO: repo
 
@@ -81,6 +81,9 @@ type World = {
   clock: ReturnType<typeof mock.clock>
 }
 
+/** Whether argv is the pane's `tower scan` run (for its GitHub section). */
+const isScan = (argv: readonly string[]) => /^python3 -I \/.+\/scripts\/run-tower\.py scan$/.test(argv.join(' '))
+
 /** The engine beneath the mod: canned commands, captured status line, toasts and file writes. */
 function world(on: On, state: TowerState, env: Record<string, string> = {}): World {
   const w: World = { state, issues: ISSUES, stateRun: null, orcaPs: ORCA_PS, statuses: [], toasts: [], argvs: [], files: {}, writes: [], clock: mock.clock(on, { now: 0 }) }
@@ -104,8 +107,8 @@ function world(on: On, state: TowerState, env: Record<string, string> = {}): Wor
     const ran = (exitCode: number, stdout: string, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     const ok = (stdout: string) => ran(0, stdout)
     if (e.argv[0] === 'git') return ok('true\n')
+    if (isScan(e.argv)) return ok(githubReport(w.issues))
     if (e.argv[0] === 'python3') return w.stateRun ? ran(w.stateRun.exitCode, '', w.stateRun.stderr) : ok(JSON.stringify(w.state))
-    if (e.argv[0] === 'bash') return ok(githubReport(w.issues))
     if (e.argv[0] === 'orca' && e.argv[2] === 'list') return ok(JSON.stringify({ ok: true, result: { terminals: ORCA_TERMINALS } }))
     if (e.argv[0] === 'orca' && e.argv[1] === 'worktree') return w.orcaPs === null ? ran(1, '', 'orca: not running') : ok(JSON.stringify(w.orcaPs))
     if (e.argv[0] === 'orca' || e.argv[0] === 'open') return ok('{"ok":true}')
@@ -137,7 +140,7 @@ test('the pane draws tower state: what needs you, the WIP count, and every workt
   // The core it runs is its own plugin's ($.plugin.root, an absolute path), never one `claude plugin list` finds.
   expect(w.argvs.some(argv => /^python3 -I \/.+\/scripts\/run-tower\.py state --json$/.test(argv.join(' ')))).toBe(true)
   expect(w.argvs.some(argv => argv[0] === 'claude')).toBe(false)
-  expect(w.argvs.some(argv => argv[0] === 'bash')).toBe(false) // hub-scan.sh runs only for GitHub
+  expect(w.argvs.some(isScan)).toBe(false) // `tower scan` runs only for GitHub
   expect(w.statuses.at(-1)).toBe('tower WIP 5/3 · 3 need you')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -277,7 +280,7 @@ test('every open issue is listed, ten at most: ready ones start, the rest are di
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'github' })
-  expect(w.argvs.some(argv => /^bash \/.+\/skills\/hub\/scripts\/hub-scan\.sh$/.test(argv.join(' ')))).toBe(true)
+  expect(w.argvs.some(isScan)).toBe(true)
 
   expect(await ui.find({ type: 'Text', text: /^ #57$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^Alert copilot$/ })).toBeTruthy() // PR rows: number + title only
@@ -296,7 +299,7 @@ test('every open issue is listed, ten at most: ready ones start, the rest are di
 
   // The 30-second refresh skips GitHub; the pane keeps the stored section.
   await ui.press({ key: 'refresh' })
-  expect(w.argvs.filter(argv => argv[0] === 'bash').length).toBe(1)
+  expect(w.argvs.filter(isScan).length).toBe(1)
   expect(await ui.find({ type: 'Button', key: 'start-61' })).toBeTruthy()
   await ui.unmount()
 })
