@@ -308,7 +308,7 @@ description, or you type `/tower:<name>`.
 
 ### Always on (not skills)
 
-- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
+- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, keeping personal rules out of repos, and no AI attribution (no co-author trailers, "Generated with" lines, "on behalf of" notes or 🤖 in commits, PRs, comments, issues or branch names).
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
 - **The policy line** (`policy-context.py`, a SessionStart hook): one line added to each session's context saying
   which profile applies to its repo, what it may do without asking, and what asks you first, so a worker doesn't
