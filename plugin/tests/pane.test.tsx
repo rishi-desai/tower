@@ -23,7 +23,7 @@ const CALM = variant(w => w.status !== 'needs-you' ? w : {
   sessions: w.sessions.map(s => ({ ...s, activity: 'busy', waiting_for: '' })),
 })
 
-// hub-scan.sh's GitHub section (only Refresh GitHub runs it): one PR, twelve open issues, one ready for an agent.
+// `tower scan`'s GitHub section (only Refresh GitHub runs it): one PR, twelve open issues, one ready for an agent.
 const ISSUES = ['- #61 Copilot: analyst [level] calls [ready-for-agent] [enhancement]', ...Array.from({ length: 11 }, (_, i) => `- #${60 - i} idea ${60 - i}`)]
 const githubReport = (issues: string[]) => `REPO: repo
 
@@ -55,14 +55,14 @@ const ORCA_PS = {
 }
 
 const PANE = {
-  plugin: 'tower-pane',
+  plugin: 'tower',
   component: 'Pane',
   requestId: 'tower',
   props: { title: 'tower', isFocused: false, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
 } as const
 
 const BAND = {
-  plugin: 'tower-pane',
+  plugin: 'tower',
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
@@ -80,6 +80,9 @@ type World = {
   readError?: string
   clock: ReturnType<typeof mock.clock>
 }
+
+/** Whether argv is the pane's `tower scan` run (for its GitHub section). */
+const isScan = (argv: readonly string[]) => /^python3 -I \/.+\/scripts\/run-tower\.py scan$/.test(argv.join(' '))
 
 /** The engine beneath the mod: canned commands, captured status line, toasts and file writes. */
 function world(on: On, state: TowerState, env: Record<string, string> = {}): World {
@@ -103,10 +106,9 @@ function world(on: On, state: TowerState, env: Record<string, string> = {}): Wor
     w.argvs.push([...e.argv])
     const ran = (exitCode: number, stdout: string, stderr = '') => ({ value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false } })
     const ok = (stdout: string) => ran(0, stdout)
-    if (e.argv[0] === 'claude') return ok(JSON.stringify([{ id: 'tower@tower', enabled: true, installPath: '/tower' }]))
     if (e.argv[0] === 'git') return ok('true\n')
+    if (isScan(e.argv)) return ok(githubReport(w.issues))
     if (e.argv[0] === 'python3') return w.stateRun ? ran(w.stateRun.exitCode, '', w.stateRun.stderr) : ok(JSON.stringify(w.state))
-    if (e.argv[0] === 'bash') return ok(githubReport(w.issues))
     if (e.argv[0] === 'orca' && e.argv[2] === 'list') return ok(JSON.stringify({ ok: true, result: { terminals: ORCA_TERMINALS } }))
     if (e.argv[0] === 'orca' && e.argv[1] === 'worktree') return w.orcaPs === null ? ran(1, '', 'orca: not running') : ok(JSON.stringify(w.orcaPs))
     if (e.argv[0] === 'orca' || e.argv[0] === 'open') return ok('{"ok":true}')
@@ -135,8 +137,10 @@ test('the pane draws tower state: what needs you, the WIP count, and every workt
   w.files['/vault/repo/Ledger/_backlog.md'] = '- [ ] 2026-11-05 — worm theme for the dashboard\n'
   await $.command.run({ command: 'tower' })
 
-  expect(w.argvs.some(argv => argv.join(' ') === 'python3 -I /tower/scripts/run-tower.py state --json')).toBe(true)
-  expect(w.argvs.some(argv => argv[0] === 'bash')).toBe(false) // hub-scan.sh runs only for GitHub
+  // The core it runs is its own plugin's ($.plugin.root, an absolute path), never one `claude plugin list` finds.
+  expect(w.argvs.some(argv => /^python3 -I \/.+\/scripts\/run-tower\.py state --json$/.test(argv.join(' ')))).toBe(true)
+  expect(w.argvs.some(argv => argv[0] === 'claude')).toBe(false)
+  expect(w.argvs.some(isScan)).toBe(false) // `tower scan` runs only for GitHub
   expect(w.statuses.at(-1)).toBe('tower WIP 5/3 · 3 need you')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -184,10 +188,10 @@ test('a toast only for what is new since the last scan', async ($, on) => {
 
 test('a scan that fails shows its reason instead of freezing the pane', async ($, on) => {
   const w = world(on, SHARED)
-  w.stateRun = { exitCode: 1, stderr: "python3: can't open file '/tower/scripts/run-tower.py': No such file\n" }
+  w.stateRun = { exitCode: 1, stderr: 'Traceback:\n  File "run-tower.py", line 24\nKeyError: boom\n' }
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('the pane needs tower 0.9.1 or later')
+  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toBe('tower scan failed: KeyError: boom')
   expect(w.statuses.at(-1)).toBeUndefined()
   await ui.unmount()
 })
@@ -196,12 +200,7 @@ test("a scan that can't start shows why", async ($, on) => {
   mock.clock(on, { now: 0 })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
-  on('process.run', (_, e) => {
-    if (e.argv[0] === 'claude') {
-      return { value: { exitCode: 0, stdout: JSON.stringify([{ id: 'tower@tower', enabled: true, installPath: '/tower' }]), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    }
-    return { deny: 'spawn python3 ENOENT' } // the command could not start: $.process.run rejects
-  })
+  on('process.run', () => ({ deny: 'spawn python3 ENOENT' })) // the command could not start: $.process.run rejects
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /tower scan failed: scan didn't run/ }))?.text).toContain('ENOENT')
@@ -281,7 +280,7 @@ test('every open issue is listed, ten at most: ready ones start, the rest are di
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'github' })
-  expect(w.argvs.some(argv => argv.join(' ') === 'bash /tower/skills/hub/scripts/hub-scan.sh')).toBe(true)
+  expect(w.argvs.some(isScan)).toBe(true)
 
   expect(await ui.find({ type: 'Text', text: /^ #57$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^Alert copilot$/ })).toBeTruthy() // PR rows: number + title only
@@ -300,7 +299,7 @@ test('every open issue is listed, ten at most: ready ones start, the rest are di
 
   // The 30-second refresh skips GitHub; the pane keeps the stored section.
   await ui.press({ key: 'refresh' })
-  expect(w.argvs.filter(argv => argv[0] === 'bash').length).toBe(1)
+  expect(w.argvs.filter(isScan).length).toBe(1)
   expect(await ui.find({ type: 'Button', key: 'start-61' })).toBeTruthy()
   await ui.unmount()
 })
@@ -353,18 +352,12 @@ test('a ready-for-agent issue older than the newest ten still gets its start but
   expect(shown.map(i => i.number)).toEqual(['12', '60', '59', '58', '57', '56', '55', '54', '53', '52'])
 })
 
-test('a tower too old for the pane says to update it, and a real failure keeps its own reason', async ($, on) => {
-  const w = world(on, { ...SHARED, housekeeping: undefined } as unknown as TowerState) // tower 0.9.0's JSON
+test('tower state JSON without housekeeping is reported, not drawn half-empty', async ($, on) => {
+  world(on, { ...SHARED, housekeeping: undefined } as unknown as TowerState)
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('claude plugin update tower@tower')
+  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toBe('tower scan failed: tower state printed no housekeeping (its format may have changed)')
   await ui.unmount()
-
-  w.stateRun = { exitCode: 1, stderr: 'Traceback:\n  File "/tower/scripts/run-tower.py", line 24\nKeyError: boom\n' }
-  await $.command.run({ command: 'tower' })
-  const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await again.find({ type: 'Text', text: /tower scan failed: / }))?.text).toBe('tower scan failed: KeyError: boom')
-  await again.unmount()
 })
 
 test('without live sessions (event log only) nothing offers a nudge it could not deliver', async ($, on) => {

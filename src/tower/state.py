@@ -81,7 +81,8 @@ class Pr:
 class WorktreeFacts:
     """Everything known about one worktree. sessions_known is False when neither live sessions nor recent events
     could be read, so "no sessions" means "don't know". unshipped_commits, dirty and pr are None when unknown;
-    dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow)."""
+    dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow).
+    card_unreadable is True when a card file exists but couldn't be read: card is None, but not because there's none."""
 
     label: str
     branch: str | None
@@ -93,6 +94,7 @@ class WorktreeFacts:
     unshipped_commits: int | None
     dirty: bool | None
     pr: Pr | None
+    card_unreadable: bool = False
 
 
 @dataclass(frozen=True)
@@ -274,11 +276,14 @@ def gather(
     for index, wt in enumerate(worktrees):
         is_main = index == 0
         card = None
+        card_unreadable = False
         pr = prs.get(wt.branch) if wt.branch else None
         if ledger_folder is not None:
             card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
+            notes_before = len(notes)
             card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
+            card_unreadable = len(notes) > notes_before  # card_or_note notes only a card it couldn't read
         facts = WorktreeFacts(
             label=wt.label,
             branch=wt.branch,
@@ -293,6 +298,7 @@ def gather(
             # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise.
             dirty=is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None,
             pr=pr,
+            card_unreadable=card_unreadable,
         )
         rows.append((facts, decide(facts)))
 
@@ -669,7 +675,7 @@ def group_row(facts: WorktreeFacts, v: Verdict) -> str:
 
 
 def housekeeping(report: Report) -> list[str]:
-    """The Housekeeping rows of hub-scan.sh's GROUPS section, one per cleanup item."""
+    """The Housekeeping rows of the GROUPS section, one per cleanup item."""
     return [f"- {cell(label)} | {cell(note)}" for label, note in cleanup(report)]
 
 
