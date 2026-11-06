@@ -14,7 +14,13 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "plugin/skills/hub/scripts/wayfinder-labels.py"
-WAYFINDER_LABELS = ["wayfinder:map", "wayfinder:research", "wayfinder:prototype", "wayfinder:grilling", "wayfinder:task"]
+WAYFINDER_LABELS = [
+    "wayfinder:map",
+    "wayfinder:research",
+    "wayfinder:prototype",
+    "wayfinder:grilling",
+    "wayfinder:task",
+]
 
 # A stand-in for gh: `label list` returns $FAKE_GH_LABELS (one name per line) and, like the real gh,
 # returns only the first 30 unless --limit says otherwise. Every call is appended to $FAKE_GH_LOG.
@@ -118,7 +124,9 @@ def test_fails_loudly_when_gh_fails(fake_gh: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_matches_existing_labels_case_insensitively(fake_gh: Path) -> None:
-    result = run_script(["Wayfinder:Map", "WAYFINDER:RESEARCH", "wayfinder:prototype", "wayfinder:grilling", "wayfinder:task"])
+    result = run_script(
+        ["Wayfinder:Map", "WAYFINDER:RESEARCH", "wayfinder:prototype", "wayfinder:grilling", "wayfinder:task"]
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
 

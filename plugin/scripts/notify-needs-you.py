@@ -20,7 +20,7 @@ import sys
 def git(cwd: str, *args: str) -> str:
     """Run one git command in cwd and return its trimmed stdout, or "" if it fails."""
     try:
-        proc = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=5)
+        proc = subprocess.run(["git", "-C", cwd, *args], check=False, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return proc.stdout.strip() if proc.returncode == 0 else ""
@@ -30,11 +30,11 @@ def where(cwd: str) -> tuple[str, str]:
     """(project, worktree label) for cwd. Same repo naming as ledger-lib.sh: the folder holding the shared .git."""
     common = git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common:
-        return os.path.basename(cwd) or cwd, ""                     # not a git repo: just the folder name
+        return os.path.basename(cwd) or cwd, ""  # not a git repo: just the folder name
     if os.path.basename(common) == ".git":
         project = os.path.basename(os.path.dirname(common))
     else:
-        project = os.path.basename(common).removesuffix(".git")     # bare repo
+        project = os.path.basename(common).removesuffix(".git")  # bare repo
     branch = git(cwd, "branch", "--show-current") or "detached " + git(cwd, "rev-parse", "--short", "HEAD")
     return project, branch
 
@@ -42,12 +42,17 @@ def where(cwd: str) -> tuple[str, str]:
 def notify(title: str, subtitle: str, message: str) -> None:
     """Show a macOS notification. Text goes in as arguments, never spliced into the AppleScript, so quotes are safe."""
     script = [
-        "-e", "on run argv",
-        "-e", "display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)",
-        "-e", "end run",
+        "-e",
+        "on run argv",
+        "-e",
+        "display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)",
+        "-e",
+        "end run",
     ]
     try:
-        proc = subprocess.run(["osascript", *script, title, subtitle, message], capture_output=True, text=True, timeout=5)
+        proc = subprocess.run(
+            ["osascript", *script, title, subtitle, message], check=False, capture_output=True, text=True, timeout=5
+        )
     except (OSError, subprocess.TimeoutExpired) as err:
         print(f"notify-needs-you: osascript failed: {err}", file=sys.stderr)
         return

@@ -367,8 +367,25 @@ tower/
     hooks/register.tsx                the pane, status line, toasts, Orca jump, question relay
     types/index.d.ts                  its saved state, as Claude Code checks it
     tests/                            claude plugin test pane
+  tests/                              pytest: the approval hook's cases (tests/test_confirm_public.py)
+  mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
+  .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`
   setup.sh  CLAUDE.global.md  README.md  HANDOFF.md
 ```
+
+## Checks and CI
+
+`mise run ci` runs every check, and GitHub runs the same task on each pull request through
+[rishi-desai/ci](https://github.com/rishi-desai/ci)'s shared workflow, so a local pass means CI passes. It runs ruff
+(lint and format), mypy (strict), pytest, shellcheck on every `.sh`, gitleaks (secret scan),
+`claude plugin validate --strict` on the marketplace and both plugins, and the pane's tests (`claude plugin test pane`,
+which needs no login). Run `mise install` once first.
+
+- **The approval hook's tests** live in `tests/test_confirm_public.py`. Known bypasses are `xfail` tests: pytest
+  fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
+- **The pane's type check isn't in `ci`.** Its type stubs (`pane/.claude-plugin/types/`) are written by Claude Code
+  only when a logged-in session loads the pane, which CI can't do. Start `claude --plugin-dir pane` once, then run
+  `mise run pane-typecheck`.
 
 ## Using it on the work laptop
 

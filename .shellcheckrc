@@ -1,0 +1,4 @@
+# Follow sourced files, so each skill script is checked together with ledger-lib.sh. The scripts already name it
+# with `# shellcheck source=` relative to their own folder, which SCRIPTDIR makes shellcheck resolve.
+external-sources=true
+source-path=SCRIPTDIR

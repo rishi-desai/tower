@@ -24,15 +24,16 @@ import json
 import os
 import subprocess
 import sys
+from typing import Any
 
 TIMEOUT_SECONDS = 15
 
 
-def load_sessions() -> list[dict] | None:
+def load_sessions() -> list[dict[str, Any]] | None:
     """Run `claude agents --json`. Returns None (after printing why) if it can't be used."""
     try:
         proc = subprocess.run(
-            ["claude", "agents", "--json"], capture_output=True, text=True, timeout=TIMEOUT_SECONDS
+            ["claude", "agents", "--json"], check=False, capture_output=True, text=True, timeout=TIMEOUT_SECONDS
         )
     except FileNotFoundError:
         print("(claude CLI not on PATH; skipping live sessions)")
@@ -63,13 +64,13 @@ def owning_worktree(cwd: str, worktrees: dict[str, str]) -> str | None:
     """
     best = None
     for path in worktrees:
-        if cwd == path or cwd.startswith(path + os.sep):
-            if best is None or len(path) > len(best):
-                best = path
+        inside = cwd == path or cwd.startswith(path + os.sep)
+        if inside and (best is None or len(path) > len(best)):
+            best = path
     return best
 
 
-def describe(session: dict) -> str:
+def describe(session: dict[str, Any]) -> str:
     """One short label: name(status), plus what it's waiting for if it says."""
     name = session.get("name") or session.get("id") or "?"
     kind = session.get("kind", "?")
@@ -82,7 +83,7 @@ def describe(session: dict) -> str:
     return label
 
 
-def is_waiting(session: dict) -> bool:
+def is_waiting(session: dict[str, Any]) -> bool:
     """True when the session is stopped on the user: status/state `waiting`, or it says what it waits for."""
     return (session.get("status") or session.get("state")) == "waiting" or bool(session.get("waitingFor"))
 
@@ -101,7 +102,7 @@ def main(argv: list[str]) -> int:
     if sessions is None:
         return 0
 
-    by_worktree: dict[str, list[dict]] = {}
+    by_worktree: dict[str, list[dict[str, Any]]] = {}
     for session in sessions:
         cwd = session.get("cwd")
         if not isinstance(cwd, str):
@@ -109,9 +110,9 @@ def main(argv: list[str]) -> int:
         # A finished background session is history, not a live claim on a worktree.
         if session.get("kind") == "background" and session.get("state") == "done":
             continue
-        path = owning_worktree(os.path.realpath(cwd), worktrees)
-        if path:
-            by_worktree.setdefault(path, []).append(session)
+        owner = owning_worktree(os.path.realpath(cwd), worktrees)
+        if owner:
+            by_worktree.setdefault(owner, []).append(session)
 
     if not by_worktree:
         print("(no open sessions in this repo)")
