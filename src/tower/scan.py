@@ -29,7 +29,7 @@ PR_TEMPLATE = (
     "{{range .}}- #{{.number}} {{.title}} [{{.headRefName}}] review:"
     '{{if .reviewDecision}}{{.reviewDecision}}{{else}}none{{end}}{{if .isDraft}} DRAFT{{end}}{{"\\n"}}{{end}}'
 )
-ISSUE_LIMIT = 30  # gh issue list's --limit; the pane shows "+" when a list is this long (HUB_SCAN_ISSUE_LIMIT)
+ISSUE_LIMIT = 30  # gh issue list's --limit; the pane shows "+" when a list is this long (SCAN_ISSUE_LIMIT)
 ISSUE_TEMPLATE = '{{range .}}- #{{.number}} {{.title}}{{range .labels}} [{{.name}}]{{end}}{{"\\n"}}{{end}}'
 
 
@@ -57,12 +57,13 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
 
 
 def adopt_line(report: state.Report) -> str:
-    """ADOPT: yes, with why, when the repo hasn't been brought under tower yet: most worktrees have no card, or the
-    main checkout has uncommitted work or more than one interactive session (the hub is one). Else ADOPT: no."""
+    """ADOPT: yes, with why, when the repo hasn't been brought under tower yet: most worktrees have no card (at least
+    two: one is Housekeeping's "no card"), or the main checkout has uncommitted work or more than one interactive session
+    (the hub is one). Else ADOPT: no."""
     reasons: list[str] = []
     worktrees = [facts for facts, _ in report.worktrees if not facts.is_main]
     no_card = sum(1 for facts in worktrees if facts.card is None)
-    if no_card * 2 > len(worktrees):
+    if no_card >= 2 and no_card * 2 > len(worktrees):
         reasons.append(f"{no_card} of {len(worktrees)} worktrees have no card")
     roots = {os.path.realpath(facts.path) for facts, _ in report.worktrees}
     # Same count as `tower adopt-scan`, so a folder that only holds worktrees isn't work on main (#4). Unknown (git
@@ -70,7 +71,7 @@ def adopt_line(report: state.Report) -> str:
     changes, _ = adopt.uncommitted(Path(report.main_checkout), roots)
     if changes:
         reasons.append(f"the main checkout has {state.plural(len(changes), 'uncommitted change')}")
-    main = report.worktrees[0][0]
+    main = next(facts for facts, _ in report.worktrees if facts.is_main)
     interactive = sum(1 for s in main.sessions if s.kind == "interactive")
     if interactive > 1:
         reasons.append(f"{interactive} interactive sessions share the main checkout (one is the hub)")

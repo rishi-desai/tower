@@ -288,13 +288,13 @@ def test_the_pane_is_tested_on_tower_states_own_output(repo: Fixture, capsys: py
     }
 
 
-def test_the_panes_issue_limit_matches_hub_scans() -> None:
+def test_the_panes_issue_limit_matches_tower_scans() -> None:
     """The pane says "+ N or more" when `tower scan` listed as many issues as its `gh issue list --limit`
     allows."""
     from tower import scan
 
     pane = (ROOT / "pane" / "hooks" / "register.tsx").read_text(encoding="utf-8")
-    assert int(pane.split("const HUB_SCAN_ISSUE_LIMIT = ")[1].split(" ")[0]) == scan.ISSUE_LIMIT
+    assert int(pane.split("const SCAN_ISSUE_LIMIT = ")[1].split(" ")[0]) == scan.ISSUE_LIMIT
 
 
 def test_the_hub_groups_the_shared_fixture_as_the_pane_does(repo: Fixture) -> None:

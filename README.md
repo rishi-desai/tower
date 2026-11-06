@@ -237,7 +237,7 @@ approach, which is what grilling and the spec are for.
 
 ## Adopting an existing repo
 
-The hub's adopt mode is for a repo where work is already in flight and you've lost track. `/tower:hub` (run from the main checkout) switches to it by itself when `tower scan`'s `ADOPT:` line says `yes`: more than half the worktrees have no card, the main checkout has uncommitted changes (a folder that only holds worktrees doesn't count), or more than one interactive session is open in it (the hub is one). Ask the hub to adopt the repo to run it anyway. `/tower:adopt` still works for one release and does the same.
+The hub's adopt mode is for a repo where work is already in flight and you've lost track. `/tower:hub` (run from the main checkout) switches to it by itself when `tower scan`'s `ADOPT:` line says `yes`: more than half the worktrees (and at least two) have no card, the main checkout has uncommitted changes (a folder that only holds worktrees doesn't count), or more than one interactive session is open in it (the hub is one). Ask the hub to adopt the repo to run it anyway. `/tower:adopt` still works for one release and does the same.
 
 1. **Scan (read-only).** `tower adopt-scan` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
 2. **One plan, which you approve.** In order:

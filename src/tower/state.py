@@ -662,7 +662,7 @@ def group_row(facts: WorktreeFacts, v: Verdict) -> str:
 
 
 def housekeeping(report: Report) -> list[str]:
-    """The Housekeeping rows of hub-scan.sh's GROUPS section, one per cleanup item."""
+    """The Housekeeping rows of the GROUPS section, one per cleanup item."""
     return [f"- {cell(label)} | {cell(note)}" for label, note in cleanup(report)]
 
 

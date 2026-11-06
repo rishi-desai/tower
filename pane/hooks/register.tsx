@@ -16,7 +16,7 @@ const LOCAL_EVERY_MS = 30_000 // cards, worktrees, live sessions: cheap, so ofte
 // this paints over it with Ghostty's background (~/.config/ghostty/config). '' keeps Claude Code's fill.
 const PANE_BACKGROUND = '#0e0e0e'
 const ISSUES_SHOWN = 10 // the GitHub list stays short: the newest ten, then "+ N more"
-const HUB_SCAN_ISSUE_LIMIT = 30 // `tower scan`'s `gh issue list --limit`: a full list may mean there are more
+const SCAN_ISSUE_LIMIT = 30 // `tower scan`'s `gh issue list --limit`: a full list may mean there are more
 const scanAtom = atom({ plugin: 'tower-pane', key: 'scan' } as const, null)
 const parkAtom = atom({ plugin: 'tower-pane', key: 'park' } as const, 0) // bumped to clear the park field
 const githubAtom = atom({ plugin: 'tower-pane', key: 'github' } as const, null)
@@ -577,7 +577,7 @@ export const register: Register = on => {
           const [number = '', ...words] = prLine(pr).split(' ')
           return bullet(`pr-${number}`, ` ${number}`, words.join(' '))
         })}
-        {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length}${issues.length >= HUB_SCAN_ISSUE_LIMIT ? '+' : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
+        {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length}${issues.length >= SCAN_ISSUE_LIMIT ? '+' : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
         {shownIssues.map(issue => (
           <Box key={`issue-${issue.number}`} flexDirection="row" columnGap={1}>
             <Box flexShrink={0}>
@@ -589,7 +589,7 @@ export const register: Register = on => {
             <Text wrap="wrap">{issue.title}</Text>
           </Box>
         ))}
-        {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= HUB_SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
+        {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
         {storedGithub && <Text italic>{`as of ${clockTime(storedGithub.at)}`}</Text>}
 
         {gap()}

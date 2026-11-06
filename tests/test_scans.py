@@ -323,10 +323,17 @@ def adopt_line(capsys: pytest.CaptureFixture[str]) -> str:
 def test_scan_says_an_adopted_repo_needs_no_adopting(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     repo.add_worktree("feat-1")
     repo.write_card("feat-1", "running")
-    repo.add_worktree("feat-2")  # one worktree with no card isn't most of them: Housekeeping lists it
+    repo.add_worktree("feat-2")  # one worktree with no card isn't a reason: Housekeeping lists it
     repo.write_card("feat-3", "running")
     repo.add_worktree("feat-3")
     repo.sessions(interactive("hub", repo.main, "idle"))
+
+    assert adopt_line(capsys) == "ADOPT: no"
+
+
+def test_one_worktree_without_a_card_isnt_a_reason_to_adopt(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """A worktree just made by hand, before its first card: 1 of 1 is most, but Housekeeping's "no card" covers it."""
+    repo.add_worktree("feat-1")
 
     assert adopt_line(capsys) == "ADOPT: no"
 

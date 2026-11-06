@@ -81,10 +81,10 @@ type World = {
   clock: ReturnType<typeof mock.clock>
 }
 
-/** The engine beneath the mod: canned commands, captured status line, toasts and file writes. */
 /** Whether argv is the pane's `tower scan` run (for its GitHub section). */
 const isScan = (argv: readonly string[]) => argv.join(' ') === 'python3 -I /tower/scripts/run-tower.py scan'
 
+/** The engine beneath the mod: canned commands, captured status line, toasts and file writes. */
 function world(on: On, state: TowerState, env: Record<string, string> = {}): World {
   const w: World = { state, issues: ISSUES, stateRun: null, orcaPs: ORCA_PS, statuses: [], toasts: [], argvs: [], files: {}, writes: [], clock: mock.clock(on, { now: 0 }) }
   mock.env(on, env)
