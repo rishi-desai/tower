@@ -227,7 +227,7 @@ def test_a_needs_you_card_with_no_checkout_ranks_above_a_calm_repo_and_empty_led
     text = capsys.readouterr().out
 
     summary = section(text, "== ALL REPOS")
-    assert summary[0] == f"- work-proj | cards only: 1 card, no checkout in the event log | needs-you: 1 | {work}"
+    assert summary[0] == f"- work-proj | cards only: 1 card, no checkout tower could read | needs-you: 1 | {work}"
     assert summary[1].startswith("- repo | needs-you: 0 |")
     assert "empty-proj" not in text
     assert text.index("== CARDS ONLY: work-proj") < text.index("== REPO: repo")
@@ -243,3 +243,49 @@ def test_an_unreadable_config_is_noted_once(
     notes = listed(state_all(capsys), "notes")
 
     assert sum("Ledger folders weren't looked for" in note for note in notes) == 1
+
+
+def test_a_project_folder_differing_only_in_case_is_the_repos_ledger(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a case-insensitive disk (macOS's default) vault/Repo/Ledger is the folder repo `repo` reads its cards from:
+    its cards aren't listed again as cards only."""
+    vault = repo.ledger.parents[1]
+    (vault / "repo").rename(vault / "Repo")
+    if not (vault / "repo").exists():
+        pytest.skip("case-sensitive file system: Repo and repo are different folders here")
+    (vault / "Repo" / "Ledger" / "old.md").write_text("---\nstatus: needs-you\n---\n", encoding="utf-8")
+    log_event(repo, repo.main)
+
+    result = state_all(capsys)
+
+    assert [r["repo"] for r in listed(result, "repos")] == ["repo"]
+    assert listed(result, "cards_only") == []
+
+
+def test_a_note_about_the_machine_prints_once_not_once_per_repo(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo.agents_json.parent / "bin" / "claude").unlink()
+    monkeypatch.setenv("PATH", str(repo.agents_json.parent / "bin") + os.pathsep + "/usr/bin:/bin")
+    log_event(repo, repo.main)
+    log_event(repo, second_repo(repo))
+
+    assert cli.main(["state", "--all"]) == 0
+    out = capsys.readouterr().out
+
+    assert out.count("claude CLI not on PATH") == 1
+
+
+def test_the_gone_note_names_five_folders_and_counts_the_rest(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for n in range(7):
+        log_event(repo, repo.main.parent / f"deleted-{n}")
+
+    notes = listed(state_all(capsys), "notes")
+
+    gone = [note for note in notes if "whose folder is gone" in note]
+    assert len(gone) == 1
+    assert gone[0].startswith("skipped 7 repos from the event log whose folder is gone: ")
+    assert gone[0].endswith("deleted-4 and 2 more")

@@ -24,11 +24,16 @@ from tower.gitrepo import NotARepo, list_worktrees
 
 # The statuses the ALL REPOS summary counts per repo, most urgent first; repos are listed in this order of urgency.
 SUMMARY_STATUSES = ("needs-you", "blocked", "running", "waiting-ci", "done")
+NO_CHECKOUT = (
+    "(no checkout of this project tower could read: none in the event log yet, or its folder moved or is gone"
+    " (see NOTE); start a session there, or run tower state --repo)"
+)
+GONE_LISTED = 5  # the "folder is gone" note names this many paths, then counts the rest: the log is never pruned
 
 
 @dataclass(frozen=True)
 class CardsOnly:
-    """A project with a Ledger folder but no checkout tower knows: its cards and the statuses they claim."""
+    """A project with a Ledger folder but no checkout tower could read: its cards and the statuses they claim."""
 
     project: str
     ledger: str
@@ -71,23 +76,48 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
         try:
             report = state.gather(Path(path), with_pr=with_pr, now=now, agents_read=agents)
         except NotARepo:
-            notes.append(f"skipped {path}: it's in the event log but isn't a git repo any more")
+            # list_worktrees can't tell "not a repo" from git failing or timing out, so the note doesn't guess.
+            notes.append(f"skipped {path}: git couldn't list its worktrees (no longer a repo, or git failed)")
             continue
         # Events name the main checkout, but one naming a worktree would lead to the same repo: list it once.
         if os.path.realpath(report.main_checkout) not in gathered:
             gathered.add(os.path.realpath(report.main_checkout))
             reports.append(report)
     if gone:
+        more = f" and {len(gone) - GONE_LISTED} more" if len(gone) > GONE_LISTED else ""
+        listed = ", ".join(gone[:GONE_LISTED])
         notes.append(
-            f"skipped {state.plural(len(gone), 'repo')} from the event log whose folder is gone: {', '.join(gone)}"
+            f"skipped {state.plural(len(gone), 'repo')} from the event log whose folder is gone: {listed}{more}"
         )
+    notes += hoist_shared_notes(reports)
 
-    claimed = {os.path.realpath(r.ledger) for r in reports if r.ledger is not None}
+    claimed = {folder_identity(r.ledger) for r in reports if r.ledger is not None}
     found = [] if conf is None else ledger_projects(conf, notes)
-    cards_only = [c for c in found if c.cards and os.path.realpath(c.ledger) not in claimed]
+    cards_only = [c for c in found if c.cards and folder_identity(c.ledger) not in claimed]
     reports.sort(key=urgency)
     cards_only.sort(key=urgency)
     return AllReport(repos=reports, cards_only=cards_only, notes=notes)
+
+
+def hoist_shared_notes(reports: list[state.Report]) -> list[str]:
+    """The notes every one of two or more reports has (no `claude` CLI, no projects_dir: facts about the machine, not
+    a repo), removed from each report so the text prints them once instead of once per repo."""
+    if len(reports) < 2:
+        return []
+    shared = [note for note in reports[0].notes if all(note in r.notes for r in reports[1:])]
+    for r in reports:
+        r.notes[:] = [note for note in r.notes if note not in shared]
+    return shared
+
+
+def folder_identity(path: str) -> tuple[int, int] | str:
+    """What makes two paths the same folder: its device and inode, so vault/Tower and vault/tower match on macOS's
+    case-insensitive disk (realpath keeps the case it was given); the real path when the folder can't be read."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return os.path.realpath(path)
+    return (info.st_dev, info.st_ino)
 
 
 def known_checkouts(here: Path | None, notes: list[str]) -> list[str]:
@@ -124,15 +154,14 @@ def logged_repos(notes: list[str]) -> list[str]:
 def ledger_projects(conf: dict[str, str], notes: list[str]) -> list[CardsOnly]:
     """Every project folder in the vault that has a Ledger folder, with its cards; none, and a note, when projects_dir
     isn't set up or can't be listed."""
-    projects_dir = conf.get("projects_dir", "")
-    if not projects_dir or not os.path.isdir(projects_dir):
-        notes.append(
-            f"no projects_dir in {ledger.conf_path()} (or it doesn't exist), so Ledger folders weren't looked for"
-        )
+    try:
+        projects_dir = ledger.projects_root(conf)
+    except ledger.LedgerError as error:
+        notes.append(f"{error}, so Ledger folders weren't looked for")
         return []
     found = []
     try:
-        projects = sorted(p for p in Path(projects_dir).iterdir() if (p / "Ledger").is_dir())
+        projects = sorted(p for p in projects_dir.iterdir() if (p / "Ledger").is_dir())
     except OSError as error:
         notes.append(
             f"couldn't list {projects_dir} ({error.strerror or type(error).__name__}), so Ledger folders weren't looked for"
@@ -202,7 +231,7 @@ def summary_row(entry: state.Report | CardsOnly) -> str:
     counts = status_counts(entry)
     if isinstance(entry, CardsOnly):
         claims = [f"{s}: {counts[s]}" for s in SUMMARY_STATUSES if counts[s]]
-        listed = f"cards only: {state.plural(len(entry.cards), 'card')}, no checkout in the event log"
+        listed = f"cards only: {state.plural(len(entry.cards), 'card')}, no checkout tower could read"
         return " | ".join([f"- {state.cell(entry.project)}", listed, *claims, entry.ledger])
     limit = " AT LIMIT" if entry.slots >= entry.wip_limit else ""
     fields = [f"- {state.cell(entry.repo)}", *(f"{s}: {counts[s]}" for s in SUMMARY_STATUSES)]
@@ -216,7 +245,7 @@ def entry_section(entry: state.Report | CardsOnly) -> list[str]:
         rows = [f"- {state.cell(o.name)} | card: {state.cell(o.status) or '?'} | {o.path}" for o in entry.cards]
         return [
             f"== CARDS ONLY: {state.cell(entry.project)} | {entry.ledger} ==",
-            "(no checkout of this project is in the event log: start a session there, or run tower state --repo)",
+            NO_CHECKOUT,
             *rows,
         ]
     return [f"== REPO: {state.cell(entry.repo)} | {entry.main_checkout} ==", state.render_text(entry).rstrip("\n")]
