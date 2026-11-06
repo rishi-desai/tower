@@ -43,9 +43,8 @@ the status, ticket, branch and PR from facts (`tower card write`), so a card can
 _Avoid_: status file, report
 
 **Ticket guess**:
-The ticket a branch name points at, one rule wherever tower shows it (cards, adopt mode's scan): a number counts only
-at the start of the branch or a `/` segment, alone or after a type such as `feat-` or `fix/`, so `release-2026-11`
-and `v2-fix-42` point at none.
+The ticket tower reads from a branch name when nothing else names one, the same guess wherever tower shows it. A year
+or a version in the name (`release-2026-11`) is not a ticket.
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
 **Ledger**:
