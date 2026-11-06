@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from collections import deque
@@ -51,6 +52,7 @@ STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flag
 EVENTS_WINDOW = timedelta(hours=24)  # older events don't stand in for a live session: it may have crashed
 EVENTS_READ = 5000  # how many of the log's last lines to read when standing in for live sessions
 LISTED_OVERLAP_FILES = 5  # a Housekeeping row names this many shared files, then says how many more
+COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # a full SHA-1 or SHA-256 commit id, as gh prints headRefOid
 
 
 @dataclass(frozen=True)
@@ -310,6 +312,9 @@ def gather(
             notes_before = len(notes)
             card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
             card_unreadable = len(notes) > notes_before  # card_or_note notes only a card it couldn't read
+        # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise. Commits
+        # past a merged PR's head only matter once nothing is uncommitted.
+        dirty = is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None
         facts = WorktreeFacts(
             label=wt.label,
             branch=wt.branch,
@@ -321,12 +326,11 @@ def gather(
             unshipped_commits=None
             if is_main or base is None
             else unshipped(Path(main.path), base, wt.branch or wt.sha),
-            # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise.
-            dirty=is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None,
+            dirty=dirty,
             pr=pr,
             card_unreadable=card_unreadable,
             commits_after_merge=commits_after(Path(wt.path), pr.head_oid)
-            if not is_main and pr and pr.state == "MERGED"
+            if dirty is False and pr and pr.state == "MERGED"
             else None,
         )
         rows.append((facts, decide(facts)))
@@ -574,11 +578,13 @@ def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
     for entry in listed:
         if not isinstance(entry, dict) or not isinstance(entry.get("number"), int):
             continue
+        head = entry.get("headRefOid")
         pr = Pr(
             number=entry["number"],
             state=str(entry.get("state")),
             url=str(entry.get("url")),
-            head_oid=str(entry["headRefOid"]) if entry.get("headRefOid") else None,
+            # Only a commit id goes on to git: never something it could read as an option.
+            head_oid=head if isinstance(head, str) and COMMIT_ID.fullmatch(head) else None,
         )
         current = found.get(str(entry.get("headRefName")))
         if (
