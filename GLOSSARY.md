@@ -42,6 +42,12 @@ one decision it needs, how to verify. One card per worktree. The worker writes o
 the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
 _Avoid_: status file, report
 
+**Ticket guess**:
+The ticket a branch name points at, one rule wherever tower shows it (cards, adopt mode's scan): a number counts only
+at the start of the branch or a `/` segment, alone or after a type such as `feat-` or `fix/`, so `release-2026-11`
+and `v2-fix-42` point at none.
+_Avoid_: ticket number (a branch can have digits that aren't one)
+
 **Ledger**:
 The vault folder holding a project's cards and its backlog of parked ideas.
 _Avoid_: board, tracker
