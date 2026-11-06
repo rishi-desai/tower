@@ -245,6 +245,21 @@ def test_an_unreadable_config_is_noted_once(
     assert sum("Ledger folders weren't looked for" in note for note in notes) == 1
 
 
+def test_a_tower_conf_that_isnt_utf8_is_noted_and_every_repo_still_listed(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = repo.agents_json.parent / "latin1.conf"
+    conf.write_bytes(b"projects_dir=/Users/caf\xe9/vault\n")
+    monkeypatch.setenv("TOWER_CONF", str(conf))
+    other = second_repo(repo)
+    log_event(repo, other)
+
+    result = state_all(capsys)
+
+    assert f"{conf} isn't UTF-8 text (line 1), so Ledger folders weren't looked for" in listed(result, "notes")
+    assert {report["repo"] for report in listed(result, "repos")} == {"repo", "other"}
+
+
 def test_a_project_folder_differing_only_in_case_is_the_repos_ledger(
     repo: Fixture, capsys: pytest.CaptureFixture[str]
 ) -> None:

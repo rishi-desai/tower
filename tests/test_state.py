@@ -36,6 +36,13 @@ def rows(result: dict[str, object]) -> dict[str, dict[str, object]]:
     return {row["label"]: row for row in worktrees}
 
 
+def listed_notes(result: dict[str, object]) -> list[str]:
+    """The report's notes."""
+    notes = result["notes"]
+    assert isinstance(notes, list)
+    return notes
+
+
 def test_three_busy_workers_with_no_cards_hold_three_slots(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     paths = [repo.add_worktree(f"feat-{n}") for n in (1, 2, 3)]
     repo.sessions(*(interactive(f"w{n}", path, "busy") for n, path in enumerate(paths, 1)))
@@ -253,6 +260,19 @@ def test_without_a_ledger_it_still_reports_sessions(
         f"no projects_dir in {tmp_path / 'tower.conf'} (run setup.sh on this machine), so no cards were read"
     ]
     assert (result["slots"], result["wip_limit"]) == (1, 4)
+
+
+def test_a_tower_conf_that_isnt_utf8_is_noted_and_worktrees_are_still_reported(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    path = repo.add_worktree("feat-1")
+    repo.sessions(interactive("w1", path, "busy"))
+    (tmp_path / "tower.conf").write_bytes(b"wip_limit=3\nprojects_dir=/Users/caf\xe9/vault\n")  # a Latin-1 path
+
+    result = tower_state(capsys)
+
+    assert f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used" in listed_notes(result)
+    assert rows(result)["feat-1"]["status"] == "running"
 
 
 def test_outside_a_repo_it_says_so_and_exits_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

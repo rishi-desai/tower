@@ -46,6 +46,12 @@ _Avoid_: status file, report
 The vault folder holding a project's cards and its backlog of parked ideas.
 _Avoid_: board, tracker
 
+**Machine config** (`tower.conf`):
+This machine's own settings, written by setup.sh: where the vault's projects live, which project folder a repo maps
+to, the WIP limit. One that can't be read, or isn't UTF-8 text, never passes for an empty one: a report notes why and
+goes on without its settings, and a command that needs the ledger stops and says why.
+_Avoid_: config (alone: it reads as runtime config), settings
+
 **Event**:
 One timestamped fact recorded about a session as it happens (it started, the user answered, it needs the user, it
 stopped), tagged with its repo, worktree and branch.
