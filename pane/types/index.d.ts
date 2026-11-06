@@ -40,6 +40,8 @@ export type TowerState = {
   worktrees: StateWorktree[]
   unshipped: Array<{ label: string; commits: number }>
   orphan_cards: Array<{ name: string; status: string; path: string }>
+  /** Pairs of worktrees (by label) that changed the same files; the hub lists each under Housekeeping too. */
+  overlaps: Array<{ worktrees: [string, string]; files: string[] }>
   /** The cleanup the hub suggests (its Housekeeping group): a worktree or orphan card's label and what to do. */
   housekeeping: Array<{ label: string; note: string }>
 }

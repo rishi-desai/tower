@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tower import events, ledger, sessions
+from tower.conflicts import Overlap, find_overlaps
 from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
 from tower.sessions import owning_worktree
 
@@ -45,6 +46,7 @@ SLOT_STATUSES = ("running", "needs-you")
 STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flagged STALE
 EVENTS_WINDOW = timedelta(hours=24)  # older events don't stand in for a live session: it may have crashed
 EVENTS_READ = 5000  # how many of the log's last lines to read when standing in for live sessions
+LISTED_OVERLAP_FILES = 5  # a Housekeeping row names this many shared files, then says how many more
 
 
 @dataclass(frozen=True)
@@ -195,7 +197,8 @@ class Report:
 
     sessions_source is "live" (`claude agents --json`), "events" (the event log stood in) or "none". agents is
     `claude agents --json`'s list when it could be read, so the scan's LIVE SESSIONS section draws the same snapshot the
-    statuses were decided from. notes says, in plain words, which facts were missing and why.
+    statuses were decided from. overlaps are the pairs of worktrees that changed the same files (conflicts.py). notes
+    says, in plain words, which facts were missing and why.
     """
 
     repo: str
@@ -208,6 +211,7 @@ class Report:
     sessions_source: str
     notes: list[str] = field(default_factory=list)
     agents: list[object] | None = None
+    overlaps: list[Overlap] = field(default_factory=list)
 
     @property
     def slots(self) -> int:
@@ -289,6 +293,8 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         )
         rows.append((facts, decide(facts)))
 
+    overlaps, overlap_notes = find_overlaps(Path(main.path), worktrees[1:], base)
+    notes += overlap_notes
     return Report(
         repo=name,
         main_checkout=main.path,
@@ -300,6 +306,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         sessions_source=sessions_source,
         notes=notes,
         agents=agents,
+        overlaps=overlaps,
     )
 
 
@@ -570,6 +577,7 @@ def to_json(report: Report) -> dict[str, object]:
             {"label": f.label, "commits": f.unshipped_commits} for f, _ in report.worktrees if f.unshipped_commits
         ],
         "orphan_cards": [asdict(o) for o in report.orphan_cards],
+        "overlaps": [{"worktrees": [o.first, o.second], "files": list(o.files)} for o in report.overlaps],
         "housekeeping": [{"label": label, "note": note} for label, note in cleanup(report)],
     }
 
@@ -668,7 +676,7 @@ def housekeeping(report: Report) -> list[str]:
 
 def cleanup(report: Report) -> list[tuple[str, str]]:
     """Cleanup the hub suggests, as (label, note): worktrees to remove, missing or stale cards, orphans, shared
-    worktrees. The hub's Housekeeping group and the pane's both list these."""
+    worktrees, worktrees changing the same files. The hub's Housekeeping group and the pane's both list these."""
     items: list[tuple[str, str]] = []
     for facts, v in report.worktrees:
         if v.status == "ready-to-clean":
@@ -684,7 +692,16 @@ def cleanup(report: Report) -> list[tuple[str, str]]:
             where = " (in the main checkout, one is the hub)" if facts.is_main else ""
             items.append((facts.label, f"{interactive} interactive sessions share this worktree{where}"))
     items += [(o.name, f"orphan card (worktree gone), status: {o.status or '?'}") for o in report.orphan_cards]
+    items += [(o.first, overlap_note(o)) for o in report.overlaps]
     return items
+
+
+def overlap_note(overlap: Overlap) -> str:
+    """The Housekeeping note for two worktrees changing the same files: the first few files, then how many more."""
+    listed = ", ".join(overlap.files[:LISTED_OVERLAP_FILES])
+    more = len(overlap.files) - LISTED_OVERLAP_FILES
+    files = "file" if len(overlap.files) == 1 else "files"
+    return f"changes the same {files} as {overlap.second}: {listed}{f' and {more} more' if more > 0 else ''}"
 
 
 def cell(text: str) -> str:
