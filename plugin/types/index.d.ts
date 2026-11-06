@@ -20,7 +20,8 @@ export type StateWorktree = {
   sessions: StateSession[]
   unshipped_commits: number | null
   dirty: boolean | null
-  pr: { number: number; state: string; url: string } | null
+  /** head_oid: the PR's head commit ("" when gh didn't say). */
+  pr: { number: number; state: string; url: string; head_oid: string } | null
 }
 
 /**

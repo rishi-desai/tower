@@ -18,6 +18,7 @@ def facts(
     unshipped_commits: int | None = 2,
     dirty: bool | None = False,
     pr: Pr | None = None,
+    commits_after_merge: int | None = 0,
 ) -> WorktreeFacts:
     """A feature worktree's facts; each test changes only what its rule is about."""
     return WorktreeFacts(
@@ -31,6 +32,7 @@ def facts(
         unshipped_commits=unshipped_commits,
         dirty=dirty,
         pr=pr,
+        commits_after_merge=commits_after_merge,
     )
 
 
@@ -114,6 +116,29 @@ def test_uncommitted_changes_are_never_ready_to_clean() -> None:
     assert verdict.status == "done"
     assert verdict.reason == "the card says done; PR #57 is merged but the worktree has uncommitted changes"
     assert state.decide(facts(card("done"), unshipped_commits=0, dirty=True)).status == "done"
+
+
+def test_commits_the_merged_pr_doesnt_include_are_never_ready_to_clean() -> None:
+    """Commits made after the PR's head merged would be lost with the worktree. A squash merge puts none of the
+    branch's commits on the base branch, so only the PR's own head can tell."""
+    merged = Pr(number=57, state="MERGED", url="https://github.com/o/r/pull/57")
+    verdict = state.decide(facts(card("done"), pr=merged, commits_after_merge=2))
+    assert verdict.status == "done"
+    assert (
+        verdict.reason == "the card says done; PR #57 is merged but the worktree has 2 commits the PR doesn't include"
+    )
+    assert state.decide(facts(None, pr=merged, commits_after_merge=1)) == state.Verdict(
+        "no-card", "PR #57 is merged but the worktree has 1 commit the PR doesn't include", False
+    )
+
+
+def test_a_merged_pr_whose_head_couldnt_be_compared_is_not_ready_to_clean() -> None:
+    merged = Pr(number=57, state="MERGED", url="https://github.com/o/r/pull/57")
+    verdict = state.decide(facts(card("done"), pr=merged, commits_after_merge=None))
+    assert verdict.status == "done"
+    assert verdict.reason == (
+        "the card says done; PR #57 is merged but the worktree couldn't be checked for commits the PR doesn't include"
+    )
 
 
 def test_the_main_checkout_is_main_and_never_holds_a_slot() -> None:

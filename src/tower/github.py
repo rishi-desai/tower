@@ -49,7 +49,7 @@ def merged_prs(repo: str, since: datetime) -> list[MergedPr]:
     for item in listed:
         try:
             number, title, branch = int(item["number"]), str(item["title"]), str(item["headRefName"])
-            merged_at = datetime.fromisoformat(item["mergedAt"])
+            merged_at = datetime.fromisoformat(str(item["mergedAt"]).replace("Z", "+00:00"))  # 3.9 rejects "Z"
         except (KeyError, TypeError, ValueError) as error:
             raise GhError(f"gh pr list in {repo}: unexpected PR record {item!r}") from error
         if merged_at < since or item.get("isCrossRepository"):
@@ -83,7 +83,7 @@ def reopen_times(repo: str, issue: int) -> list[datetime]:
         '.[] | select(.event == "reopened") | .created_at',
     )
     try:
-        return sorted(datetime.fromisoformat(line) for line in out.splitlines() if line)
+        return sorted(datetime.fromisoformat(line.replace("Z", "+00:00")) for line in out.splitlines() if line)
     except ValueError as error:
         raise GhError(f"gh api in {repo}: unexpected reopen time in {out[:200]!r}") from error
 
