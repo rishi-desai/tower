@@ -107,11 +107,15 @@ def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_i
     """Squash-merged branches: none of their commits are on main, so the PR's head commit (headRefOid) is what the
     worktree's HEAD is compared with. A head this clone doesn't have can't be compared, so it isn't ready-to-clean."""
     heads = {}
-    for branch in ("squashed", "more-work", "head-elsewhere"):
+    for branch in ("squashed", "more-work", "head-elsewhere", "pulled-main"):
         path = repo.add_worktree(branch, commits=2)
         repo.write_card(branch, "done")
         heads[branch] = git(path, "rev-parse", "HEAD").strip()
     git(repo.main / "worktrees" / "more-work", "commit", "-q", "--allow-empty", "-m", "after the merge")
+    # main moves on and pulled-main merges it in: the merge commit is past the PR's head and may hold conflict fixes,
+    # so it stays (a cautious "no", not a lost commit)
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "squashed PRs")
+    git(repo.main / "worktrees" / "pulled-main", "merge", "-q", "--no-edit", "main")
     heads["head-elsewhere"] = "0123456789abcdef0123456789abcdef01234567"
     listed = [
         {
@@ -137,6 +141,10 @@ def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_i
     assert (found["head-elsewhere"]["status"], found["head-elsewhere"]["reason"]) == (
         "done",
         "the card says done; PR #9 is merged but the worktree couldn't be checked for commits the PR doesn't include",
+    )
+    assert (found["pulled-main"]["status"], found["pulled-main"]["reason"]) == (
+        "done",
+        "the card says done; PR #10 is merged but the worktree has 2 commits the PR doesn't include",
     )
 
 

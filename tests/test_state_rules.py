@@ -120,7 +120,7 @@ def test_uncommitted_changes_are_never_ready_to_clean() -> None:
 
 def test_commits_the_merged_pr_doesnt_include_are_never_ready_to_clean() -> None:
     """Commits made after the PR's head merged would be lost with the worktree. A squash merge puts none of the
-    branch's commits on the base branch, so only the PR's own head can tell."""
+    branch's commits on the base branch, so the PR's own head is what tells."""
     merged = Pr(number=57, state="MERGED", url="https://github.com/o/r/pull/57")
     verdict = state.decide(facts(card("done"), pr=merged, commits_after_merge=2))
     assert verdict.status == "done"
@@ -139,6 +139,13 @@ def test_a_merged_pr_whose_head_couldnt_be_compared_is_not_ready_to_clean() -> N
     assert verdict.reason == (
         "the card says done; PR #57 is merged but the worktree couldn't be checked for commits the PR doesn't include"
     )
+
+
+def test_a_merged_pr_whose_head_isnt_here_is_still_ready_to_clean_when_every_commit_is_on_the_base_branch() -> None:
+    """Every commit on the base branch proves nothing would be lost, whatever the PR's head was."""
+    merged = Pr(number=57, state="MERGED", url="https://github.com/o/r/pull/57")
+    verdict = state.decide(facts(card("done"), pr=merged, commits_after_merge=None, unshipped_commits=0))
+    assert verdict == state.Verdict("ready-to-clean", "PR #57 is merged", False)
 
 
 def test_the_main_checkout_is_main_and_never_holds_a_slot() -> None:

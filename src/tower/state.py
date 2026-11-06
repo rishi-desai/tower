@@ -9,8 +9,8 @@ it:
     waiting-ci      finished, waiting on CI, review or a merge (the card says so, or its PR is open and nobody works)
     blocked         the card says blocked (waiting on something other than you)
     done            the card says done
-    ready-to-clean  merged with nothing uncommitted and no commits past the PR's head (or every commit on the base
-                    branch with nothing uncommitted): the worktree can go
+    ready-to-clean  nothing uncommitted, and the PR merged with no commits past its head, or every commit is on the
+                    base branch: the worktree can go
     no-card         no card, or one whose status tower doesn't know
     main            the main checkout
 
@@ -76,13 +76,13 @@ class Session:
 
 @dataclass(frozen=True)
 class Pr:
-    """The pull request for a worktree's branch. state is GitHub's: OPEN, MERGED or CLOSED. head_oid is its head
-    commit (for a merged PR, the commit that merged); "" when gh didn't say."""
+    """The pull request for a worktree's branch. state is GitHub's: OPEN, MERGED or CLOSED. head_oid is the branch's
+    last commit in the PR (for a merged PR, as it was when it merged); None when gh didn't say."""
 
     number: int
     state: str
     url: str
-    head_oid: str = ""
+    head_oid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,10 +156,10 @@ def decide(worktree: WorktreeFacts) -> Verdict:
     # A merged PR settles a card that says the work is finished (or no card), never one that says work goes on: the
     # branch name may have been reused after an old PR merged.
     if pr and pr.state == "MERGED" and card_status not in ("running", "needs-you", "blocked"):
-        # Squash merges leave none of the branch's commits on the base branch, so only the PR's head shows whether
-        # the worktree has work the merge didn't take.
+        # Squash merges leave none of the branch's commits on the base branch, so the PR's head is what shows the
+        # worktree has no work the merge didn't take; every commit on the base branch shows it too.
         after_merge = worktree.commits_after_merge
-        if worktree.dirty is False and after_merge == 0:
+        if worktree.dirty is False and (after_merge == 0 or worktree.unshipped_commits == 0):
             return verdict("ready-to-clean", f"PR #{pr.number} is merged", worktree)
         if worktree.dirty is not False:
             unsure = "has uncommitted changes" if worktree.dirty else "couldn't be checked for uncommitted changes"
@@ -325,7 +325,9 @@ def gather(
             dirty=is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None,
             pr=pr,
             card_unreadable=card_unreadable,
-            commits_after_merge=commits_after(Path(wt.path), pr.head_oid) if pr and pr.state == "MERGED" else None,
+            commits_after_merge=commits_after(Path(wt.path), pr.head_oid)
+            if not is_main and pr and pr.state == "MERGED"
+            else None,
         )
         rows.append((facts, decide(facts)))
 
@@ -528,7 +530,7 @@ def unshipped(repo_dir: Path, base: str, ref: str) -> int | None:
     return int(out) if out is not None and out.isdigit() else None
 
 
-def commits_after(worktree: Path, head_oid: str) -> int | None:
+def commits_after(worktree: Path, head_oid: str | None) -> int | None:
     """How many commits the worktree's HEAD has that head_oid doesn't; None if git can't say (no head_oid, or that
     commit isn't in this clone)."""
     if not head_oid:
@@ -576,7 +578,7 @@ def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
             number=entry["number"],
             state=str(entry.get("state")),
             url=str(entry.get("url")),
-            head_oid=str(entry.get("headRefOid") or ""),
+            head_oid=str(entry["headRefOid"]) if entry.get("headRefOid") else None,
         )
         current = found.get(str(entry.get("headRefName")))
         if (
