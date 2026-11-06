@@ -121,7 +121,23 @@ Two different `/code-review` skills run, so the prompt names each: Matt Pocock's
    - `--model` is required: Orca refuses `--effort` without it (`--effort requires --model.`). Use `model` from `~/.claude/settings.json`, or `opus` when it isn't set, in single quotes (`opus[1m]` is a glob pattern to zsh); if Orca rejects that id, show the error and ask before retrying with `opus`. `--effort` on the command line applies to this worker session only, unlike `/effort <level>`.
    - `--surface terminal` runs the Claude Code CLI in an Orca terminal, which LIVE SESSIONS and tower's card hooks need; Orca's chat surface may not be either. A prompt starting with `/implement` runs as the skill, as if typed.
 3. On success, run `hub-scan.sh --no-github`: the new worktree should be listed, with its session under LIVE SESSIONS. Tell the user its real branch and where it is.
-4. Give it a starter card, so the scan lists it under Running instead of Housekeeping until the worker writes its own. Get the path with `../status-card/scripts/card-path.sh <new worktree path>` (relative to this skill's base directory; use its absolute path). Write the status-card format to `card-<N>.md` in your scratchpad with `status: running`, `ticket: "#<N>"` (quoted, or YAML reads it as a comment; `none` for the setup and wayfinder worktrees), the real branch, `pr: none`, `updated` from `date '+%Y-%m-%dT%H:%M'`, and "Started from the hub; no report from the worker yet." under Done. Then create the card only if it doesn't exist: `(set -C; cat '<scratch card>' > '<card path>')`. If that says the file exists, check whether it's newer than the kickoff file you wrote just before the launch: `find '<card path>' -newer '<kickoff file>'` prints it if so. Newer means the worker has written its own (maybe `needs-you` with a question): leave it. Older means it's an orphan from an earlier worktree on the same branch: replace it with the starter card.
+4. Give it a starter card, so the scan lists it under Running instead of Housekeeping until the worker writes its own. tower's core writes the card (it fills status, ticket, branch, PR and time from facts), and `--if-absent` makes it create the card only if there isn't one. `<plugin>` is two folders up from this skill's base directory (use its absolute path); use `--ticket none` for the setup and wayfinder worktrees:
+   ```
+   python3 -I <plugin>/scripts/run-tower.py card write --dir '<new worktree path>' --ticket <N> --if-absent <<'EOF'
+   ## Done
+   - Started from the hub; no report from the worker yet.
+
+   ## Why it matters
+   - <the ticket in a few words>.
+
+   ## Needs you
+   - Nothing yet.
+
+   ## Verify
+   - Nothing to verify yet.
+   EOF
+   ```
+   If it exits 3, a card exists at the path it names: check whether it's newer than the kickoff file you wrote just before the launch (`find '<card path>' -newer '<kickoff file>'` prints it if so). Newer means the worker has written its own (maybe `needs-you` with a question): leave it. Older means it's an orphan from an earlier worktree on the same branch: run the same command without `--if-absent` to replace it.
 5. On failure, show Orca's `error.message` as it is. If it says the launch outcome is unknown (it gives an `operationId`), check first: find the worktree whose `displayName` is your `--name` in `orca worktree list --json`; if it's there, `orca terminal list --worktree path:<its path> --json` shows a connected Claude terminal if the launch worked (LIVE SESSIONS can lag or be skipped). Otherwise re-run the same command with `--retry-launch <operationId>` added, from the same directory; never as a fresh launch, which can start a second worker.
 
 ### Fallback: the two-step paste
