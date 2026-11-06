@@ -2,24 +2,28 @@
 # setup.sh — sets up tower (parallel Claude Code agents) on THIS machine. Run once per Mac.
 #
 # Usage:
-#   ./setup.sh                    interactive: asks for the projects folder, WIP limit and the machine's profile
+#   ./setup.sh                    interactive: asks for the projects folder, WIP limit, the machine's profile and
+#                                 the worktrees folder (Tab completes the two folders)
 #   ./setup.sh --dry-run          show every change it would make; change nothing
-#   ./setup.sh --projects-dir PATH --wip-limit N --profile work|personal|sandbox   no prompts
+#   ./setup.sh --projects-dir PATH --wip-limit N --profile work|personal|sandbox --worktrees-dir PATH   no prompts
 #   --profile NAME                this machine's default approval profile (work: everything asks; personal; sandbox:
 #                                 nothing asks; or one your policy file defines). Default: keep the current one
+#   --worktrees-dir PATH          one folder for every project's worktrees (created if missing), instead of a
+#                                 worktrees/ folder inside each repo. Default: keep the current one
 #   --plugin-source SRC           where to install the plugin from (default: rishi-desai/tower on GitHub;
 #                                 a local path works for testing before pushing)
 #   --no-plugin                   skip step 5 (e.g. you install the plugin another way)
 #
 # The skills and the approval hook ship as a Claude Code plugin (installed under ~/.claude/plugins,
 # separate from ~/.claude/skills). This script does the per-machine parts. Safe to re-run:
-#   1. writes ~/.claude/tower.conf        projects folder and WIP limit
+#   1. writes ~/.claude/tower.conf        projects folder, WIP limit and worktrees folder
 #      and ~/.claude/tower/policy.toml   the default profile (tower.conf's old push/PR approval migrated first)
 #   2. creates ~/.claude/tower/rules/     personal per-project rules (protected by Claude Code)
 #   3. adds CLAUDE.local.md to your global git ignore, so personal rules are never committed
 #   4. refreshes the marked block in ~/.claude/CLAUDE.md (original backed up once)
 #   5. adds the tower marketplace and installs the tower plugin (skills, hooks and the pane) with `claude plugin`;
 #      an older install's separate tower-pane plugin is uninstalled, since tower now carries the pane
+# Orca's CLI can't set the folder Orca creates worktrees in, so the last lines say where to set it in the app.
 
 set -euo pipefail
 
@@ -29,7 +33,7 @@ conf="$claude_dir/tower.conf"
 rules_dir="$claude_dir/tower/rules"
 policy_file="${TOWER_DIR:-$claude_dir/tower}/policy.toml"
 
-dry_run=0; projects_dir=""; wip_limit=""; profile=""; plugin_source="rishi-desai/tower"; plugin=1
+dry_run=0; projects_dir=""; wip_limit=""; profile=""; worktrees_dir=""; plugin_source="rishi-desai/tower"; plugin=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)       dry_run=1 ;;
@@ -38,9 +42,10 @@ while [ $# -gt 0 ]; do
     --profile)       profile="${2:?--profile needs work, personal, sandbox or a profile name}"; shift ;;
     --push-approval|--pr-approval)
                      echo "$1 was replaced by --profile work|personal|sandbox (README: Policy profiles)" >&2; exit 2 ;;
+    --worktrees-dir) worktrees_dir="${2:?--worktrees-dir needs a path}"; shift ;;
     --plugin-source) plugin_source="${2:?--plugin-source needs a GitHub repo or path}"; shift ;;
     --no-plugin)     plugin=0 ;;
-    -h|--help)       sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,26p' "$0"; exit 0 ;;
     *)               echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -96,25 +101,47 @@ fi
 default_wip="$(conf_get wip_limit 3)"
 # The profile as things stand (tower.conf's old push/PR approval count until they're migrated), read without writing.
 default_profile="$(policy_py 'print(policy.current_default())')"
+default_worktrees="$(conf_get worktrees_dir "$HOME/worktrees")"
 
-ask() {   # ask PROMPT DEFAULT -> prints the answer (or the default on Enter)
+ask() {   # ask PROMPT DEFAULT [path] -> prints the answer (or the default on Enter); path: Tab completes file paths
   local answer
   if [ ! -t 0 ]; then echo "no terminal to ask '$1'; pass it as a flag (see --help)" >&2; exit 2; fi
-  read -r -p "$1 [${2:-none}]: " answer
+  if [ "${3-}" = path ]; then
+    # -e: readline's Tab completion (bash 3.2 has no -i to prefill it). No -r: completion writes a space as "\ ",
+    # and read without -r turns that back into the space ("Mobile\ Documents" -> "Mobile Documents").
+    # shellcheck disable=SC2162
+    read -e -p "$1 [${2:-none}]: " answer
+  else
+    read -r -p "$1 [${2:-none}]: " answer
+  fi
   printf '%s\n' "${answer:-$2}"
 }
-[ -n "$projects_dir" ]  || projects_dir="$(ask "Folder holding one subfolder per project (cards go in <Project>/Ledger/)" "$default_dir")"
+[ -n "$projects_dir" ]  || projects_dir="$(ask "Folder holding one subfolder per project (cards go in <Project>/Ledger/)" "$default_dir" path)"
 [ -n "$wip_limit" ]     || wip_limit="$(ask "WIP limit: worktrees running or needing you at once" "$default_wip")"
 if [ -z "$profile" ]; then   # newer than the other flags: scripted runs without it keep the current profile
   if [ -t 0 ]; then
     profile="$(ask "This machine's profile: work (everything asks) | personal (force pushes, merges into main and comments ask) | sandbox (nothing asks)" "$default_profile")"
   else profile="$default_profile"; fi
 fi
+if [ -z "$worktrees_dir" ]; then   # scripted runs without it keep the saved folder (or none), like --profile
+  if [ -t 0 ]; then
+    worktrees_dir="$(ask "Folder for every project's worktrees (one place, not inside each repo)" "$default_worktrees" path)"
+  else worktrees_dir="$(conf_get worktrees_dir)"; fi
+fi
 projects_dir="${projects_dir/#\~/$HOME}"                  # allow ~/... in the answer
+worktrees_dir="${worktrees_dir/#\~/$HOME}"
+while [ "$worktrees_dir" != / ] && [ "${worktrees_dir%/}" != "$worktrees_dir" ]; do   # Tab completion leaves a /
+  worktrees_dir="${worktrees_dir%/}"
+done
 case "$wip_limit" in ''|*[!0-9]*) echo "WIP limit must be a whole number, got '$wip_limit'" >&2; exit 2 ;; esac
 profiles="$(policy_py 'print(" ".join(policy.available_profiles()))')"
 case " $profiles " in *" $profile "*) ;; *) echo "profile must be one of: $profiles; got '$profile'" >&2; exit 2 ;; esac
 [ -n "$projects_dir" ] || { echo "a projects folder is required" >&2; exit 2; }
+case "$worktrees_dir" in
+  ''|/*) ;;
+  *) echo "the worktrees folder must be an absolute path or ~/..., got '$worktrees_dir' (a relative one means a folder in each repo)" >&2
+     exit 2 ;;
+esac
 
 if [ ! -d "$projects_dir" ]; then
   echo "Projects folder doesn't exist yet: $projects_dir"
@@ -123,6 +150,14 @@ if [ ! -d "$projects_dir" ]; then
     case "$yn" in [yY]*) ;; *) echo "Not created; nothing set up."; exit 1 ;; esac
   fi
   run mkdir -p "$projects_dir"
+fi
+if [ -n "$worktrees_dir" ] && [ ! -d "$worktrees_dir" ]; then
+  echo "Worktrees folder doesn't exist yet, so creating it: $worktrees_dir"
+  run mkdir -p "$worktrees_dir"
+fi
+# Prints "false" (exit 0) inside a .git folder or a bare repo, where worktrees wouldn't show as untracked.
+if [ -d "$worktrees_dir" ] && [ "$(git -C "$worktrees_dir" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+  echo "warning: $worktrees_dir is inside a git checkout, which will show the worktrees in it as untracked" >&2
 fi
 
 echo "1. Config: $conf, and the profile in $policy_file"
@@ -138,6 +173,10 @@ new_conf="$(mktemp)"; trap 'rm -f "$new_conf"' EXIT
   echo "projects_dir=$projects_dir"
   echo "# Max worktrees in running or needs-you before the hub suggests parking new ideas."
   echo "wip_limit=$wip_limit"
+  if [ -n "$worktrees_dir" ]; then
+    echo "# Folder holding every project's worktrees, one subfolder per repo (Orca: Workspace Directory, Nest Workspaces on)."
+    echo "worktrees_dir=$worktrees_dir"
+  fi
   echo "# What asks before an agent pushes, merges or writes to GitHub is the profile in $policy_file"
   echo "# (\`tower policy\` shows it; \`tower policy use <profile>\` changes it). A profile can set its own wip_limit."
   echo "# Optional: map a repo folder name to a differently named project folder, e.g."
@@ -147,6 +186,8 @@ new_conf="$(mktemp)"; trap 'rm -f "$new_conf"' EXIT
 if [ "$dry_run" -eq 1 ]; then sed 's/^/  [dry-run] | /' "$new_conf"; else mkdir -p "$claude_dir"; cp "$new_conf" "$conf"; fi
 if [ "$dry_run" -eq 1 ]; then echo "  [dry-run] tower policy use $profile"
 else policy use "$profile" | sed 's/^/  /'; fi
+echo "  Policy file: $policy_file"
+echo "  To tune one setting, add it under [profiles.$profile] there, e.g. wip_limit = 5 (README: Policy profiles lists the keys)."
 
 # ---------- 2. personal rules folder ----------
 echo "2. Rules folder: $rules_dir"
@@ -229,4 +270,10 @@ sys.exit(0 if any(p.get("id") == sys.argv[1] for p in plugins) else 1)' "$1"
 fi
 
 echo
+if [ -n "$worktrees_dir" ]; then
+  # `orca project setup-update --worktree-base-path` exists, but sets one project; the app-wide folder is a setting.
+  echo "If you use Orca: its CLI can't set where new worktrees go, so set it once in the app:"
+  echo "  Settings > General > Workspace > Workspace Directory: $worktrees_dir"
+  echo "  and turn on Nest Workspaces there, so each repo's worktrees get their own subfolder."
+fi
 if [ "$dry_run" -eq 1 ]; then echo "Dry run: nothing was changed."; else echo "Set up. Restart Claude Code, open a repo, and run /tower:hub (it adopts a messy one first)."; fi
