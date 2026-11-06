@@ -43,3 +43,14 @@ _Avoid_: card status (that is only the card's claim), real status
 What the WIP limit counts: a worktree whose session is busy or waiting on you, or whose card says running or
 needs-you. A worktree only waiting on CI or review doesn't hold one.
 _Avoid_: WIP item, active worktree
+
+## Metrics
+
+**Accepted change**:
+A merged PR: the unit `tower stats` measures. Its events are the ones on its head branch in its repo, up to the
+merge.
+_Avoid_: task, ticket (a ticket can take several changes)
+
+**Report**:
+A worker's turn that ended with it stopping for you. A prompt you type after one is a follow-up.
+_Avoid_: card (that is the written note), summary
