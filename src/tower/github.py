@@ -26,6 +26,13 @@ class GhError(Exception):
     """A gh call failed: not installed, not logged in, not a GitHub repo, or timed out."""
 
 
+def from_this_repo(pr: dict[str, object]) -> bool:
+    """Whether a `gh pr list` record is a PR from this repo rather than a fork: a stranger's patch-1 isn't the work
+    of the worktree whose branch has that name. A record without isCrossRepository (gh wasn't asked for it) counts as
+    a fork, so a caller that forgot the field shows no PRs rather than strangers'."""
+    return pr.get("isCrossRepository") is False
+
+
 def merged_prs(repo: str, since: datetime) -> list[MergedPr]:
     """The PRs merged in repo (a checkout's path) at or after since, each with its tickets; not those from forks."""
     output = gh(
@@ -52,7 +59,7 @@ def merged_prs(repo: str, since: datetime) -> list[MergedPr]:
             merged_at = datetime.fromisoformat(str(item["mergedAt"]).replace("Z", "+00:00"))  # 3.9 rejects "Z"
         except (KeyError, TypeError, ValueError) as error:
             raise GhError(f"gh pr list in {repo}: unexpected PR record {item!r}") from error
-        if merged_at < since or item.get("isCrossRepository"):
+        if merged_at < since or not from_this_repo(item):
             continue
         closes = tuple(sorted({int(match) for match in CLOSING_KEYWORD.findall(item.get("body") or "")}))
         prs.append(MergedPr(repo, number, title, branch, merged_at, closes))
