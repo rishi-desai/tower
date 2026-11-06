@@ -71,9 +71,8 @@ RULES = """You are running unattended overnight and I'm asleep. Follow these rul
 7. Any write-up the issue asks for (findings, notes) goes in a file in your PR, never in an issue comment. Don't comment on GitHub at all.
 8. If you're truly blocked, open the PR as a draft (`gh pr create --draft --base {base}`) explaining exactly what blocks you, and stop."""
 
-BASE_STEP_RESET = ("Before any work, run `git fetch origin` and `git reset --hard origin/{base}`. Your branch is brand "
-                   "new, so nothing is lost; this makes {base} your starting point.")
-BASE_STEP_FLAG = "Your branch already starts from {base}; don't change its base."
+BASE_STEP = ("Your branch starts from origin/{base}. Before any work, run `git fetch origin && git merge origin/{base}` "
+             "in case it moved since; don't change your branch's base.")
 
 CLOSES = r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#{n}\b"
 
@@ -125,27 +124,32 @@ def save_state(state: dict) -> None:
     STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def kickoff(n: int, title: str, effort: str, start: str, base_flag: str | None) -> str:
+def kickoff(n: int, title: str, effort: str, start: str) -> str:
     review = "xhigh" if effort == "xhigh" else "high"
     head = f"/prototype {title} — #{n}." if start == "/prototype" else f"{start} #{n} — {title}."
-    base_step = (BASE_STEP_FLAG if base_flag else BASE_STEP_RESET).format(base=BASE)
+    base_step = BASE_STEP.format(base=BASE)
     rules = RULES.format(base_step=base_step, review=review, base=BASE, n=n)
     return head + "\n\n" + rules
 
 
 def start(n: int, title: str, args: argparse.Namespace) -> bool:
     effort, name, skill = TICKETS[n]
-    text = kickoff(n, title, effort, skill, args.orca_base_flag)
+    text = kickoff(n, title, effort, skill)
     if args.dry_run:
         log(f"would start #{n} ({effort}, {name})")
         return True
     with tempfile.NamedTemporaryFile("w", prefix=f"kickoff-{n}-", suffix=".txt", delete=False) as f:
         f.write(text)
+    # Fetch first, so the worktree starts from the integration branch as it is now, with its blockers merged.
+    fetch = subprocess.run(["git", "-C", args.repo_path, "fetch", "origin", BASE], capture_output=True, text=True,
+                           check=False)
+    if fetch.returncode != 0:
+        log(f"git fetch failed for #{n}, not starting it: {fetch.stderr.strip()}")
+        return False
     cmd = ["orca", "worktree", "create", "--repo", f"path:{args.repo_path}", "--name", name, "--no-parent",
+           "--base-branch", f"origin/{BASE}",
            "--issue", str(n), "--agent", "claude", "--model", args.model, "--effort", effort,
            "--surface", "terminal", "--json", "--prompt", text]
-    if args.orca_base_flag:
-        cmd[3:3] = [args.orca_base_flag, BASE]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         log(f"orca failed for #{n}: {result.stderr.strip() or result.stdout.strip()}")
@@ -222,8 +226,6 @@ def main() -> int:
     p.add_argument("--interval", type=int, default=300, help="seconds between passes")
     p.add_argument("--max-hours", type=float, default=4, help="a worker with no PR after this long is stuck")
     p.add_argument("--stop-starting-at", default="07:00", help="no new starts after this time (HH:MM)")
-    p.add_argument("--orca-base-flag", default=None,
-                   help="Orca's flag for a worktree's base branch, if it has one (see orca worktree create --help)")
     p.add_argument("--already-started", default="",
                    help="comma-separated issues you started by hand (e.g. 19,23): tracked, never relaunched")
     p.add_argument("--dry-run", action="store_true", help="show what it would do; change nothing")
