@@ -13,7 +13,8 @@ right.
 
 - **Approval before anything public.** Before you post, reply to, or resolve a
   comment, edit/close/merge the PR, or push: show the user the exact text or
-  change in chat, and set the status card to `needs-you` with that draft.
+  change in chat, and write the status card with `--status needs-you --reason
+  "approve: <action>"` and that draft under Needs you.
   Then run the command; a hook makes Claude Code ask the user to approve it.
   If they decline, don't retry it a different way; ask what they want instead.
 - **Wait with `--until green`** (the default here). It waits on the repo's own

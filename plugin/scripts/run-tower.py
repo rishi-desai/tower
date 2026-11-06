@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """run-tower.py: runs the `tower` command from the plugin, with nothing installed.
 
-  python3 -I run-tower.py state [--repo PATH] [--json] [--pr]
+  python3 -I run-tower.py scan [--no-github]      (or any other `tower` subcommand)
 
-hub-scan.sh and the tower pane call this for each worktree's effective state (the pane with --json). Like record-event.py, it reaches tower's core through the
-plugin's `lib/tower` symlink (a marketplace install copies the link's target), so it works under whatever `python3` is
+The skills' scripts (hub-scan.sh, adopt-scan.sh, card-path.sh, project-rules.sh) are one-line wrappers around this,
+the tower pane runs it for `state --json`, and the skills run it for `card write`. Like record-event.py, it reaches
+tower's core through the plugin's `lib/tower` symlink (a marketplace install copies the link's target), so it works under whatever `python3` is
 on PATH, 3.9 included. It isn't named tower.py: Python puts this folder first on sys.path, and a tower.py here would
 shadow the package.
 """

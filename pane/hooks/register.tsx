@@ -147,7 +147,7 @@ function badgeOf(status: Status | 'session-waiting', isStale: boolean): { label:
 }
 
 /**
- * The card's file name for a worktree row. Must match tower's ledger-lib.sh (ledger_card_name):
+ * The card's file name for a worktree row. Must match tower's core (card_name in src/tower/ledger.py):
  * "/" becomes "__"; a detached HEAD (labelled "(detached abc1234)") is "detached-abc1234".
  */
 export function cardFile(label: string): string {

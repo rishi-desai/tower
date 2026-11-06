@@ -60,7 +60,11 @@ if [ "$plugin" -eq 1 ] && ! command -v claude >/dev/null 2>&1; then
 fi
 
 # ---------- 1. per-machine config ----------
-conf_get() { TOWER_CONF="$conf" bash -c 'source "$1"; tower_conf_get "$2" "$3"' _ "$here/plugin/scripts/ledger-lib.sh" "$1" "${2-}"; }
+# conf_get KEY [DEFAULT] — KEY's saved value, read by tower's core (src/tower/ledger.py) so it parses the file the same way.
+conf_get() {
+  python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; from tower import ledger
+print(ledger.conf_get(ledger.read_conf(Path(sys.argv[2])), sys.argv[3], sys.argv[4]))' "$here/plugin/lib" "$conf" "$1" "${2-}"
+}
 
 # Suggest the open Obsidian vault + /Projects the first time; afterwards, whatever is saved.
 default_dir="$(conf_get projects_dir)"

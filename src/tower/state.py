@@ -19,8 +19,9 @@ counts) is a worktree other than the main checkout whose effective state is runn
 with no card counts and a worker only waiting on CI doesn't.
 
 Every fact source degrades to "unknown" instead of failing: no `claude` CLI, no ledger, no `gh`. The note fields say
-which ones were missing. hub-scan.sh runs this module through plugin/scripts/run-tower.py under whatever `python3` it
-finds, so it stays 3.9-compatible, like the modules the hooks import.
+which ones were missing. `tower scan` (scan.py) prints this report inside the hub's scan, which the plugin runs through
+plugin/scripts/run-tower.py under whatever `python3` it finds, so it stays 3.9-compatible, like the modules the hooks
+import.
 """
 
 from __future__ import annotations
@@ -34,15 +35,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import events
+from tower import events, ledger, sessions
+from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
+from tower.sessions import owning_worktree
 
 STATUSES = ("needs-you", "running", "waiting-ci", "blocked", "done", "ready-to-clean", "no-card", "main")
 CARD_STATUSES = ("running", "needs-you", "waiting-ci", "blocked", "done")
 SLOT_STATUSES = ("running", "needs-you")
-STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flagged STALE (same as hub-scan.sh did)
+STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flagged STALE
 EVENTS_WINDOW = timedelta(hours=24)  # older events don't stand in for a live session: it may have crashed
 EVENTS_READ = 5000  # how many of the log's last lines to read when standing in for live sessions
-COMMAND_TIMEOUT_SECONDS = 15
 
 
 @dataclass(frozen=True)
@@ -191,8 +193,9 @@ class OrphanCard:
 class Report:
     """The effective state of one repo: every worktree with its verdict, plus what the hub reports around them.
 
-    sessions_source is "live" (`claude agents --json`), "events" (the event log stood in) or "none". notes says, in
-    plain words, which facts were missing and why.
+    sessions_source is "live" (`claude agents --json`), "events" (the event log stood in) or "none". agents is
+    `claude agents --json`'s list when it could be read, so the scan's LIVE SESSIONS section draws the same snapshot the
+    statuses were decided from. notes says, in plain words, which facts were missing and why.
     """
 
     repo: str
@@ -204,6 +207,7 @@ class Report:
     orphan_cards: list[OrphanCard]
     sessions_source: str
     notes: list[str] = field(default_factory=list)
+    agents: list[object] | None = None
 
     @property
     def slots(self) -> int:
@@ -211,35 +215,29 @@ class Report:
         return sum(1 for _, v in self.worktrees if v.holds_slot)
 
 
-@dataclass(frozen=True)
-class GitWorktree:
-    """One block of `git worktree list --porcelain`. branch is None on a detached HEAD."""
-
-    path: str
-    sha: str
-    branch: str | None
-
-
-def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None, save_agents: Path | None = None) -> Report:
+def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> Report:
     """Gather every fact about repo_dir's worktrees and decide each one's effective state.
 
     Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR.
-    save_agents, when given, receives `claude agents --json`'s output (only when it was usable), so hub-scan.sh's
-    LIVE SESSIONS section draws the same snapshot instead of asking again.
     """
     now = time.time() if now is None else now
     worktrees = list_worktrees(repo_dir)
     main = worktrees[0]
-    conf = read_conf(conf_path())
     notes: list[str] = []
+    try:
+        conf = ledger.read_conf(ledger.conf_path())
+    except ledger.LedgerError as error:
+        notes.append(f"{error}, so its settings weren't used")
+        conf = {}
 
     name = repo_name(repo_dir)
-    ledger, ledger_note = ledger_dir(name, conf)
+    ledger_folder, ledger_note = ledger.ledger_dir(name, conf)
     if ledger_note:
         notes.append(ledger_note)
 
     paths = [os.path.realpath(w.path) for w in worktrees]
-    live, live_note = live_sessions(paths, save_agents)
+    agents, live_note = sessions.read_agents()
+    live = None if agents is None else live_sessions(agents, paths)
     sessions_source = "live"
     if live is None:
         notes.append(live_note)
@@ -270,12 +268,12 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None, save
         is_main = index == 0
         card = None
         pr = prs.get(wt.branch) if wt.branch else None
-        if ledger is not None:
-            card_file = card_name(wt.branch, wt.sha, Path(main.path))
+        if ledger_folder is not None:
+            card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
-            card = None if is_main else card_or_note(ledger / card_file, now, notes)
+            card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
         facts = WorktreeFacts(
-            label=wt.branch or f"(detached {wt.sha[:7]})",
+            label=wt.label,
             branch=wt.branch,
             path=wt.path,
             is_main=is_main,
@@ -294,103 +292,15 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None, save
     return Report(
         repo=name,
         main_checkout=main.path,
-        ledger=str(ledger) if ledger is not None else None,
+        ledger=str(ledger_folder) if ledger_folder is not None else None,
         base=base,
-        wip_limit=wip_limit(conf),
+        wip_limit=ledger.wip_limit(conf),
         worktrees=rows,
-        orphan_cards=orphan_cards(ledger, seen_cards, notes) if ledger is not None else [],
+        orphan_cards=orphan_cards(ledger_folder, seen_cards, notes) if ledger_folder is not None else [],
         sessions_source=sessions_source,
         notes=notes,
+        agents=agents,
     )
-
-
-class NotARepo(Exception):
-    """The folder given to gather() isn't inside a git repo."""
-
-
-def git(cwd: Path, *args: str) -> str | None:
-    """Run one git command in cwd; its stdout with the trailing newline removed, or None if it failed."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(cwd), *args], check=False, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_SECONDS
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return proc.stdout.rstrip("\n") if proc.returncode == 0 else None
-
-
-def list_worktrees(repo_dir: Path) -> list[GitWorktree]:
-    """Every worktree of the repo holding repo_dir, main checkout first (git lists it first)."""
-    out = git(repo_dir, "worktree", "list", "--porcelain")
-    if out is None:
-        raise NotARepo(f"not a git repo: {repo_dir}")
-    found: list[GitWorktree] = []
-    path, sha, branch = "", "", None
-    for line in (out + "\n\n").split("\n"):
-        if line.startswith("worktree "):
-            path = line[len("worktree ") :]
-        elif line.startswith("HEAD "):
-            sha = line[len("HEAD ") :]
-        elif line.startswith("branch "):
-            branch = line[len("branch ") :].replace("refs/heads/", "", 1)
-        elif line == "" and path:
-            found.append(GitWorktree(path, sha, branch))
-            path, sha, branch = "", "", None
-    return found
-
-
-def conf_path() -> Path:
-    """tower's per-machine config: $TOWER_CONF if set, else ~/.claude/tower.conf (same as ledger-lib.sh)."""
-    return Path(os.environ.get("TOWER_CONF") or Path.home() / ".claude" / "tower.conf")
-
-
-def read_conf(path: Path) -> dict[str, str]:
-    """The config's `key=value` lines as a dict; the last line for a key wins, as in ledger-lib.sh."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    conf: dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key and not key.startswith("#"):
-            conf[key] = value
-    return conf
-
-
-def wip_limit(conf: dict[str, str]) -> int:
-    """wip_limit from the config; 3 (setup.sh's default) when absent or not a whole number."""
-    value = conf.get("wip_limit", "")
-    return int(value) if value.isdigit() else 3
-
-
-def repo_name(repo_dir: Path) -> str:
-    """The repo's name, the same from every worktree: ledger-lib.sh's ledger_repo_name."""
-    common = git(repo_dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    if common is None:
-        raise NotARepo(f"not a git repo: {repo_dir}")
-    if os.path.basename(common) == ".git":
-        return os.path.basename(os.path.dirname(common))
-    name = os.path.basename(common)
-    return name.removesuffix(".git")
-
-
-def ledger_dir(repo: str, conf: dict[str, str]) -> tuple[Path | None, str]:
-    """The repo's Ledger folder (ledger-lib.sh's ledger_project_dir + /Ledger), or None and why it can't be found."""
-    projects_dir = conf.get("projects_dir", "")
-    if not projects_dir:
-        return None, f"no projects_dir in {conf_path()}, so no cards were read (run setup.sh on this machine)"
-    if not os.path.isdir(projects_dir):
-        return None, f"projects_dir does not exist: {projects_dir}, so no cards were read"
-    # `or`, not a get() default: an empty `project.<repo>=` falls back to the repo name, as tower_conf_get does.
-    return Path(projects_dir) / (conf.get(f"project.{repo}") or repo) / "Ledger", ""
-
-
-def card_name(branch: str | None, sha: str, repo_dir: Path) -> str:
-    """A worktree's card file name: ledger-lib.sh's ledger_card_name ("/" -> "__", detached -> detached-<sha>)."""
-    if not branch:
-        branch = "detached-" + (git(repo_dir, "rev-parse", "--short", sha) or sha[:7])
-    return branch.replace("/", "__") + ".md"
 
 
 def frontmatter_field(lines: list[str], key: str) -> str:
@@ -455,63 +365,24 @@ def orphan_cards(ledger: Path, seen: set[str], notes: list[str]) -> list[OrphanC
     return orphans
 
 
-def owning_worktree(cwd: str, worktrees: list[str]) -> str | None:
-    """The worktree path containing cwd, the longest match (worktrees can sit inside the main checkout)."""
-    best = None
-    for path in worktrees:
-        if (cwd == path or cwd.startswith(path + os.sep)) and (best is None or len(path) > len(best)):
-            best = path
-    return best
-
-
 def finished(card: Card | None, pr: Pr | None) -> bool:
     """Whether decide() may call this worktree ready-to-clean, and so needs to know if it's dirty."""
     return (card is not None and card.status == "done") or (pr is not None and pr.state == "MERGED")
 
 
-def live_sessions(worktrees: list[str], save_to: Path | None = None) -> tuple[dict[str, list[Session]] | None, str]:
-    """Sessions per worktree path from `claude agents --json`, or None and why it couldn't be used. save_to, when
-    given, receives the command's output once it parsed as a list.
-
-    The JSON's fields (kind, cwd, status, state, waitingFor, name) aren't a documented contract, so anything unexpected
-    means "unavailable", never a crash. A finished background session is history, not a session.
-    """
-    try:
-        proc = subprocess.run(
-            ["claude", "agents", "--json"], check=False, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_SECONDS
-        )
-    except FileNotFoundError:
-        return None, "claude CLI not on PATH, so live sessions weren't read"
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return None, f"claude agents --json didn't run ({type(error).__name__}), so live sessions weren't read"
-    if proc.returncode != 0:
-        why = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
-        return None, f"claude agents --json failed ({why}), so live sessions weren't read"
-    try:
-        listed = json.loads(proc.stdout)
-    except ValueError:
-        listed = None
-    if not isinstance(listed, list):
-        return None, "claude agents --json printed something unexpected (its format may have changed)"
-    if save_to is not None:
-        save_to.write_text(proc.stdout, encoding="utf-8")
-    found: dict[str, list[Session]] = {}
-    for entry in listed:
-        if not isinstance(entry, dict) or not isinstance(entry.get("cwd"), str):
-            continue
-        if entry.get("kind") == "background" and entry.get("state") == "done":
-            continue
-        owner = owning_worktree(os.path.realpath(entry["cwd"]), worktrees)
-        if owner:
-            found.setdefault(owner, []).append(live_session(entry))
-    return found, ""
+def live_sessions(listed: list[object], worktrees: list[str]) -> dict[str, list[Session]]:
+    """`claude agents --json`'s list as Sessions per worktree path."""
+    return {
+        path: [live_session(entry) for entry in entries]
+        for path, entries in sessions.by_worktree(listed, worktrees).items()
+    }
 
 
 def live_session(entry: dict[str, object]) -> Session:
     """One `claude agents --json` entry as a Session. Interactive sessions report `status`, background ones `state`;
     a background session `blocked` on a permission prompt is waiting on the user too."""
     reported = str(entry.get("status") or entry.get("state") or "")
-    # Free text from Claude Code: keep it to one line with no "|", which separates fields in hub-scan.sh's rows.
+    # Free text from Claude Code: keep it to one line with no "|", which separates fields in the scan's rows.
     waiting_for = " ".join(str(entry.get("waitingFor") or "").replace("|", "/").split())
     if reported in ("waiting", "blocked") or waiting_for:
         activity = "waiting"
@@ -715,7 +586,12 @@ GROUPS = (
 
 
 def render_text(report: Report) -> str:
-    """The report as hub-scan.sh prints it: its WORKTREES, ORPHAN CARDS and GROUPS sections, one row per line.
+    """The report as `tower state` prints it: the WORKTREES, ORPHAN CARDS and GROUPS sections, one row per line."""
+    return "\n".join([*worktrees_section(report), "", *orphans_section(report), "", *groups_section(report)]) + "\n"
+
+
+def worktrees_section(report: Report) -> list[str]:
+    """The WORKTREES section: one row per worktree, then the WIP count, unshipped work and the notes.
 
     The hub reads these rows (`status:` is the effective state; the pane reads to_json() instead), so keep the
     `field: value | ...` shape and the path last. Every value from a card or a session goes through cell(), so none can
@@ -751,11 +627,18 @@ def render_text(report: Report) -> str:
     else:
         out.append(f"UNSHIPPED: (none){f' — every branch is on {report.base}' if report.base else ''}")
     out.extend(f"NOTE: {note}" for note in report.notes)
+    return out
 
-    out += ["", "== ORPHAN CARDS (worktree gone) =="]
-    out += [f"- {cell(o.name)} | status: {cell(o.status) or '?'} | {o.path}" for o in report.orphan_cards] or ["(none)"]
 
-    out += ["", "== GROUPS (report in this order) =="]
+def orphans_section(report: Report) -> list[str]:
+    """The ORPHAN CARDS section: cards whose worktree is gone."""
+    rows = [f"- {cell(o.name)} | status: {cell(o.status) or '?'} | {o.path}" for o in report.orphan_cards]
+    return ["== ORPHAN CARDS (worktree gone) ==", *(rows or ["(none)"])]
+
+
+def groups_section(report: Report) -> list[str]:
+    """The GROUPS section: every worktree in the hub's report order, so the hub never regroups."""
+    out = ["== GROUPS (report in this order) =="]
     if report.sessions_source == "events":
         out.append("(no live session data: sessions come from the event log's last 24h)")
     elif report.sessions_source == "none":
@@ -766,7 +649,7 @@ def render_text(report: Report) -> str:
         out += rows or ["(none)"]
     out.append("HOUSEKEEPING")
     out += housekeeping(report) or ["(none)"]
-    return "\n".join(out) + "\n"
+    return out
 
 
 def group_row(facts: WorktreeFacts, v: Verdict) -> str:

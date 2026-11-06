@@ -34,7 +34,7 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
                      └─> one screen: Needs you → Blocked → Running → Waiting on CI → Done → Housekeeping → ONE next action
 ```
 
-- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. Its top block is YAML frontmatter, so Obsidian shows the fields as properties.
+- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. The worker writes only the prose; tower's core (`tower card write`) fills the top block (YAML frontmatter: `status`, `ticket`, `updated`, `branch`, `pr`, `base`, and `reason` on `needs-you` and `blocked`) from git and GitHub, so Obsidian shows the fields as properties and a card can't say `done` without a PR.
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
 - **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR).
@@ -240,7 +240,7 @@ approach, which is what grilling and the spec are for.
 
 `/tower:adopt` (run from the main checkout) is for a repo where work is already in flight and you've lost track.
 
-1. **Scan (read-only).** `adopt-scan.sh` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state).
+1. **Scan (read-only).** `adopt-scan.sh` (`tower adopt-scan`) lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
 2. **One plan, which you approve.** In order:
    - a **paste-in prompt for every live session**: it writes its own first card and, if it's in the main checkout, lists exactly which uncommitted files are its work;
    - **untangling the main checkout**: each session's files move to their own branch + worktree (`git stash push -- <its files>` → `git stash pop` in the new worktree; never `reset`, `checkout .`, or `clean`);
@@ -258,7 +258,7 @@ description, or you type `/tower:<name>`.
 
 | Skill | Fires when | What it does |
 |---|---|---|
-| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Finds this worktree's card in the vault (`card-path.sh`) and overwrites it with the current state. The card is the short version for the hub; the final chat message is the full version for you. |
+| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Pipes the card's sections (Done, Why it matters, Needs you, Verify, Words used) into `tower card write`, which picks the status from the branch's PR (none → running, open → waiting-ci, merged → done; the agent may ask for needs-you or blocked with a reason, or done while its PR waits on your merge, never without a PR) and overwrites the card in the vault. The card is the short version for the hub; the final chat message is the full version for you. |
 | `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Suggests `adopt` when the repo clearly hasn't been adopted. |
 | `tower:adopt` | you want to start tower on a messy, in-flight repo | See [above](#adopting-an-existing-repo). |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
@@ -289,8 +289,9 @@ description, or you type `/tower:<name>`.
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
-  answer a session, by typing or in its pop-up, a card that says `needs-you` is switched to `running` (only the
-  `status` and `updated` lines). The session rewrites the rest when it next stops. Without it, a card stayed
+  answer a session, by typing or in its pop-up, a card that says `needs-you` is re-rendered by tower's core as `running` (the
+  answer itself is recorded by the event log hook). The body and the other properties stay; the session rewrites the
+  rest when it next stops. Without it, a card stayed
   needs-you for the whole stretch between your answer and the session's next stop.
 - **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
 - **The event log** (`record-event.py`, on SessionStart, UserPromptSubmit, Notification, PostToolUse on
@@ -317,7 +318,8 @@ another way.
 | `gh pr` comment, review; `gh issue` comment, create, edit, close, reopen, … | `every` (default): every `git push` |
 | `gh release` / `gh label` writes | `force`: only force pushes, `+refspec`, branch deletes |
 | `gh api` writes: GraphQL mutations, `-X POST/PATCH/PUT/DELETE`, or fields without `-X GET` (gh defaults to POST) | `none`: pushes never ask |
-| Any edit to a `CLAUDE.local.md` or `~/.claude/tower/rules/*`, and Bash commands naming them | |
+| Any edit to a `CLAUDE.local.md`, `tower.conf` or anything under `~/.claude/tower/`; Bash commands naming a rule file, or naming `tower.conf` or the event log other than to read them (`cat`, `grep`, `tail`) | |
+| Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs), a git/gh subcommand from a variable | |
 
 `gh pr` create, edit, ready, merge, close, reopen and update-branch depend on `pr_approval`: `every` (default)
 asks, `none` lets a worker open and merge its own PR. Missing or unknown values count as `every`.
@@ -328,8 +330,15 @@ next command) or by re-running `setup.sh`. Reads (`gh pr view`, `gh pr checks`, 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
 
+The hook reads a command the way the shell would: quotes, `&&`/`;`/`|`/newlines, `$( )`, heredocs, global options
+(`git -C <path>`, `gh pr -R owner/repo`), attached flags (`gh api -XPOST`), and wrappers (`bash -c`, `env`,
+`xargs`, `eval`, `sudo`, `ssh`, `watch`, ...). Text that only mentions a command (`git commit -m "fix git push"`) doesn't ask.
+Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-splits-commands-itself.md`.
+
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
-script calling the GitHub API directly isn't caught. `pr-wait` itself only reads.
+script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
+`$CMD push`), git/gh aliases, or deliberately disguised names. The full list is in `confirm-public.py`'s docstring.
+`pr-wait` itself only reads.
 
 ## Security model
 
@@ -381,15 +390,17 @@ tower/
   plugin/
     .claude-plugin/plugin.json
     hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
-    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for hub-scan.sh and the pane)
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
+                                      (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
+                                      `card-path` and `rules`, kept for one release)
   pane/                               the tower-pane mod
     hooks/register.tsx                the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  its saved state, as Claude Code checks it
     tests/                            claude plugin test pane; fixtures/ holds `tower state --json` output tests/test_state.py checks
-  src/tower/                          tower's core (standard library only): the event log, effective state, the `tower` CLI
-  tests/                              pytest: the approval hook's cases, the event log, effective state, the CLI
+  src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
+  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`
@@ -404,8 +415,8 @@ tower/
 `claude plugin validate --strict` on the marketplace and both plugins, and the pane's tests (`claude plugin test pane`,
 which needs no login). Run `mise install` once first.
 
-- **The approval hook's tests** live in `tests/test_confirm_public.py`. Known bypasses are `xfail` tests: pytest
-  fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
+- **The approval hook's tests** live in `tests/test_confirm_public.py`. A known bypass goes in as an `xfail` test:
+  pytest fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
 - **The pane's type check isn't in `ci`.** Its type stubs (`pane/.claude-plugin/types/`) are written by Claude Code
   only when a logged-in session loads the pane, which CI can't do. Start `claude --plugin-dir pane` once, then run
   `mise run pane-typecheck`.

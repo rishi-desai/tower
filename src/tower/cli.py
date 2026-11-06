@@ -2,8 +2,14 @@
 
 tower --version            print tower's version
 tower events tail [-n N]   print the last N events (default 10) of this month's log, as JSON lines
-tower state [--repo PATH] [--json] [--pr] [--save-agents FILE]
-                           each worktree's effective state (see state.py); text as hub-scan.sh prints it, or JSON
+tower state [--repo PATH] [--json] [--pr]
+                           each worktree's effective state (see state.py), as text or JSON
+tower scan [--no-github]   the hub's view of this repo: state, live sessions, GitHub, backlog (see scan.py)
+tower adopt-scan           facts for bringing an in-flight repo under tower (see adopt.py)
+tower card-path [DIR]      where the worktree holding DIR (default: here) keeps its status card (see ledger.py)
+tower card write [--status running|done|needs-you|blocked] [--reason TEXT] [--ticket N] [--dir DIR] [--if-absent]
+                           render this worktree's card from facts and the narrative sections on stdin (see card.py)
+tower rules                link this project's personal rules into this worktree; prints the rules file (see rules.py)
 tower stats [--since 14d] [--repo [PATH]]
                            metrics per PR merged in the window, from the event log and GitHub (see stats.py);
                            every repo in the log, or only PATH's (default: this one) with --repo
@@ -16,11 +22,12 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import __version__, events, github, hook_events, state, stats
+from tower import __version__, adopt, card, events, github, hook_events, ledger, rules, scan, state, stats
+from tower.gitrepo import NotARepo
 
 SINCE_SPAN = re.compile(r"(\d+)([hdw])")
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
@@ -64,9 +71,13 @@ def parser() -> argparse.ArgumentParser:
     state_parser.add_argument("--repo", type=Path, default=Path("."), help="any folder in the repo (default: here)")
     state_parser.add_argument("--json", action="store_true", help="print JSON instead of the hub's text sections")
     state_parser.add_argument("--pr", action="store_true", help="also ask GitHub (gh) for each branch's PR")
-    state_parser.add_argument(
-        "--save-agents", type=Path, metavar="FILE", help="also write `claude agents --json`'s output here (hub-scan.sh)"
-    )
+    scan_parser = commands.add_parser("scan", help="the hub's view of this repo: state, sessions, GitHub, backlog")
+    scan_parser.add_argument("--no-github", action="store_true", help="skip GitHub (for frequent refreshes: the pane)")
+    commands.add_parser("adopt-scan", help="read-only facts for bringing an in-flight repo under tower")
+    card_parser = commands.add_parser("card-path", help="where this worktree's status card lives")
+    card_parser.add_argument("dir", nargs="?", type=Path, default=Path("."), help="a folder in the worktree")
+    add_card_parser(commands)
+    commands.add_parser("rules", help="link this project's personal rules file into this worktree")
     stats_parser = commands.add_parser("stats", help="metrics per merged PR, from the event log and GitHub")
     stats_parser.add_argument(
         "--since", type=since_span, default=timedelta(days=14), help="how far back merges count (default 14d)"
@@ -75,6 +86,60 @@ def parser() -> argparse.ArgumentParser:
         "--repo", nargs="?", const=".", metavar="PATH", help="only this checkout's repo (default with no PATH: here)"
     )
     return top
+
+
+def add_card_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Add the `card` command and its `write` subcommand to commands."""
+    card_parser = commands.add_parser("card", help="this worktree's status card, rendered by the core")
+    card_commands = card_parser.add_subparsers(dest="card_command", required=True)
+    write = card_commands.add_parser(
+        "write", help="render the card from facts and the narrative sections on stdin (## Done, ## Needs you, ...)"
+    )
+    write.add_argument(
+        "--status",
+        choices=card.REQUESTS,
+        help="ask for a status: needs-you or blocked (with --reason), running while fixing an open PR, or done when"
+        " the PR is open and only waits on the user's merge; otherwise it comes from the PR (done, waiting-ci, running)",
+    )
+    write.add_argument("--reason", default="", help="why needs-you or blocked, in one line")
+    write.add_argument(
+        "--ticket", help="the ticket, like 42 or #42, or none (default: the last card's, else the branch's)"
+    )
+    write.add_argument("--dir", type=Path, default=Path("."), help="a folder in the worktree (default: here)")
+    write.add_argument(
+        "--if-absent", action="store_true", help="write only if the worktree has no card yet (exit 3 if it has)"
+    )
+
+
+def run_card_write(args: argparse.Namespace) -> int:
+    """Run `tower card write`: print the card's path and status, warnings on stderr. Exit 1 (writing nothing) when the
+    narrative, a flag, the repo or the ledger is wrong, or the card can't be written; 3 when --if-absent finds a card."""
+    if sys.stdin.isatty():
+        print(
+            "tower: pipe the card's sections (## Done, ## Why it matters, ...) into tower card write", file=sys.stderr
+        )
+        return 1
+    try:
+        written = card.write_card(
+            args.dir, sys.stdin.read(), args.status, args.reason, args.ticket, if_absent=args.if_absent
+        )
+    except card.CardExists as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 3
+    except (NotARepo, ledger.LedgerError, card.CardError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(
+            f"tower: couldn't write the card ({error.strerror or type(error).__name__}: {error.filename})",
+            file=sys.stderr,
+        )
+        return 1
+    for warning in written.warnings:
+        print(f"tower: {warning}", file=sys.stderr)
+    print(written.path)
+    print(f"status: {written.status} ({written.why})")
+    return 0
 
 
 def events_tail(n: int) -> int:
@@ -88,11 +153,11 @@ def events_tail(n: int) -> int:
     return 0
 
 
-def show_state(repo: Path, as_json: bool, with_pr: bool, save_agents: Path | None) -> int:
+def show_state(repo: Path, as_json: bool, with_pr: bool) -> int:
     """Print the repo's effective state; exit 1 (and say why) outside a git repo."""
     try:
-        report = state.gather(repo, with_pr=with_pr, save_agents=save_agents)
-    except state.NotARepo as error:
+        report = state.gather(repo, with_pr=with_pr)
+    except NotARepo as error:
         print(f"tower: {error}", file=sys.stderr)
         return 1
     if as_json:
@@ -152,13 +217,42 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
     return 1 if failed else 0
 
 
+def run_or_explain(action: Callable[[], object]) -> int:
+    """Run one scan-family command; exit 1, saying why, when the repo or the ledger can't be found or the rules
+    can't be linked safely (nothing is written then)."""
+    try:
+        action()
+    except (NotARepo, ledger.LedgerError, rules.RulesError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def link_rules() -> None:
+    """Link this project's rules into this worktree and print the rules file, after any warnings."""
+    rules_file, warnings = rules.link_rules(Path("."))
+    for warning in warnings:
+        print(f"tower: {warning}", file=sys.stderr)
+    print(rules_file)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the tower command with argv (default: the process's arguments); returns the exit code."""
     args = parser().parse_args(argv)
     if args.command == "events" and args.events_command == "tail":
         return events_tail(args.n)
     if args.command == "state":
-        return show_state(args.repo, args.json, args.pr, args.save_agents)
+        return show_state(args.repo, args.json, args.pr)
+    if args.command == "scan":
+        return run_or_explain(lambda: sys.stdout.write(scan.hub_scan(Path("."), github=not args.no_github)))
+    if args.command == "adopt-scan":
+        return run_or_explain(lambda: sys.stdout.write(adopt.adopt_scan(Path("."))))
+    if args.command == "card-path":
+        return run_or_explain(lambda: print(ledger.card_path(args.dir)))
+    if args.command == "card" and args.card_command == "write":
+        return run_card_write(args)
+    if args.command == "rules":
+        return run_or_explain(link_rules)
     if args.command == "stats":
         return stats_command(args.since, args.repo)
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable
