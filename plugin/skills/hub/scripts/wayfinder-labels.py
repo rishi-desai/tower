@@ -37,7 +37,10 @@ def existing_labels() -> set[str] | None:
     """Lower-cased names of the repo's labels, or None (after printing why) if gh is missing or fails."""
     try:
         proc = subprocess.run(
-            ["gh", "label", "list", "--limit", LIST_LIMIT, "--json", "name"], capture_output=True, text=True
+            ["gh", "label", "list", "--limit", LIST_LIMIT, "--json", "name"],
+            check=False,
+            capture_output=True,
+            text=True,
         )
     except FileNotFoundError:
         sys.stderr.write("gh (GitHub CLI) is not installed or not on PATH\n")
