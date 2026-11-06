@@ -29,9 +29,12 @@ def note_import_failure() -> None:
     """Append why the core wouldn't import to errors.log (same format as hook_events.log_error); else to stderr."""
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     message = f"{now} record-event: can't import tower's core\n{traceback.format_exc()}"
+    errors = tower_dir() / "errors.log"
     try:
         tower_dir().mkdir(parents=True, exist_ok=True)
-        with open(tower_dir() / "errors.log", "a", encoding="utf-8") as handle:
+        if errors.exists() and errors.stat().st_size > 1_000_000:  # same cap as hook_events.ERRORS_MAX_BYTES
+            os.replace(errors, tower_dir() / "errors.log.1")
+        with open(errors, "a", encoding="utf-8") as handle:
             handle.write(message)
     except Exception:  # noqa: BLE001 - nowhere left to record it; stderr goes to Claude Code's debug log
         print(message, file=sys.stderr)

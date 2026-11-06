@@ -81,10 +81,25 @@ def hook_input(event_name: str, cwd: Path, **fields: object) -> dict[str, object
     }
 
 
-def test_a_worker_session_records_its_events_in_order(worktree: Path, tmp_path: Path) -> None:
+INTERPRETERS = [
+    pytest.param(sys.executable, id="dev-venv"),
+    # No `tower` installed: the core can only come through the plugin's lib/tower link.
+    pytest.param(BASE_PYTHON, id="no-tower-installed"),
+    # What a hook's `python3` falls back to when Claude Code was started without mise on PATH: 3.9 on a stock Mac,
+    # older than the core's 3.11 floor, so the hook path must still work there.
+    pytest.param(
+        SYSTEM_PYTHON,
+        id="system-python3",
+        marks=pytest.mark.skipif(not Path(SYSTEM_PYTHON).exists(), reason=f"no {SYSTEM_PYTHON} on this machine"),
+    ),
+]
+
+
+@pytest.mark.parametrize("python", INTERPRETERS)
+def test_a_worker_session_records_its_events_in_order(worktree: Path, tmp_path: Path, python: str) -> None:
     tower_dir = tmp_path / "state"
-    run_hook(hook_input("SessionStart", worktree, source="startup", model="claude-opus-5-5"), tower_dir)
-    run_hook(hook_input("UserPromptSubmit", worktree, prompt="/implement #22"), tower_dir)
+    run_hook(hook_input("SessionStart", worktree, source="startup", model="claude-opus-5-5"), tower_dir, python)
+    run_hook(hook_input("UserPromptSubmit", worktree, prompt="/implement #22"), tower_dir, python)
     run_hook(
         hook_input(
             "Notification",
@@ -93,6 +108,7 @@ def test_a_worker_session_records_its_events_in_order(worktree: Path, tmp_path: 
             notification_type="permission_prompt",
         ),
         tower_dir,
+        python,
     )
     run_hook(
         hook_input(
@@ -103,9 +119,10 @@ def test_a_worker_session_records_its_events_in_order(worktree: Path, tmp_path: 
             tool_response={"answers": {"Which?": "A"}},
         ),
         tower_dir,
+        python,
     )
-    run_hook(hook_input("Stop", worktree, stop_hook_active=False), tower_dir)
-    run_hook(hook_input("SessionEnd", worktree, reason="prompt_input_exit"), tower_dir)
+    run_hook(hook_input("Stop", worktree, stop_hook_active=False), tower_dir, python)
+    run_hook(hook_input("SessionEnd", worktree, reason="prompt_input_exit"), tower_dir, python)
 
     events = logged(tower_dir)
     assert [(e["type"], e["data"]) for e in events] == [
@@ -128,6 +145,7 @@ def test_a_worker_session_records_its_events_in_order(worktree: Path, tmp_path: 
             "feat-22",
         )
         assert isinstance(event["ts"], str) and event["ts"].endswith("Z")
+    assert not (tower_dir / "errors.log").exists()
 
 
 def test_outside_git_the_place_fields_are_null(tmp_path: Path) -> None:
@@ -187,10 +205,12 @@ def test_a_missing_core_is_noted_in_errors_log_and_the_session_carries_on(tmp_pa
     assert "can't import tower's core" in (tower_dir / "errors.log").read_text(encoding="utf-8")
 
 
-@pytest.mark.skipif(not Path(SYSTEM_PYTHON).exists(), reason=f"no {SYSTEM_PYTHON} on this machine")
-def test_the_hook_records_under_the_system_python3(worktree: Path, tmp_path: Path) -> None:
-    """On a stock Mac this is Python 3.9, older than the core's own floor; the hook path must still work there."""
-    run_hook(hook_input("Stop", worktree), tmp_path / "state", python=SYSTEM_PYTHON)
+def test_errors_log_is_capped_by_moving_a_full_one_aside(tmp_path: Path) -> None:
+    tower_dir = tmp_path / "state"
+    tower_dir.mkdir()
+    (tower_dir / "errors.log").write_text("old\n" * 300_000, encoding="utf-8")  # 1.2 MB
+    run_hook("not json", tower_dir)
 
-    assert [e["type"] for e in logged(tmp_path / "state")] == ["stop"]
-    assert not (tmp_path / "state" / "errors.log").exists()
+    assert (tower_dir / "errors.log.1").read_text(encoding="utf-8").startswith("old\n")
+    fresh = (tower_dir / "errors.log").read_text(encoding="utf-8")
+    assert "old" not in fresh and "record-event:" in fresh

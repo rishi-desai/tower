@@ -10,6 +10,12 @@ PostToolUse on AskUserQuestion, Stop and SessionEnd. Each becomes an event type:
     Stop                          -> stop           {stop_hook_active}
     SessionEnd                    -> session-end    {reason}
 
+Anything else is ignored. A `stop` means Claude Code asked to stop, not that the session did: another Stop hook (like
+card-reminder.py) can send Claude back to work, which shows as a later `stop` with stop_hook_active true.
+
+repo follows the hub's rule (the folder holding the shared .git), so inside a submodule it is a path under the
+superproject's .git/modules/.
+
 Anything else is ignored. The hook must never fail or change the session: main() catches every error, appends it to
 `<tower dir>/errors.log`, prints nothing to stdout, and returns 0.
 
@@ -30,6 +36,8 @@ from typing import IO
 from tower import events
 
 ERRORS_NAME = "errors.log"
+ERRORS_MAX_BYTES = 1_000_000  # past this, errors.log moves to errors.log.1 (replacing it) and starts over
+GIT_TIMEOUT_SECONDS = 3  # two git calls must fit well inside the hook's 10 s timeout
 
 
 def now_utc() -> str:
@@ -57,10 +65,16 @@ def event_type_and_data(hook: dict[str, object]) -> tuple[str, dict[str, object]
 
 
 def git(cwd: str, *args: str) -> str | None:
-    """Run one git command in cwd; its trimmed stdout, or None if git failed or isn't there."""
+    """Run one git command in cwd; its trimmed stdout, or None if git failed or isn't there.
+
+    A timeout is raised, not returned as None: recording a stuck repo as "outside git" would be a false fact, so the
+    event is dropped and the timeout goes to errors.log instead.
+    """
     try:
-        proc = subprocess.run(["git", "-C", cwd, *args], check=False, capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
+        proc = subprocess.run(
+            ["git", "-C", cwd, *args], check=False, capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS
+        )
+    except OSError:
         return None
     return proc.stdout.strip() if proc.returncode == 0 else None
 
@@ -102,9 +116,12 @@ def record(hook: dict[str, object], directory: Path) -> None:
 
 
 def log_error(directory: Path, message: str) -> None:
-    """Append one timestamped entry to directory's errors.log; if even that fails, say so on stderr."""
+    """Append one timestamped entry to directory's errors.log (capped, see ERRORS_MAX_BYTES); else say so on stderr."""
     try:
         directory.mkdir(parents=True, exist_ok=True)
+        errors = directory / ERRORS_NAME
+        if errors.exists() and errors.stat().st_size > ERRORS_MAX_BYTES:
+            os.replace(errors, directory / (ERRORS_NAME + ".1"))
         with open(directory / ERRORS_NAME, "a", encoding="utf-8") as handle:
             handle.write(f"{now_utc()} record-event: {message.rstrip()}\n")
     except Exception as error:  # noqa: BLE001 - nowhere left to record it; stderr goes to Claude Code's debug log

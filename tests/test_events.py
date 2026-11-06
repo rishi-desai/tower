@@ -9,6 +9,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tower import events
 
 
@@ -42,6 +44,8 @@ WRITER = """
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+import pytest
+
 from tower import events
 
 writer, count, size, directory = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), Path(sys.argv[4])
@@ -122,3 +126,37 @@ def test_a_log_with_a_damaged_first_line_still_rotates_by_its_last_write(tmp_pat
 
     assert (tmp_path / "events-2026-10.jsonl").read_text(encoding="utf-8") == '{"ts":"2026-10-0\n'
     assert json.loads(log.read_text(encoding="utf-8"))["type"] == "answer"
+
+
+def set_mtime(path: Path, year: int, month: int) -> None:
+    """Pretend path was last written in the given month (UTC)."""
+    when = datetime(year, month, 20, tzinfo=timezone.utc).timestamp()
+    os.utime(path, (when, when))
+
+
+@pytest.mark.parametrize(
+    "first_line",
+    [b'{"ts":null}\n', b'{"ts":123}\n', b'{"ts":"yesterday"}\n', b"\xff\xfe not utf-8\n"],
+    ids=["null-ts", "number-ts", "word-ts", "not-utf8"],
+)
+def test_a_first_line_without_a_readable_month_falls_back_to_the_last_write(tmp_path: Path, first_line: bytes) -> None:
+    log = tmp_path / "events.jsonl"
+    log.write_bytes(first_line)
+    set_mtime(log, 2026, 10)
+    events.append(make_event(ts="2026-11-02T10:00:00.000Z", event_type="answer"), tmp_path)
+
+    assert (tmp_path / "events-2026-10.jsonl").read_bytes() == first_line
+    assert json.loads(log.read_text(encoding="utf-8"))["type"] == "answer"
+
+
+def test_tail_skips_over_undecodable_bytes_instead_of_crashing(tmp_path: Path) -> None:
+    (tmp_path / "events.jsonl").write_bytes(b'\xff\xfe junk\n{"type":"stop"}\n')
+
+    assert events.tail(tmp_path, 1) == ['{"type":"stop"}']
+
+
+def test_an_unpaired_surrogate_in_a_payload_is_still_logged(tmp_path: Path) -> None:
+    events.append(make_event(event_type="needs-you", message="cut emoji \ud83d"), tmp_path)
+
+    [line] = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(line)["data"]["message"] == "cut emoji \ud83d"

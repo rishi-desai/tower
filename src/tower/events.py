@@ -11,6 +11,10 @@ renamed or deleted), then writes the whole line with one O_APPEND write, so line
 Rotation: the log holds one month (UTC). When an event from a later month arrives, the current file is renamed to
 `events-YYYY-MM.jsonl` after the month of its first event, and a new one starts.
 
+Order: lines are in append order. ts is stamped by the hook before it waits for the lock, so two sessions' events can
+be a few milliseconds out of ts order, and an event stamped in a month's last instant can land in the next month's
+file. Readers that need strict order sort by ts.
+
 The hooks import this module under whatever `python3` they find (3.9 on a stock Mac), so it stays 3.9-compatible and
 uses the standard library only.
 """
@@ -20,6 +24,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -27,6 +32,7 @@ from pathlib import Path
 
 LOG_NAME = "events.jsonl"
 LOCK_NAME = "events.lock"
+MONTH = re.compile(r"\d{4}-\d{2}")
 
 
 @dataclass(frozen=True)
@@ -53,7 +59,8 @@ class Event:
             "branch": self.branch,
             "data": self.data,
         }
-        return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        # ASCII-only output: an unpaired surrogate (valid in JSON input, not encodable as UTF-8) can't lose the event.
+        return json.dumps(record, separators=(",", ":"))
 
 
 def default_dir() -> Path:
@@ -75,9 +82,12 @@ def append(event: Event, directory: Path) -> None:
 
 
 def tail(directory: Path, count: int) -> list[str]:
-    """The last count lines of directory's current log (this month only), oldest first; [] if there is no log."""
+    """The last count lines of directory's current log (this month only), oldest first; [] if there is no log.
+
+    Bytes that aren't UTF-8 (a damaged line) come back as U+FFFD instead of failing the whole read.
+    """
     try:
-        with open(directory / LOG_NAME, encoding="utf-8") as handle:
+        with open(directory / LOG_NAME, encoding="utf-8", errors="replace") as handle:
             return [line.rstrip("\n") for line in deque(handle, maxlen=count)]
     except FileNotFoundError:
         return []
@@ -92,14 +102,13 @@ def rotate_if_new_month(directory: Path, month: str) -> None:
     """
     log = directory / LOG_NAME
     try:
-        with open(log, encoding="utf-8") as handle:
+        with open(log, "rb") as handle:
             first = handle.readline()
     except FileNotFoundError:
         return
-    try:
-        log_month = str(json.loads(first)["ts"])[:7]
-    except (ValueError, KeyError, TypeError):
-        log_month = time.strftime("%Y-%m", time.gmtime(log.stat().st_mtime))
+    if not first:
+        return  # empty: the event about to be appended becomes the first
+    log_month = first_event_month(first) or time.strftime("%Y-%m", time.gmtime(log.stat().st_mtime))
     if log_month >= month:
         return
     target = directory / f"events-{log_month}.jsonl"
@@ -108,6 +117,17 @@ def rotate_if_new_month(directory: Path, month: str) -> None:
         suffix += 1
         target = directory / f"events-{log_month}.{suffix}.jsonl"
     os.rename(log, target)
+
+
+def first_event_month(first_line: bytes) -> str | None:
+    """The "YYYY-MM" of the event on first_line, or None if the line isn't an event with an ISO date in ts."""
+    try:
+        ts = json.loads(first_line.decode("utf-8")).get("ts")
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        return None
+    if not isinstance(ts, str) or not MONTH.match(ts):
+        return None
+    return ts[:7]
 
 
 def write_all(path: Path, data: bytes) -> None:
