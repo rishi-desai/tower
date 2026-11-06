@@ -10,6 +10,12 @@ any branch; merging into `main` needs you and green CI. Gates become policy prof
 
 ---
 
+## Filed issues
+
+Tracking issue: #17. T01 #18 (transfer to `rishi-desai/ci`) · T02 #19 · T03 #20 · T04 #21 · T05 #22 · T06 #24 ·
+T07 #27 · T08 #28 · T09 #26 · T10 #31 · T11 #29 · T12a #30 · T12 #32 · T13 #33 · T14 #38 · T15 #25 · T16 #39 ·
+T17 #34 · T18 #37 · T19 #35 · T20 #36 · T21 #23 · T22 #40.
+
 ## How to run this plan in Orca
 
 1. **T00 first** (in the hub): file every ticket below as a GitHub issue with `ready-for-agent` and its `Blocked by`
