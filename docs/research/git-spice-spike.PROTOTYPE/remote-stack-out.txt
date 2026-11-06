@@ -1,0 +1,112 @@
+$ gh repo create rishi-desai/gs-spike-30-prototype-5 --private
+https://github.com/rishi-desai/gs-spike-30-prototype-5
+[exit 0]
+$ gh api repos/rishi-desai/gs-spike-30-prototype-5 --jq {delete_branch_on_merge}
+{"delete_branch_on_merge":false}
+[exit 0]
+$ git-spice --no-prompt repo init --trunk main --remote origin
+INF Using remote: origin
+INF Initialized repository  trunk=main
+[exit 0]
+
+=== One worktree (wt-stack) holds the whole stack; the main checkout is parked detached
+$ git-spice --no-prompt stack submit --fill --no-draft --nav-comment=false
+INF Created #1: https://github.com/rishi-desai/gs-spike-30-prototype-5/pull/1
+INF Created #2: https://github.com/rishi-desai/gs-spike-30-prototype-5/pull/2
+INF Created #3: https://github.com/rishi-desai/gs-spike-30-prototype-5/pull/3
+[exit 0]
+#1 feat1 -> main [OPEN]
+#2 feat2 -> feat1 [OPEN]
+#3 feat3 -> feat2 [OPEN]
+
+=== Moving around the stack inside the one worktree
+$ git-spice --no-prompt down
+INF switched to branch: feat2
+[exit 0]
+$ git-spice --no-prompt bottom
+INF switched to branch: feat1
+[exit 0]
+$ git branch --show-current
+feat1
+[exit 0]
+$ git-spice --no-prompt top
+INF switched to branch: feat3
+[exit 0]
+
+=== The plain REST merge is refused for stacked PRs too
+$ gh api -X PUT repos/rishi-desai/gs-spike-30-prototype-5/pulls/1/merge -f merge_method=squash
+{"message":"Merging stacked PRs via this endpoint is not supported. Use the asynchronous merge endpoint instead.","documentation_url":"https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously","status":"403"}gh: Merging stacked PRs via this endpoint is not supported. Use the asynchronous merge endpoint instead. (HTTP 403)
+[exit 1]
+
+=== Merge feat1 while wt-stack sits on the top branch (feat3)
+$ PUT pulls/1/merge-async (squash)
+merge-async: merged
+#1 feat1 -> main [MERGED]
+#2 feat2 -> main [OPEN]
+#3 feat3 -> feat2 [OPEN]
+$ git-spice --no-prompt repo sync
+INF main: pulled 1 new commit(s)
+INF feat1: #1 was merged
+INF feat2: retargeted upstack onto main
+INF feat1: deleted (was c44ea19)
+INF feat2: retargeting #2 onto main...
+WRN Retarget failed  branch=feat2 error=edit pull request: updatePullRequest: UNPROCESSABLE: Cannot change the base branch because the pull request is part of a stack.
+[exit 0]
+$ git-spice --no-prompt log short --all
+  ┏━━■ feat3 (#3) ◀
+┏━┻□ feat2 (#2) (needs restack)
+main
+[exit 0]
+
+=== GitHub rebased feat2 server-side: same tree as git-spice's restack, different SHA
+$ git-spice --no-prompt upstack restack --branch feat2
+INF feat2: restacked on main
+INF feat3: restacked on feat2
+[exit 0]
+local feat2 12cf72c, origin/feat2 (stale tracking ref) 020e497
+
+=== Submit without a fresh fetch: the lease-protected push is rejected
+$ git-spice --no-prompt stack submit
+ERR Push failed. Branch may have been updated by someone else. Try with --force.
+FTL git-spice: submit branch feat2: push branch: push: exit status 1
+FTL stderr:
+FTL To https://github.com/rishi-desai/gs-spike-30-prototype-5.git
+FTL  ! [rejected]        12cf72c8f679cb0113bc37b86462a5012d26ec4d -> feat2 (stale info)
+FTL error: failed to push some refs to 'https://github.com/rishi-desai/gs-spike-30-prototype-5.git'
+[exit 1]
+
+=== git fetch, compare, submit again
+local feat2 12cf72c, origin/feat2 ed0f3ea, same tree: yes
+$ git-spice --no-prompt stack submit
+INF Updated #2: https://github.com/rishi-desai/gs-spike-30-prototype-5/pull/2
+INF Updated #3: https://github.com/rishi-desai/gs-spike-30-prototype-5/pull/3
+[exit 0]
+#1 feat1 -> main [MERGED]
+#2 feat2 -> main [OPEN]
+#3 feat3 -> feat2 [OPEN]
+
+=== Merge feat2 while wt-stack sits ON feat2 (the merged branch), sync from wt-stack itself
+$ git-spice --no-prompt branch checkout feat2
+INF switched to branch: feat2
+[exit 0]
+$ PUT pulls/2/merge-async (squash)
+merge-async: merged
+$ git-spice --no-prompt repo sync
+INF main: pulled 1 new commit(s)
+INF feat2: #2 was merged
+INF feat3: retargeted upstack onto main
+INF feat2: deleted (was 12cf72c)
+INF feat3: retargeting #3 onto main...
+WRN Retarget failed  branch=feat3 error=edit pull request: updatePullRequest: UNPROCESSABLE: Cannot change the base branch because the pull request is part of a stack.
+[exit 0]
+$ git branch --show-current
+main
+[exit 0]
+$ git-spice --no-prompt log short --all
+┏━━□ feat3 (#3) (needs restack)
+main ◀
+[exit 0]
+#1 feat1 -> main [MERGED]
+#2 feat2 -> main [MERGED]
+#3 feat3 -> main [OPEN]
+Workdir: $ROOT

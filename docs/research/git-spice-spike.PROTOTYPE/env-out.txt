@@ -1,0 +1,38 @@
+$ git --version
+git version 2.56.0
+
+$ gh --version | head -1
+gh version 2.102.1 (2026-10-20)
+
+$ orca --version
+1.4.237
+
+$ git-spice --version | head -1
+git-spice 0.33.0 (9796a50a2a0b113b75816b83cea37a4e358619e4 2026-10-26T04:20:43Z)
+
+$ git spice --version | head -1
+git-spice 0.33.0 (9796a50a2a0b113b75816b83cea37a4e358619e4 2026-10-26T04:20:43Z)
+
+$ ls $(mise where aqua:abhinav/git-spice@0.33.0)
+CHANGELOG.md
+git-spice
+LICENSE
+README.md
+
+$ command -v gs || echo "(no gs on PATH)"
+(no gs on PATH)
+
+$ brew list ghostscript
+Error: No such keg: /opt/homebrew/Cellar/ghostscript
+
+$ brew info git-spice | sed -n "/Caveats/,\$p"
+==> Caveats
+The 'gs' executable has been renamed to 'git-spice'.
+If you prefer to use 'gs', add an alias to your shell configuration:
+
+  alias gs='git-spice'
+==> Analytics
+install: 536 (30 days), 1,120 (90 days), 4,245 (365 days)
+install-on-request: 536 (30 days), 1,120 (90 days), 4,245 (365 days)
+build-error: 0 (30 days)
+
