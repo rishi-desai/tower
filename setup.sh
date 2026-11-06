@@ -120,7 +120,7 @@ if [ -z "$profile" ]; then   # newer than the other flags: scripted runs without
     profile="$(ask "This machine's profile: work (everything asks) | personal (force pushes, merges into main and comments ask) | sandbox (nothing asks)" "$default_profile")"
   else profile="$default_profile"; fi
 fi
-if [ -z "$worktrees_dir" ]; then   # newer still: scripted runs without it keep the current folder (or none)
+if [ -z "$worktrees_dir" ]; then   # scripted runs without it keep the saved folder (or none), like --profile
   if [ -t 0 ]; then
     worktrees_dir="$(ask "Folder for every project's worktrees (one place, not inside each repo)" "$default_worktrees" path)"
   else worktrees_dir="$(conf_get worktrees_dir)"; fi
@@ -264,9 +264,9 @@ sys.exit(0 if any(p.get("id") == sys.argv[1] for p in plugins) else 1)' "$1"
 fi
 
 echo
-if [ -n "$worktrees_dir" ] && { command -v orca >/dev/null 2>&1 || [ -d /Applications/Orca.app ]; }; then
+if [ -n "$worktrees_dir" ]; then
   # `orca project setup-update --worktree-base-path` exists, but sets one project; the app-wide folder is a setting.
-  echo "Orca: its CLI can't set where new worktrees go, so set it once in the app:"
+  echo "If you use Orca: its CLI can't set where new worktrees go, so set it once in the app:"
   echo "  Settings > General > Workspace > Workspace Directory: $worktrees_dir"
   echo "  and turn on Nest Workspaces there, so each repo's worktrees get their own subfolder."
 fi

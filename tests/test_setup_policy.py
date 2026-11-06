@@ -117,6 +117,7 @@ def test_the_worktrees_folder_is_created_and_saved(home: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert (home / "worktrees").is_dir()
     assert f"worktrees_dir={home / 'worktrees'}" in conf_lines(home)  # without the trailing /
+    assert f"Settings > General > Workspace > Workspace Directory: {home / 'worktrees'}" in proc.stdout
 
 
 def test_a_re_run_without_the_flag_keeps_the_worktrees_folder(home: Path) -> None:

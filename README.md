@@ -494,6 +494,7 @@ API_URL = "http://localhost:{port}/api"
 ```ini
 projects_dir=/Users/rishi/Library/Mobile Documents/com~apple~CloudDocs/Vault/Projects
 wip_limit=3                # unless the repo's profile sets its own
+worktrees_dir=/Users/rishi/worktrees   # every project's worktrees, one subfolder per repo (match Orca's)
 project.poot=Poot          # optional: repo folder name -> project folder name
 ```
 
@@ -507,6 +508,7 @@ once and then ignored.
 |---|---|
 | `<projects_dir>/<Project>/Ledger/<branch>.md` | status cards (`/` in branch names becomes `__`; detached HEAD → `detached-<sha>`) |
 | `<projects_dir>/<Project>/Ledger/_backlog.md` | parked ideas, only for repos without GitHub |
+| `<worktrees_dir>/<repo>/<worktree>` | every project's worktrees, outside the repos (Orca: Workspace Directory, Nest Workspaces on) |
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/policy.toml` | which approvals ask, per profile and per repo |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
