@@ -1,7 +1,8 @@
 """scan.py: `tower scan`, the hub's view of one repo, so the hub never reads transcripts.
 
 Prints, from anywhere inside the repo:
-  1. WORKTREES     every worktree with its effective state, the WIP count, unshipped work
+  1. WORKTREES     every worktree with its effective state, the WIP count, unshipped work, and whether the repo
+                   still needs adopting (the ADOPT: line, which switches the hub into its adopt flow)
   2. LIVE SESSIONS the Claude sessions open in each worktree right now (from agent view)
   3. ORPHAN CARDS  cards whose worktree no longer exists (finished or deleted work)
   4. GROUPS        every worktree in the hub's report order (Needs you, Blocked, Running, Waiting on CI or review,
@@ -17,10 +18,11 @@ github=False (`--no-github`).
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
-from tower import ledger, sessions, state
+from tower import adopt, ledger, sessions, state
 from tower.github import try_gh
 
 PR_TEMPLATE = (
@@ -42,7 +44,7 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
     report = state.gather(repo_dir)
 
     lines = [f"REPO: {report.repo}", f"LEDGER: {folder}", ""]
-    lines += [*state.worktrees_section(report), f"PR approval: {pr_approval}", ""]
+    lines += [*state.worktrees_section(report), f"PR approval: {pr_approval}", adopt_line(report), ""]
     lines.append("== LIVE SESSIONS (agent view) ==")
     if report.agents is None:
         lines.append("(no live sessions: tower couldn't read agent view; see the NOTE lines under WORKTREES)")
@@ -52,6 +54,27 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
     lines += ["== GITHUB ==", *(github_section(repo_dir) if github else ["(skipped: --no-github)"]), ""]
     lines.append("== BACKLOG (parked ideas) ==")
     return "\n".join(lines) + "\n" + backlog(folder / "_backlog.md")
+
+
+def adopt_line(report: state.Report) -> str:
+    """ADOPT: yes, with why, when the repo hasn't been brought under tower yet: most worktrees have no card, or the
+    main checkout has uncommitted work or more than one interactive session (the hub is one). Else ADOPT: no."""
+    reasons: list[str] = []
+    worktrees = [facts for facts, _ in report.worktrees if not facts.is_main]
+    no_card = sum(1 for facts in worktrees if facts.card is None)
+    if no_card * 2 > len(worktrees):
+        reasons.append(f"{no_card} of {len(worktrees)} worktrees have no card")
+    roots = {os.path.realpath(facts.path) for facts, _ in report.worktrees}
+    # Same count as `tower adopt-scan`, so a folder that only holds worktrees isn't work on main (#4). Unknown (git
+    # failed) isn't a reason: the hub would plan from facts it doesn't have.
+    changes, _ = adopt.uncommitted(Path(report.main_checkout), roots)
+    if changes:
+        reasons.append(f"the main checkout has {state.plural(len(changes), 'uncommitted change')}")
+    main = report.worktrees[0][0]
+    interactive = sum(1 for s in main.sessions if s.kind == "interactive")
+    if interactive > 1:
+        reasons.append(f"{interactive} interactive sessions share the main checkout (one is the hub)")
+    return f"ADOPT: yes — {'; '.join(reasons)}" if reasons else "ADOPT: no"
 
 
 def github_section(repo_dir: Path) -> list[str]:

@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CARD_PATH_SCRIPT = os.path.join(PLUGIN_ROOT, "skills", "status-card", "scripts", "card-path.sh")
+RUN_TOWER = os.path.join(PLUGIN_ROOT, "scripts", "run-tower.py")
 MAX_PATHS = 5000  # stop stat-ing after this many changed files; enough to find "something changed"
 
 
@@ -82,9 +82,9 @@ def main() -> int:
     if started is None or top is None:
         return 0
     top = top.strip()
-    card = run(["bash", CARD_PATH_SCRIPT, top], top)
+    card = run([sys.executable, "-I", RUN_TOWER, "card-path", top], top)
     if card is None:
-        return 0  # tower isn't set up here (card-path.sh says why on its own)
+        return 0  # tower isn't set up here (`tower card-path` says why on its own)
     card = card.strip()
     try:
         card_written = os.stat(card).st_mtime
