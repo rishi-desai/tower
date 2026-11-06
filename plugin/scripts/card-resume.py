@@ -6,8 +6,8 @@ A card says needs-you while its session waits on the user. Once the user replies
 session's pop-up), the session goes back to work, but its card only catches up when the session next stops
 (card-reminder.py). Until then the hub and the pane would list it as needing the user. The answer itself is recorded
 as an event by record-event.py, the next hook in the same list; this one has tower's core re-render the card
-(src/tower/card.py, resume()): status running, updated now, the reason dropped, every other property and the body kept,
-so the card's Needs you section keeps the old question until the session rewrites the card itself.
+(src/tower/card.py, resume()): status running, updated now, branch from git, the reason dropped, every other property
+and the body kept, so the card's Needs you section keeps the old question until the session rewrites the card itself.
 
 Stays quiet (exit 0, no output) whenever there's nothing to do or it can't tell: not a git repo, tower not set up on
 this machine, no card, or a card that doesn't say needs-you. A core that won't import, or a card it can't write, is

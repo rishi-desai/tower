@@ -105,6 +105,7 @@ def test_a_card_with_no_pr_is_running_and_its_frontmatter_comes_from_facts(
         'base: "main"',
     ]
     assert body(card) == "\n" + NARRATIVE
+    assert card.stat().st_mode & 0o777 == 0o644
 
 
 def test_sections_are_rendered_in_the_cards_order_whatever_order_they_arrive_in(
@@ -247,14 +248,35 @@ def test_a_merged_pr_from_an_earlier_use_of_the_branch_isnt_this_work(
     repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = repo.add_worktree("feat-42-search")
-    fake_prs(tmp_path, [{"number": 12, "state": "MERGED", "baseRefName": "main", "headRefOid": "f" * 40}])
+    old_head = git(repo.main, "rev-parse", "HEAD").strip()  # in this clone, but this worktree's commit isn't in it
+    fake_prs(
+        tmp_path,
+        [
+            {"number": 12, "state": "MERGED", "baseRefName": "main", "headRefOid": old_head},
+            {"number": 99, "state": "OPEN", "baseRefName": "main", "headRefOid": old_head, "isCrossRepository": True},
+        ],
+    )
     monkeypatch.chdir(path)
 
     code, out, _ = write(capsys, monkeypatch)
 
-    assert code == 0
+    assert code == 0  # the fork's open PR #99 from a branch of the same name isn't this work either
     assert out.endswith("status: running (no PR yet; PR #12 merged earlier work on this branch name)\n")
     assert "pr: none" in frontmatter(repo.ledger / "feat-42-search.md")
+
+
+def test_a_merged_pr_whose_head_isnt_in_this_clone_is_trusted_and_says_so(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-42-search")
+    fake_prs(tmp_path, [{"number": 57, "state": "MERGED", "baseRefName": "main", "headRefOid": "f" * 40}])
+    monkeypatch.chdir(path)
+
+    out = write(capsys, monkeypatch)[1]
+
+    assert out.endswith(
+        "status: done (PR #57 is merged; its head fffffff isn't in this clone, so it wasn't checked against this worktree)\n"
+    )
 
 
 def test_needs_you_and_blocked_need_a_reason_which_the_card_keeps(
@@ -339,6 +361,12 @@ def test_the_ticket_comes_from_the_flag_then_the_last_card_then_the_branch(
 
     assert write(capsys, monkeypatch)[0] == 0
     assert frontmatter(card)[1] == 'ticket: "#51"'  # kept from the last card
+
+    path2 = repo.add_worktree("feat-60-not-60")
+    monkeypatch.chdir(path2)
+    assert write(capsys, monkeypatch, "--ticket", "none")[0] == 0
+    assert write(capsys, monkeypatch)[0] == 0
+    assert frontmatter(repo.ledger / "feat-60-not-60.md")[1] == "ticket: none"  # an explicit none beats the guess
 
     code, _, err = write(capsys, monkeypatch, "--ticket", "#51 and #52")
     assert (code, err) == (1, "tower: a ticket is a number like 42 or #42, or none; got '#51 and #52'\n")
@@ -431,13 +459,18 @@ def test_an_answer_re_renders_a_needs_you_card_as_running_and_keeps_its_body(
     card = repo.ledger / "feat-42-search.md"
     before = frontmatter(card)
 
+    text = card.read_text(encoding="utf-8")
+    card.write_text(text.replace("\n---\n", "\ntags:\n  - tower\n---\n", 1), encoding="utf-8")  # added in Obsidian
+    before = frontmatter(card)
+
     proc = run_resume(path, "PostToolUse", python)
 
     assert proc.returncode == 0, proc.stderr
     after = frontmatter(card)
     assert after[0] == "status: running"
     assert UPDATED.fullmatch(after[2])
-    assert after[1] == before[1] and after[3:] == before[3:-1]  # same ticket, branch, pr, base; the reason is gone
+    # Same ticket, branch, pr, base and the user's tags; the reason is gone.
+    assert after[1] == before[1] and after[3:] == before[3:6] + ["tags:", "  - tower"]
     assert body(card) == "\n" + NARRATIVE
     context = json.loads(proc.stdout)["hookSpecificOutput"]
     assert context["hookEventName"] == "PostToolUse"

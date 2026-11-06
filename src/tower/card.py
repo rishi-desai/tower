@@ -21,8 +21,8 @@ and the core writes the frontmatter, so no model ever writes YAML (an unquoted `
     base      the branch the PR merges into, else the repo's base branch (state.base_ref)
     reason    only on needs-you and blocked: why the agent asked for it
 
-A merged PR counts only when its head is the worktree's HEAD (or contains it): a branch name reused after an old PR
-merged is new work. `tower state` reads the card back like any other (state.read_card), and the card-resume.py hook
+A merged PR counts only when its head contains the worktree's HEAD: a branch name reused after an old PR merged is new
+work. PRs from forks never count. Properties the user adds in Obsidian (tags) are kept across writes. `tower state` reads the card back like any other (state.read_card), and the card-resume.py hook
 re-renders a needs-you card as running once the user answers (resume()).
 
 Runs under whatever `python3` the plugin's scripts find (3.9 on a stock Mac), like the rest of the core.
@@ -47,6 +47,7 @@ REQUIRED = ("Done", "Why it matters", "Needs you", "Verify")
 ALIASES = {"verify it yourself": "Verify"}
 REQUESTS = ("running", "needs-you", "blocked", "done")
 NEEDS_REASON = ("needs-you", "blocked")
+PROPERTIES = ("status", "ticket", "updated", "branch", "pr", "base", "reason")  # what the core writes
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 TICKET = re.compile(r"#?(\d+)")
@@ -150,9 +151,10 @@ def render_sections(sections: dict[str, str]) -> str:
 # ---------- the frontmatter ----------
 
 
-def render(front: Frontmatter, body: str) -> str:
+def render(front: Frontmatter, body: str, extra: list[str] | None = None) -> str:
     """The whole card. Free-text values are JSON strings, which YAML reads as double-quoted scalars, so no value can
-    become a comment, a number or a second line; status and updated stay bare so Obsidian types them as before."""
+    become a comment, a number or a second line; status and updated stay bare so Obsidian types them as before. extra
+    is properties the user added in Obsidian (tags, aliases), kept as written."""
     lines = [
         "---",
         f"status: {front.status}",
@@ -164,7 +166,7 @@ def render(front: Frontmatter, body: str) -> str:
     ]
     if front.reason:
         lines.append(f"reason: {quote(front.reason)}")
-    return "\n".join([*lines, "---", ""]) + "\n" + body.lstrip("\n")
+    return "\n".join([*lines, *(extra or []), "---", ""]) + "\n" + body.lstrip("\n")
 
 
 def quote(value: str) -> str:
@@ -220,32 +222,33 @@ def choose_status(requested: str | None, pr: BranchPr | None, pr_known: bool) ->
 
 
 def branch_pr(worktree: Path, branch: str) -> tuple[BranchPr | None, str, str]:
-    """(the branch's PR, a note, gh's error): its open PR, else its newest. A merged or closed PR whose head isn't
-    the worktree's HEAD (nor contains it) is earlier work on a reused branch name: it's dropped, and the note says
-    so. gh's error is "" when GitHub answered."""
-    out, error = try_gh(
-        worktree, "pr", "list", "--head", branch, "--state", "all", "--json", "number,state,baseRefName,headRefOid"
-    )
+    """(the branch's PR, a note, gh's error): its open PR, else its newest, never one from a fork (a stranger's
+    patch-1 isn't this work). A merged or closed PR whose head doesn't contain the worktree's HEAD is earlier work on a
+    reused branch name: it's dropped, and the note says so. One whose head isn't in this clone (a suggestion accepted
+    on GitHub, not fetched) can't be checked, so it's trusted and the note says that. gh's error is "" when GitHub
+    answered."""
+    fields = "number,state,baseRefName,headRefOid,isCrossRepository"
+    out, error = try_gh(worktree, "pr", "list", "--head", branch, "--state", "all", "--json", fields)
     if out is None:
         return None, "", error
     try:
-        listed = json.loads(out)
-        prs = [BranchPr(int(p["number"]), str(p["state"]), str(p["baseRefName"]), str(p["headRefOid"])) for p in listed]
-    except (ValueError, TypeError, KeyError):
+        prs = [
+            BranchPr(int(p["number"]), str(p["state"]), str(p["baseRefName"]), str(p["headRefOid"]))
+            for p in json.loads(out)
+            if not p.get("isCrossRepository")
+        ]
+    except (ValueError, TypeError, KeyError, AttributeError):
         return None, "", f"gh pr list printed something unexpected: {out[:120]!r}"
     if not prs:
         return None, "", ""
     pr = max(prs, key=lambda p: (p.state == "OPEN", p.number))
-    if pr.state != "OPEN" and not contains_head(worktree, pr.head):
+    if pr.state == "OPEN":
+        return pr, "", ""
+    if git(worktree, "cat-file", "-e", f"{pr.head}^{{commit}}") is None:
+        return pr, f"its head {pr.head[:7]} isn't in this clone, so it wasn't checked against this worktree", ""
+    if git(worktree, "merge-base", "--is-ancestor", "HEAD", pr.head) is None:
         return None, f"PR #{pr.number} {pr.state.lower()} earlier work on this branch name", ""
     return pr, "", ""
-
-
-def contains_head(worktree: Path, commit: str) -> bool:
-    """Whether commit is the worktree's HEAD or has it in its history (False if git doesn't know commit)."""
-    if git(worktree, "rev-parse", "HEAD") == commit:
-        return True
-    return git(worktree, "merge-base", "--is-ancestor", "HEAD", commit) is not None
 
 
 def repo_base(worktree: Path) -> str:
@@ -255,20 +258,37 @@ def repo_base(worktree: Path) -> str:
     return base[len("origin/") :] if base and base.startswith("origin/") else base or "none"
 
 
-def read_frontmatter(text: str) -> dict[str, str] | None:
-    """A card's frontmatter as key -> value, quoted values unquoted; None if it has no frontmatter block."""
+def split_card(text: str) -> tuple[list[str], str]:
+    """(the frontmatter's lines, the body after it); no lines and the whole text when there's no frontmatter block."""
     lines = text.split("\n")
-    if not lines or lines[0].strip() != "---":
-        return None
-    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-    if end is None:
-        return None
+    if lines and lines[0].strip() == "---":
+        end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+        if end is not None:
+            return lines[1:end], "\n".join(lines[end + 1 :])
+    return [], text
+
+
+def read_frontmatter(lines: list[str]) -> dict[str, str]:
+    """Frontmatter lines as key -> value, quoted values unquoted (the first line for a key wins, as in state.py)."""
     fields: dict[str, str] = {}
-    for line in lines[1:end]:
+    for line in lines:
         key, sep, value = line.partition(":")
-        if sep and key.strip():
-            fields[key.strip()] = unquote(value.strip())
+        if sep and key.strip() and not line[0].isspace():
+            fields.setdefault(key.strip(), unquote(value.strip()))
     return fields
+
+
+def extra_properties(lines: list[str]) -> list[str]:
+    """The frontmatter lines of properties the core doesn't write (tags or aliases added in Obsidian), with their
+    indented or "- " continuation lines, as written."""
+    kept: list[str] = []
+    keep = False
+    for line in lines:
+        if line and not line[0].isspace() and not line.startswith("-"):
+            keep = line.partition(":")[0].strip() not in PROPERTIES
+        if keep:
+            kept.append(line)
+    return kept
 
 
 def unquote(value: str) -> str:
@@ -280,16 +300,6 @@ def unquote(value: str) -> str:
             return value[1:-1]
         return decoded if isinstance(decoded, str) else value[1:-1]
     return value
-
-
-def card_body(text: str) -> str:
-    """Everything after a card's frontmatter (the whole text if it has none)."""
-    lines = text.split("\n")
-    if lines and lines[0].strip() == "---":
-        end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
-        if end is not None:
-            return "\n".join(lines[end + 1 :])
-    return text
 
 
 # ---------- writing ----------
@@ -327,45 +337,54 @@ def write_card(
     warnings += status_warnings
     if note:
         why += f"; {note}"
+    old_lines, warning = old_frontmatter(path)
+    if warning:
+        warnings.append(warning)
     front = Frontmatter(
         status=status,
-        ticket=chosen_ticket or previous_ticket(path) or guess_ticket(branch),
+        ticket=chosen_ticket or previous_ticket(old_lines) or guess_ticket(branch),
         updated=time.strftime(TIME_FORMAT),
         branch=branch or "none",
         pr="unknown" if gh_error else f"#{pr.number}" if pr else "none",
         base=pr.base if pr else repo_base(worktree),
         reason=reason if status in NEEDS_REASON else "",
     )
-    write_atomically(path, render(front, body), if_absent)
+    write_atomically(path, render(front, body, extra_properties(old_lines)), if_absent)
     return Written(path, status, why, warnings)
 
 
-def previous_ticket(path: Path) -> str | None:
-    """The ticket the worktree's current card names, if it has a card naming a valid one."""
+def old_frontmatter(path: Path) -> tuple[list[str], str]:
+    """The frontmatter lines of the card being replaced (none when there's no card), and a warning when it exists
+    but can't be read, so its ticket and extra properties are lost."""
     try:
-        fields = read_frontmatter(path.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return None
-    if not fields or not fields.get("ticket"):
-        return None
+        return split_card(path.read_text(encoding="utf-8", errors="replace"))[0], ""
+    except FileNotFoundError:
+        return [], ""
+    except OSError as error:
+        why = error.strerror or type(error).__name__
+        return [], f"couldn't read the last card ({why}), so its ticket and extra properties weren't kept"
+
+
+def previous_ticket(lines: list[str]) -> str | None:
+    """The ticket (or none) the last card's frontmatter names, if it names a valid one."""
     try:
-        found = normalize_ticket(fields["ticket"])
+        return normalize_ticket(read_frontmatter(lines).get("ticket") or "")
     except CardError:
         return None
-    return None if found == "none" else found
 
 
 def resume(worktree: Path) -> Path | None:
     """Re-render the worktree's card as running if it says needs-you (the user just answered), keeping its body,
-    ticket, pr and base, taking the branch from git, and dropping the reason. The card's path if it changed, else None. No GitHub call: this
+    ticket, pr, base and any property the user added, taking the branch from git, and dropping the reason. The card's path if it changed, else None. No GitHub call: this
     runs on every prompt. Raises NotARepo or LedgerError when there's no card to find."""
     path = ledger.card_path(worktree)
     try:
         text = path.read_text(encoding="utf-8")
     except (FileNotFoundError, UnicodeDecodeError):
         return None  # no card, or one that isn't UTF-8: re-rendering it would mangle its body
-    fields = read_frontmatter(text)
-    if fields is None or fields.get("status") != "needs-you":
+    lines, body = split_card(text)
+    fields = read_frontmatter(lines)
+    if fields.get("status") != "needs-you":
         return None
     front = Frontmatter(
         status="running",
@@ -375,7 +394,7 @@ def resume(worktree: Path) -> Path | None:
         pr=fields.get("pr") or "none",
         base=fields.get("base") or repo_base(worktree),
     )
-    write_atomically(path, render(front, card_body(text)), if_absent=False)
+    write_atomically(path, render(front, body, extra_properties(lines)), if_absent=False)
     return path
 
 
@@ -402,6 +421,7 @@ def write_atomically(path: Path, text: str, if_absent: bool) -> None:
     created only if none exists (os.link fails on an existing name), so a card written meanwhile is never replaced."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".card-", suffix=".tmp")
     try:
+        os.fchmod(fd, 0o644)  # mkstemp's 0600 would carry over to the card; notes are readable like any other file
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
         if if_absent:

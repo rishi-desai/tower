@@ -7,7 +7,7 @@ tower state [--repo PATH] [--json] [--pr]
 tower scan [--no-github]   the hub's view of this repo: state, live sessions, GitHub, backlog (see scan.py)
 tower adopt-scan           facts for bringing an in-flight repo under tower (see adopt.py)
 tower card-path [DIR]      where the worktree holding DIR (default: here) keeps its status card (see ledger.py)
-tower card write [--status running|needs-you|blocked] [--reason TEXT] [--ticket N] [--dir DIR] [--if-absent]
+tower card write [--status running|done|needs-you|blocked] [--reason TEXT] [--ticket N] [--dir DIR] [--if-absent]
                            render this worktree's card from facts and the narrative sections on stdin (see card.py)
 tower rules                link this project's personal rules into this worktree; prints the rules file (see rules.py)
 tower stats [--since 14d] [--repo [PATH]]
@@ -98,8 +98,8 @@ def add_card_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser
     write.add_argument(
         "--status",
         choices=card.REQUESTS,
-        help="ask for a status: needs-you or blocked (with --reason), or running while fixing an open PR;"
-        " otherwise it comes from the PR (done, waiting-ci or running)",
+        help="ask for a status: needs-you or blocked (with --reason), running while fixing an open PR, or done when"
+        " the PR is open and only waits on the user's merge; otherwise it comes from the PR (done, waiting-ci, running)",
     )
     write.add_argument("--reason", default="", help="why needs-you or blocked, in one line")
     write.add_argument(
