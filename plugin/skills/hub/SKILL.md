@@ -1,6 +1,6 @@
 ---
 name: hub
-description: Control tower for parallel work in one repo. Use when the user asks what's going on, what needs them, what to work on next, wants to discuss or park an idea, wants to start a new worktree, or wants to bring a repo with work already in flight under tower (adopt it). Reads status cards, worktrees, live session states, PRs and issues — never other sessions' transcripts.
+description: Control tower for parallel work in one repo, or across every repo on this machine. Use when the user asks what's going on, what needs them (here or across everything), what to work on next, wants to discuss or park an idea, wants to start a new worktree, or wants to bring a repo with work already in flight under tower (adopt it). Reads status cards, worktrees, live session states, PRs and issues — never other sessions' transcripts.
 effort: medium
 ---
 
@@ -28,6 +28,12 @@ Always in this order, skipping empty groups. The scan's GROUPS section has alrea
 6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged, or every commit on main, with nothing uncommitted: suggest removing the worktree, never do it), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, and any worktree where several interactive sessions share one checkout (rule: one main session per worktree).
 
 End with **one** suggested next action, not a list.
+
+### Across every repo
+
+When the user asks about everything rather than this repo ("what needs me across everything?", "all repos", "anything else going on?"), run `python3 -I <plugin>/scripts/run-tower.py state --all` (`<plugin>` as in section 1). It covers every repo on this machine with events in tower's event log, the one you run in, and any with a Ledger folder in the vault, so work and personal stay apart: each machine has its own. It prints an ALL REPOS summary (one row per repo, most urgent first), then, in the same order, each repo's own WORKTREES, ORPHAN CARDS and GROUPS sections under `== REPO: <name> | <main checkout> ==`, or a `== CARDS ONLY: <name> ==` project's cards (a Ledger folder with no checkout tower could read, so its rows are only what the cards claim, ranked by those claims).
+
+Report one group per repo, in the order printed, skipping repos with nothing to report beyond Housekeeping. Inside each, use the same groups as above from that repo's GROUPS section, skipping empty ones. A cards-only project gets one line in its place, with its card count and any card that says needs-you, marked as only the card's claim. There is no GITHUB or BACKLOG section here: say so if the user asks about PRs or issues, and offer to scan that repo. End with **one** next action across every repo, not one per repo.
 
 Define any acronym or project term the first time it appears. Name every session, branch, and ticket with a few words on what it is: "rolly-polly-86 (the session building the UI)", not "rolly-polly-86". When you tell the user to act in a session, say what tells it apart from the others in that worktree. Needs you and Blocked get as much text as they need; Running, Done, and Housekeeping stay one line each so the report stays easy to scan.
 
