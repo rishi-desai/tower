@@ -115,3 +115,16 @@ def test_stats_rejects_a_since_it_cannot_read(capsys: pytest.CaptureFixture[str]
         cli.main(["stats", "--since", "two weeks"])
     assert exit_info.value.code == 2
     assert "like 14d, 2w or 36h" in capsys.readouterr().err
+
+
+def test_stats_warns_about_a_repo_whose_folder_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("TOWER_DIR", str(tmp_path))
+    gone = tmp_path / "deleted-repo"
+    events.append(events.Event(iso(datetime.now(timezone.utc)), "prompt", "s-1", str(gone), None, "feat-1"), tmp_path)
+
+    assert cli.main(["stats"]) == 0
+    out, err = capsys.readouterr()
+    assert f"skipped {gone}: the folder is gone" in err
+    assert out == "No merged PR in the window has events.\n"

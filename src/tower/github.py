@@ -22,23 +22,26 @@ class GhError(Exception):
     """A gh call failed: not installed, not logged in, not a GitHub repo, or timed out."""
 
 
-def merged_prs(repo: str, since: datetime) -> list[MergedPr]:
-    """The PRs merged in repo (a checkout's path) at or after since, each with its tickets and their reopen counts."""
-    listed = json.loads(
-        gh(
-            repo,
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--search",
-            f"merged:>={since.date().isoformat()}",  # search has day precision; the exact cut is below
-            "--limit",
-            str(PR_LIMIT),
-            "--json",
-            "number,title,headRefName,mergedAt,body,closingIssuesReferences",
-        )
+def merged_prs(repo: str, since: datetime, reopens_from: datetime) -> list[MergedPr]:
+    """The PRs merged in repo (a checkout's path) at or after since, each with its tickets. Reopen counts (one gh call
+    per ticket) are fetched only for PRs merged at or after reopens_from; earlier ones get 0."""
+    output = gh(
+        repo,
+        "pr",
+        "list",
+        "--state",
+        "merged",
+        "--search",
+        f"merged:>={since.date().isoformat()}",  # search has day precision; the exact cut is below
+        "--limit",
+        str(PR_LIMIT),
+        "--json",
+        "number,title,headRefName,mergedAt,body,closingIssuesReferences",
     )
+    try:
+        listed = json.loads(output)
+    except ValueError as error:
+        raise GhError(f"gh pr list in {repo}: output isn't JSON: {output[:200]!r}") from error
     prs = []
     for item in listed:
         try:
@@ -49,7 +52,7 @@ def merged_prs(repo: str, since: datetime) -> list[MergedPr]:
         if merged_at < since:
             continue
         closes = tickets(item.get("body") or "", item.get("closingIssuesReferences") or [])
-        reopened = sum(reopens_after(repo, ticket, merged_at) for ticket in closes)
+        reopened = sum(reopens_after(repo, ticket, merged_at) for ticket in closes) if merged_at >= reopens_from else 0
         prs.append(MergedPr(repo, number, title, branch, merged_at, closes, reopened))
     return prs
 
@@ -74,7 +77,10 @@ def reopens_after(repo: str, issue: int, merged_at: datetime) -> int:
         "--jq",
         '.[] | select(.event == "reopened") | .created_at',
     )
-    return sum(1 for line in out.splitlines() if line and datetime.fromisoformat(line) > merged_at)
+    try:
+        return sum(1 for line in out.splitlines() if line and datetime.fromisoformat(line) > merged_at)
+    except ValueError as error:
+        raise GhError(f"gh api in {repo}: unexpected reopen time in {out[:200]!r}") from error
 
 
 def gh(repo: str, *args: str) -> str:

@@ -7,17 +7,20 @@ branch (if it was reused) and up to this merge. From them:
 - active: your active time. Each input of yours (a `prompt` or an `answer`) counts the ACTIVE_WINDOW before it, as
   reading and typing; overlapping windows count once. Approvals of permission prompts aren't in the log yet, so they
   don't count.
-- waits: in each session, the stretch from when the worker stopped for you to your next input. It opens at the first
-  `needs-you` since your last input, or at the last `stop` since then, whichever is earlier (the last stop, because a
-  Stop hook like card-reminder can send the worker back to work, which shows as more stops). waiting is their sum,
-  interruptions their count, resume_median the median.
+- waits: in each session, the stretch from when the worker stopped for you to your next input. It opens at the last
+  `stop` since your last input, or with no stop, at the first `needs-you` since then. The last stop, because a Stop
+  hook like card-reminder can send the worker back to work, which shows as more stops; a stop before a `needs-you`,
+  because a permission prompt you approve without typing leaves no event, and the worker ran on after it. waiting is
+  their sum, interruptions their count, resume_median the median.
 - reports: turns that ended in a `stop`: each stop-containing stretch your input closed, plus a trailing one.
-  follow_ups: your prompts that answered a report (an `answer` to AskUserQuestion isn't one).
-- rework: later merged PRs from the same branch or for the same ticket, plus reopens of its tickets after its merge.
+  follow_ups: your prompts after the worker's first report in that session (an `answer` to AskUserQuestion isn't
+  one), so a prompt sent while it is still working on your last one counts too.
+- rework: later merged PRs from the same branch (more commits after it was done), plus reopens of its tickets after
+  its merge. Later PRs for the same ticket from another branch don't count: a ticket can take several changes.
 
-Known gaps: a permission prompt you approve without typing leaves no event, so its wait runs on until your next input;
-start -> verified working capability waits for T14's integration check; model cost isn't recorded (see
-docs/research/claude-code-cost-metrics.md).
+Known gaps: a wait on a permission prompt you approve without typing, with no stop after it, runs on until your next
+input; start -> verified working capability waits for T14's integration check; model cost isn't recorded (see
+docs/research/claude-code-cost-metrics.md); rework for a recent PR grows as later fixes merge.
 """
 
 from __future__ import annotations
@@ -69,7 +72,7 @@ class ChangeStats:
 
 
 @dataclass(frozen=True)
-class Report:
+class StatsResult:
     """Every merged PR with events, by merge time; the merged PRs with none (made outside tower); and how many events
     were left out because their ts couldn't be read."""
 
@@ -78,9 +81,10 @@ class Report:
     unreadable: int = 0
 
 
-def compute(log: Sequence[Event], prs: Sequence[MergedPr]) -> Report:
-    """The metrics for each PR in prs, from the events in log (any order). PRs without events go to untracked;
-    events whose ts isn't an ISO 8601 time with a zone are counted in unreadable and left out."""
+def compute(log: Sequence[Event], prs: Sequence[MergedPr], merged_since: datetime | None = None) -> StatsResult:
+    """The metrics for each PR in prs merged at or after merged_since (default: all), from the events in log (any
+    order). PRs without events go to untracked; events whose ts isn't an ISO 8601 time with a zone are counted in
+    unreadable and left out. PRs merged before merged_since only bound a reused branch's events."""
     timed: list[tuple[datetime, Event]] = []
     unreadable = 0
     for e in log:
@@ -91,22 +95,24 @@ def compute(log: Sequence[Event], prs: Sequence[MergedPr]) -> Report:
             timed.append((when, e))
     timed.sort(key=lambda pair: pair[0])
     by_merge = sorted(prs, key=lambda p: p.merged_at)
-    report = Report(unreadable=unreadable)
+    result = StatsResult(unreadable=unreadable)
     for index, merged in enumerate(by_merge):
+        if merged_since is not None and merged.merged_at < merged_since:
+            continue
         earlier = [p.merged_at for p in by_merge[:index] if (p.repo, p.branch) == (merged.repo, merged.branch)]
-        after = max(earlier, default=None)
+        previous_merge = max(earlier, default=None)
         change_events = [
             (when, e)
             for when, e in timed
             if (e.repo, e.branch) == (merged.repo, merged.branch)
-            and (after is None or when > after)
+            and (previous_merge is None or when > previous_merge)
             and when <= merged.merged_at
         ]
         if not change_events:
-            report.untracked.append(merged)
+            result.untracked.append(merged)
             continue
-        report.changes.append(change_stats(merged, change_events, rework(merged, by_merge[index + 1 :])))
-    return report
+        result.changes.append(change_stats(merged, change_events, rework(merged, by_merge[index + 1 :])))
+    return result
 
 
 def change_stats(merged: MergedPr, change_events: list[tuple[datetime, Event]], rework_count: int) -> ChangeStats:
@@ -138,18 +144,19 @@ def turns(change_events: list[tuple[datetime, Event]]) -> tuple[list[timedelta],
     for session_events in sessions.values():
         first_needs_you: datetime | None = None
         last_stop: datetime | None = None
+        reported = False  # the worker has stopped for you at least once in this session
         for when, e in session_events:
             if e.type == "needs-you" and first_needs_you is None:
                 first_needs_you = when
             elif e.type == "stop":
                 last_stop = when
+                reported = True
             elif e.type in INPUTS:
-                opened = [t for t in (first_needs_you, last_stop) if t is not None]
-                if opened:
-                    waits.append(when - min(opened))
-                if last_stop is not None:
-                    reports += 1
-                    follow_ups += e.type == "prompt"
+                opened = last_stop or first_needs_you
+                if opened is not None:
+                    waits.append(when - opened)
+                reports += last_stop is not None
+                follow_ups += reported and e.type == "prompt"
                 first_needs_you = last_stop = None
         if last_stop is not None:
             reports += 1  # the trailing report nobody answered in this session
@@ -171,12 +178,8 @@ def active_time(inputs: list[datetime]) -> timedelta:
 
 
 def rework(merged: MergedPr, later: Sequence[MergedPr]) -> int:
-    """Later merged PRs in the same repo from the same branch or closing one of the same tickets, plus reopens."""
-    tickets = set(merged.closes)
-    follow_on = [
-        p for p in later if p.repo == merged.repo and (p.branch == merged.branch or tickets.intersection(p.closes))
-    ]
-    return len(follow_on) + merged.reopened_after_merge
+    """Later merged PRs in the same repo from the same branch, plus reopens of merged's tickets."""
+    return sum(1 for p in later if (p.repo, p.branch) == (merged.repo, merged.branch)) + merged.reopened_after_merge
 
 
 def parse_ts(ts: str) -> datetime | None:
@@ -188,15 +191,15 @@ def parse_ts(ts: str) -> datetime | None:
     return when if when.tzinfo is not None else None
 
 
-def render(report: Report) -> str:
-    """report as a plain-text table, one row per change, then a line for untracked PRs if any."""
-    if not report.changes:
+def render(result: StatsResult) -> str:
+    """result as a plain-text table, one row per change, then a line for untracked PRs if any."""
+    if not result.changes:
         lines = ["No merged PR in the window has events."]
     else:
-        lines = table(report.changes)
-    if report.untracked:
-        count = len(report.untracked)
-        labels = ", ".join(pr_label(p) for p in report.untracked)
+        lines = table(result.changes)
+    if result.untracked:
+        count = len(result.untracked)
+        labels = ", ".join(pr_label(p) for p in result.untracked)
         lines += ["", f"{count} merged PR{'s' if count > 1 else ''} with no events (made outside tower): {labels}"]
     return "\n".join(lines)
 

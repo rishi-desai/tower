@@ -18,8 +18,10 @@ from pathlib import Path
 
 from tower import __version__, events, github, hook_events, stats
 
-SINCE = re.compile(r"(\d+)([hdw])")
+SINCE_SPAN = re.compile(r"(\d+)([hdw])")
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
+# Merges this far before the window are fetched too, only to cut a reused branch's events at its earlier merge.
+BOUNDARY_LOOKBACK = timedelta(days=30)
 
 
 def non_negative_int(text: str) -> int:
@@ -32,7 +34,7 @@ def non_negative_int(text: str) -> int:
 
 def since_span(text: str) -> timedelta:
     """argparse type for --since: a count and a unit, h(ours), d(ays) or w(eeks), like 14d."""
-    match = SINCE.fullmatch(text)
+    match = SINCE_SPAN.fullmatch(text)
     if match is None:
         raise argparse.ArgumentTypeError(f"{text!r} isn't a span like 14d, 2w or 36h")
     return timedelta(**{SINCE_UNITS[match.group(2)]: int(match.group(1))})
@@ -69,12 +71,15 @@ def events_tail(n: int) -> int:
 
 
 def stats_command(since: timedelta, repo_path: str | None) -> int:
-    """Print the metrics table for PRs merged in the last since; 1 if a repo's PRs couldn't be read, else 0."""
+    """Print the metrics table for PRs merged in the last since, for repo_path's repo or every repo with recent events.
+    Exit code: 2 if repo_path isn't in a git repo, 1 if gh failed for some repo, else 0. A repo whose folder is gone
+    is skipped with a warning only."""
     directory = events.default_dir()
     log, damaged = events.read_all(directory)
     if not log:
         print(f"tower: no events yet in {directory}", file=sys.stderr)
         return 0
+    cutoff = datetime.now(timezone.utc) - since
     if repo_path is not None:
         only = hook_events.place(repo_path)[0]
         if only is None:
@@ -82,19 +87,28 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
             return 2
         repos = [only]
     else:
-        repos = sorted({e.repo for e in log if e.repo is not None and Path(e.repo).is_dir()})
-    cutoff = datetime.now(timezone.utc) - since
+        recent = cutoff - BOUNDARY_LOOKBACK
+        repos = sorted(
+            {
+                e.repo
+                for e in log
+                if e.repo is not None and (when := stats.parse_ts(e.ts)) is not None and when >= recent
+            }
+        )
     prs: list[stats.MergedPr] = []
     failed = False
     for repo in repos:
+        if not Path(repo).is_dir():
+            print(f"tower: skipped {repo}: the folder is gone", file=sys.stderr)
+            continue
         try:
-            prs += github.merged_prs(repo, cutoff)
+            prs += github.merged_prs(repo, cutoff - BOUNDARY_LOOKBACK, reopens_from=cutoff)
         except github.GhError as error:
             print(f"tower: skipped {repo}: {error}", file=sys.stderr)
             failed = True
-    report = stats.compute(log, prs)
-    print(stats.render(report))
-    left_out = damaged + report.unreadable
+    result = stats.compute(log, prs, merged_since=cutoff)
+    print(stats.render(result))
+    left_out = damaged + result.unreadable
     if left_out:
         print(f"tower: left out {left_out} damaged line(s) of the event log", file=sys.stderr)
     return 1 if failed else 0
