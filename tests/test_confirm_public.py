@@ -2,15 +2,20 @@
 
 Each test runs the hook the way Claude Code does: a separate `python3 -I` process with the tool call
 as JSON on stdin. The hook either prints an "ask" decision or prints nothing (Claude Code's normal
-permission rules then decide). TOWER_CONF points at a temporary tower.conf holding the mode under test.
+permission rules then decide). HOME is a temporary folder, so the policy file the hook reads is the one a test
+writes to <tmp>/.claude/tower/policy.toml, and TOWER_CONF points at a temporary tower.conf.
 
-Cases are grouped by how the hook should treat them:
+Most tests run under a profile written the way tower.conf's old push_approval and pr_approval worked (the
+`push` and `pr` arguments of run_hook): comments and issue writes ask, PR writes and merges ask unless
+pr="none". Cases are grouped by how the hook should treat them there:
   ALWAYS_ASK   - GitHub writes other people see (comments, reviews, issues, releases, labels, gh api writes)
-  PR_CHANGES   - gh pr writes a worker needs for its own PR; ask unless pr_approval=none
-  PUSHES       - plain pushes; ask only when push_approval=every
-  FORCE        - force pushes, deletes and +refspecs; ask unless push_approval=none
+  PR_CHANGES   - gh pr writes a worker needs for its own PR; ask unless pr="none"
+  PUSHES       - plain pushes; ask only when push=every
+  FORCE        - force pushes, deletes and +refspecs; ask unless push=none
   READS        - read-only commands; never ask
-  UNCHECKABLE  - commands the hook can't split or see into; ask in every mode
+  UNCHECKABLE  - commands the hook can't split or see into; ask in every mode but one where nothing asks
+The policy matrix after them covers every key in each built-in profile, chosen by default_profile or by a
+repo override, and the safety floor, which asks in every profile.
 Each group also holds the same actions written in other ordinary forms: global options before the
 subcommand, flags attached to their values, wrappers (bash -c, env, xargs, ...), $( ), heredocs.
 HANDOFF.md recorded only the counts of the original manual run, not the commands, so these cases are
@@ -19,10 +24,13 @@ rebuilt from the hook's docstring and cover every rule it states.
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -257,12 +265,16 @@ READS = [
     "cd . && ls .",
     "source ~/.zshrc",
     "bash --version",
-    # reading tower.conf with a read-only program is fine (workers check pr_approval)
+    # reading tower.conf or the policy file with a read-only program is fine
     "cat ~/.claude/tower.conf",
-    "grep pr_approval ~/.claude/tower.conf",
-    "PR=$(grep pr_approval ~/.claude/tower.conf)",
+    "grep projects_dir ~/.claude/tower.conf",
+    "DIR=$(grep projects_dir ~/.claude/tower.conf)",
     "tail -n 20 ~/.claude/tower/errors.log",
     "cat ~/.claude/tower/events.jsonl",
+    "cat ~/.claude/tower/policy.toml",
+    # tower policy without `use` only shows the policy
+    "tower policy",
+    "uv run tower policy",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -295,30 +307,60 @@ UNCHECKABLE = [
 ]
 
 
+def legacy_policy(push: str, pr: str) -> str:
+    """A policy file whose profile does what tower.conf's push_approval=PUSH and pr_approval=PR did."""
+    pr_value = "auto" if pr == "none" else "ask"
+    return (
+        'default_profile = "test"\n[profiles.test]\n'
+        f'push = "{push}"\npr_writes = "{pr_value}"\nmerge_to_main = "{pr_value}"\nmerge_to_branch = "{pr_value}"\n'
+    )
+
+
 def run_hook(
-    tmp_path: Path, call: object, push: str = "every", pr: str = "every", write_conf: bool = True
+    tmp_path: Path,
+    call: object,
+    push: str = "every",
+    pr: str = "every",
+    policy: str | None = None,
+    conf: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, object] | None:
-    """Run the hook on CALL with a tower.conf holding PUSH and PR (none at all if not WRITE_CONF).
+    """Run the hook on CALL with a policy file holding POLICY (default: the legacy profile for PUSH and PR; "" for
+    no file at all) and, if CONF is given, a tower.conf holding it; ENV adds to the hook's environment.
 
     Returns the hook's decision, or None if it printed nothing.
     """
-    conf = tmp_path / "tower.conf"
-    if write_conf:
-        conf.write_text(f"push_approval={push}\npr_approval={pr}\n", encoding="utf-8")
+    policy_file = tmp_path / ".claude" / "tower" / "policy.toml"
+    policy_file.parent.mkdir(parents=True, exist_ok=True)
+    text = legacy_policy(push, pr) if policy is None else policy
+    if text:
+        policy_file.write_text(text, encoding="utf-8")
+    if conf is not None:
+        (tmp_path / "tower.conf").write_text(conf, encoding="utf-8")
     stdin = call if isinstance(call, str) else json.dumps(call)
     proc = subprocess.run(
         [sys.executable, "-I", str(HOOK)],
         input=stdin,
         capture_output=True,
         text=True,
-        env={"TOWER_CONF": str(conf), "HOME": str(tmp_path)},
+        env={"TOWER_CONF": str(tmp_path / "tower.conf"), "HOME": str(tmp_path), **(env or {})},
         check=True,
-        timeout=10,
+        timeout=20,
     )
     if not proc.stdout.strip():
         return None
     decision: dict[str, object] = json.loads(proc.stdout)["hookSpecificOutput"]
     return decision
+
+
+def load_hook() -> ModuleType:
+    """The hook as a module, for tests that call its functions in this process."""
+    spec = importlib.util.spec_from_file_location("confirm_public", HOOK)
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    sys.modules["confirm_public"] = hook  # dataclasses look their module up here
+    spec.loader.exec_module(hook)
+    return hook
 
 
 def asks(decision: dict[str, object] | None) -> bool:
@@ -340,28 +382,28 @@ def test_github_writes_always_ask(tmp_path: Path, command: str, push: str) -> No
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", PR_CHANGES)
-def test_pr_changes_ask_when_pr_approval_is_every(tmp_path: Path, command: str, push: str) -> None:
-    """A worker's own PR changes ask while pr_approval=every."""
+def test_pr_changes_ask_when_pr_writes_and_merges_ask(tmp_path: Path, command: str, push: str) -> None:
+    """A worker's own PR changes ask while pr_writes and both merge keys ask."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="every"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", PR_CHANGES)
-def test_pr_changes_pass_when_pr_approval_is_none(tmp_path: Path, command: str, push: str) -> None:
-    """pr_approval=none lets a worker open and merge its own PR without a prompt."""
+def test_pr_changes_pass_when_pr_writes_and_merges_are_auto(tmp_path: Path, command: str, push: str) -> None:
+    """With pr_writes and both merge keys auto, a worker opens and merges its own PR without a prompt."""
     assert not asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", PUSHES)
-def test_plain_push_asks_only_when_push_approval_is_every(tmp_path: Path, command: str, push: str) -> None:
-    """A plain push asks under push_approval=every and passes under force and none."""
+def test_plain_push_asks_only_when_push_is_every(tmp_path: Path, command: str, push: str) -> None:
+    """A plain push asks under push=every and passes under force and none."""
     assert asks(run_hook(tmp_path, bash(command), push=push)) == (push == "every")
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", FORCE)
-def test_force_push_asks_unless_push_approval_is_none(tmp_path: Path, command: str, push: str) -> None:
+def test_force_push_asks_unless_push_is_none(tmp_path: Path, command: str, push: str) -> None:
     """Force pushes, deletes and +refspecs ask under every and force."""
     assert asks(run_hook(tmp_path, bash(command), push=push)) == (push != "none")
 
@@ -381,20 +423,32 @@ def test_commands_that_cant_be_checked_ask(tmp_path: Path, command: str, push: s
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
-@pytest.mark.parametrize("value", ["sometimes", ""])
-def test_unknown_push_approval_is_treated_as_every(tmp_path: Path, value: str) -> None:
-    """A push_approval value the hook doesn't know falls back to every, the safest mode."""
-    assert asks(run_hook(tmp_path, bash("git push"), push=value))
+@pytest.mark.parametrize(
+    ("conf", "command", "expect_ask"),
+    [
+        ("push_approval=sometimes\n", "git push", True),
+        ("push_approval=\n", "git push", True),
+        ("pr_approval=whenever\n", "gh pr merge 5", True),
+        ("push_approval=none\npr_approval=none\n", "git push --force", False),
+        ("push_approval=none\npr_approval=none\n", "gh pr merge 5 --squash", False),
+        ("push_approval=none\npr_approval=none\n", "gh pr comment 5 -b hi", True),
+        ("push_approval=none\npr_approval=none\n", "gh issue create -t x", True),
+        ("push_approval=force\n", "git push", False),
+        ("push_approval=force\n", "git push -f", True),
+    ],
+)
+def test_old_tower_conf_approvals_still_apply_through_migration(
+    tmp_path: Path, conf: str, command: str, expect_ask: bool
+) -> None:
+    """With no policy file, the first run migrates tower.conf's push_approval/pr_approval into one that does what
+    they did: an unknown value is every, and comments and issue writes still ask."""
+    assert asks(run_hook(tmp_path, bash(command), policy="", conf=conf)) == expect_ask
+    assert (tmp_path / ".claude" / "tower" / "policy.toml").exists()
 
 
-def test_unknown_pr_approval_is_treated_as_every(tmp_path: Path) -> None:
-    """A pr_approval value the hook doesn't know falls back to every."""
-    assert asks(run_hook(tmp_path, bash("gh pr merge 5"), pr="whenever"))
-
-
-def test_missing_config_is_treated_as_every(tmp_path: Path) -> None:
-    """With no tower.conf at all, a push still asks."""
-    assert asks(run_hook(tmp_path, bash("git push"), write_conf=False))
+def test_missing_config_is_treated_as_the_strictest_profile(tmp_path: Path) -> None:
+    """With no policy file and no tower.conf, a push still asks."""
+    assert asks(run_hook(tmp_path, bash("git push"), policy=""))
 
 
 RULE_FILE_EDITS = [
@@ -522,11 +576,30 @@ def test_deep_nesting_asks(tmp_path: Path) -> None:
     assert asks(run_hook(tmp_path, bash("echo " + "$(" * 600 + "x" + ")" * 600)))
 
 
-def test_crash_asks(tmp_path: Path) -> None:
-    """A crash inside the hook asks instead of letting the command run. Here a tower.conf that isn't UTF-8
-    makes reading the approval modes raise."""
-    (tmp_path / "tower.conf").write_bytes(b"push_approval=\xff\n")
-    assert asks(run_hook(tmp_path, bash("git status"), write_conf=False))
+def test_crash_asks(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """A crash inside the hook asks instead of letting the command run."""
+    hook = load_hook()
+
+    def crash(call: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(hook, "decide", crash)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(bash("git status"))))
+    assert hook.main() == 0
+    decision = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "ask"
+    assert "RuntimeError: boom" in decision["permissionDecisionReason"]
+
+
+def test_a_policy_file_that_cant_be_read_gives_the_strictest_profile(tmp_path: Path) -> None:
+    """A policy file that isn't UTF-8 (or can't be parsed) makes every gate ask, as in work."""
+    policy_file = tmp_path / ".claude" / "tower" / "policy.toml"
+    policy_file.parent.mkdir(parents=True)
+    policy_file.write_bytes(b'default_profile = "\xff"\n')
+    decision = run_hook(tmp_path, bash("gh issue create -t x"), policy="")
+    assert asks(decision)
+    assert decision is not None and "tower policy: work" in str(decision["permissionDecisionReason"])
+    assert run_hook(tmp_path, bash("git status"), policy="") is None
 
 
 def test_command_too_big_to_check_asks_in_time(tmp_path: Path) -> None:
@@ -549,7 +622,8 @@ pieces = list(" \t\n;&|()<>'\"\\$`{}#=-+") + [
 rng = random.Random(21)
 for _ in range(3000):
     text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 60)))
-    assert isinstance(hook.CommandChecker("every", "every").check(text), list), repr(text)
+    checker = hook.CommandChecker(hook.SessionPolicy(hook.STRICTEST_GATES, "fuzz"), "/")
+    assert isinstance(checker.reasons(text), list), repr(text)
 """
 
 

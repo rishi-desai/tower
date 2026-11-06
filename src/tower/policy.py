@@ -235,6 +235,9 @@ def load(path: Path | None = None) -> Policy:
     except ledger.LedgerError as error:
         problems.append(f"{error}, so its settings weren't used")
         conf = {}
+    except UnicodeDecodeError:
+        problems.append(f"{shown(ledger.conf_path())} isn't UTF-8 text, so its settings weren't used")
+        conf = {}
     machine_wip = (ledger.wip_limit(conf), f"wip_limit in {shown(ledger.conf_path())}")
     if not conf.get("wip_limit", "").isdigit():
         machine_wip = (machine_wip[0], "the default")

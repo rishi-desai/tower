@@ -482,3 +482,12 @@ def test_for_checkout_reads_the_repo_from_git(home: Path, tmp_path: Path) -> Non
 
     assert (effective.profile, slug) == ("sandbox", "acme/widget")
     assert policy.for_checkout(tmp_path / "not-a-repo-or-missing")[1] is None
+
+
+def test_a_tower_conf_that_isnt_utf8_is_a_problem_not_a_crash(home: Path) -> None:
+    (home.parent / "tower.conf").write_bytes(b"push_approval=\xff\n")
+
+    effective = policy.load().for_repo(None)
+
+    assert gates(effective) == WORK
+    assert any("isn't UTF-8" in p for p in effective.problems)
