@@ -734,9 +734,9 @@ class CommandChecker:
     for a merge's base depends on the whole command line.
     """
 
-    def __init__(self, policy: SessionPolicy, cwd: str) -> None:
-        """Check under POLICY, for a session working in CWD, with a full work budget."""
-        self.policy = policy
+    def __init__(self, session_policy: SessionPolicy, cwd: str) -> None:
+        """Check under SESSION_POLICY, for a session working in CWD, with a full work budget."""
+        self.session_policy = session_policy
         self.cwd = cwd
         self.budget = WORK_BUDGET
         self.simple_commands = 0  # in the whole command line, nested code included
@@ -756,7 +756,7 @@ class CommandChecker:
         """REASON, for a part that couldn't be checked: it could be any push or GitHub write, so it asks unless the
         policy lets them all through. Either way the command counts as incomplete for the safety floor."""
         self.incomplete = True
-        return [] if self.policy.gates.all_open else [reason]
+        return [] if self.session_policy.gates.all_open else [reason]
 
     def reasons(self, command_line: str) -> list[str]:
         """Reasons to ask for the whole COMMAND_LINE, merges included. Raises TooComplex."""
@@ -828,7 +828,7 @@ class CommandChecker:
         if self.names_git_env:
             return STRICTEST_GATES.push
         named, folders = git_repos(git_args)
-        return self.policy.judge(named, self.folders + folders).push
+        return self.session_policy.judge(named, self.folders + folders).push
 
     def check_shell(self, args: list[Word], command: SimpleCommand, is_program: bool, depth: int) -> list[str]:
         """Reasons to ask for a shell run with ARGS: its -c code or heredoc is checked like any command line.
@@ -863,7 +863,7 @@ class CommandChecker:
             return None
         flags = [arg for position, arg in enumerate(args) if position not in indexes[:2]]
         named = gh_named_repos(args[: indexes[0]] + args[indexes[0] + 1 :])  # gh api's endpoint too
-        gates = STRICTEST_GATES if self.names_gh_env else self.policy.judge(named, self.folders)
+        gates = STRICTEST_GATES if self.names_gh_env else self.session_policy.judge(named, self.folders)
         group = args[indexes[0]]
         if group.dynamic:
             return None if gates.github_open else GH_DYNAMIC_REASON
