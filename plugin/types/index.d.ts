@@ -63,7 +63,7 @@ export type GithubSection = { lines: string[]; at: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'tower-pane': {
+    tower: {
       scan: Scan | null
       github: GithubSection | null
       park: number

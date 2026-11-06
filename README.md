@@ -51,17 +51,34 @@ gh repo clone rishi-desai/tower ~/Developer/personal/tower
 ```
 
 `setup.sh` writes `~/.claude/tower.conf`, creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
-global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the two plugins:
+global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the one plugin:
 
 ```bash
 claude plugin marketplace add rishi-desai/tower
-claude plugin install tower@tower          # skills, approval hook, card hooks
-claude plugin install tower-pane@tower     # optional: the live pane (see "The tower pane")
+claude plugin install tower@tower          # skills, approval hook, card hooks, and the live pane
 # or, in one step inside Claude Code 2.1.275+:  /plugin install tower --marketplace rishi-desai/tower
 ```
 
-If an organization's policy refuses mods, the pane install fails and `setup.sh` says so and carries on: everything
-else works without it.
+The pane is a mod (a hooks module) inside the same plugin. Claude Code admits or refuses each hooks module on its
+own (`plugin.register` in its mod docs), so a policy that refuses mods should cost only the pane, with the skills and
+the approval and card hooks still loading; that case hasn't been tried under a real policy.
+
+### Upgrading from two plugins (tower 0.10.0 and earlier)
+
+Before 0.11.0 the pane was a second plugin, `tower-pane@tower`. It's no longer in the marketplace: once the
+marketplace is updated, an installed copy stays in `claude plugin list` as `✘ failed to load` (`Plugin tower-pane
+not found in marketplace tower`) and `claude plugin update` can't move it. Re-running `setup.sh` does the upgrade
+when it finds `tower-pane@tower`: it uninstalls it, updates the marketplace and updates `tower@tower`. An install
+that never had the pane updates the usual way (see "Updating and uninstalling"). By hand:
+
+```bash
+claude plugin uninstall tower-pane@tower
+claude plugin marketplace update tower
+claude plugin update tower@tower           # 0.11.0 or later carries the pane
+```
+
+Then restart Claude Code. The pane starts with an empty cache (its saved state moved from `tower-pane` to
+`tower`), so the first scan fills it.
 
 Restart Claude Code afterwards. Re-run `setup.sh` any time to change settings; it keeps what it doesn't own.
 
@@ -101,7 +118,8 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 
 ### The tower pane
 
-`tower-pane` is a mod: a panel inside Claude Code, beside the chat. Run `/tower` in the hub session to open it.
+The pane is a mod inside the tower plugin: a panel inside Claude Code, beside the chat. Run `/tower` in the hub
+session to open it.
 It never reads transcripts either: it draws `tower state --json`, the same effective state the hub reports from,
 so the two can't disagree.
 
@@ -428,21 +446,21 @@ Repo layout:
 
 ```
 tower/
-  .claude-plugin/marketplace.json     this repo is its own marketplace: plugins tower and tower-pane
+  .claude-plugin/marketplace.json     this repo is its own marketplace, with one plugin: tower
   plugin/
-    .claude-plugin/plugin.json
-    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log, runtime variables
+    .claude-plugin/plugin.json        its `types` names types/index.d.ts, the pane's saved state
+    hooks/hooks.json                  command hooks (approval, card reminder, card resume, needs-you notification,
+                                      event log, runtime variables) and, under `modules`, the pane mod
+    hooks/register.tsx                the pane mod: the pane, status line, toasts, Orca jump, the back-to-hub line
+    types/index.d.ts                  the pane's saved state, as Claude Code checks it
+    tests/                            claude plugin test plugin; fixtures/ holds `tower state --json` output tests/test_state.py checks
     scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
                                       (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
                                       `card-path` and `rules`, kept for one release)
-  pane/                               the tower-pane mod
-    hooks/register.tsx                the pane, status line, toasts, Orca jump, the back-to-hub line
-    types/index.d.ts                  its saved state, as Claude Code checks it
-    tests/                            claude plugin test pane; fixtures/ holds `tower state --json` output tests/test_state.py checks
   src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
-  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI
+  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI, setup.sh's install
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`
@@ -454,13 +472,13 @@ tower/
 `mise run ci` runs every check, and GitHub runs the same task on each pull request through
 [rishi-desai/ci](https://github.com/rishi-desai/ci)'s shared workflow, so a local pass means CI passes. It runs ruff
 (lint and format), mypy (strict), pytest, shellcheck on every `.sh`, gitleaks (secret scan),
-`claude plugin validate --strict` on the marketplace and both plugins, and the pane's tests (`claude plugin test pane`,
+`claude plugin validate --strict` on the marketplace and the plugin, and the pane's tests (`claude plugin test plugin`,
 which needs no login). Run `mise install` once first.
 
 - **The approval hook's tests** live in `tests/test_confirm_public.py`. A known bypass goes in as an `xfail` test:
   pytest fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
-- **The pane's type check isn't in `ci`.** Its type stubs (`pane/.claude-plugin/types/`) are written by Claude Code
-  only when a logged-in session loads the pane, which CI can't do. Start `claude --plugin-dir pane` once, then run
+- **The pane's type check isn't in `ci`.** Its type stubs (`plugin/.claude-plugin/types/`) are written by Claude Code
+  only when a logged-in session loads the plugin, which CI can't do. Start `claude --plugin-dir plugin` once, then run
   `mise run pane-typecheck`.
 
 ## Using it on the work laptop
@@ -487,10 +505,11 @@ which needs no login). Run `mise install` once first.
 
 ## Updating and uninstalling
 
-- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower && claude plugin update tower-pane@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` (and `pane/.claude-plugin/plugin.json` for pane changes) so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
-- **Change the pane:** edit `pane/`, run `claude plugin validate pane && claude plugin test pane`, and try it with `claude --plugin-dir pane` before pushing (uninstalled, or the installed copy loads too).
+- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
+- **Change the pane:** edit `plugin/hooks/register.tsx`, run `claude plugin validate --strict plugin && claude plugin test plugin`, and try it with `claude --plugin-dir plugin` before pushing: for that session the checkout replaces the installed
+  tower (Claude Code logs `Plugin "tower" from --plugin-dir overrides installed version`), so nothing runs twice.
 - **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the local patches, update the fingerprints.
-- **Uninstall:** `claude plugin uninstall tower-pane@tower`, `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
+- **Uninstall:** `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
 
 ## Credits
 
