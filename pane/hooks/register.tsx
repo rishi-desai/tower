@@ -34,17 +34,24 @@ export function waitingIn(w: StateWorktree): StateSession[] {
   return w.sessions.filter(s => s.activity === 'waiting')
 }
 
-/** What a waiting session needs, as Claude Code says it ("approve Bash"); a question says "input needed". */
+/**
+ * What a waiting session needs, as Claude Code says it: "input needed" for a question, "approve Bash" for an approval.
+ * Sessions read from the event log (and some background ones) don't say, so the note stays neutral.
+ */
 export function waitingNote(session: StateSession): string {
-  return session.waiting_for || 'input needed'
+  return session.waiting_for || 'waiting on you'
 }
 
-/** One label per worktree that needs the user, for toasts: a new label is something new. */
+/**
+ * One label per thing that needs the user, for toasts: each waiting session, or the worktree when none waits (its
+ * card asks). A label that wasn't there last scan is something new; a label never carries text that can change
+ * while the same wait goes on.
+ */
 export function toastLabels(state: TowerState): string[] {
-  return needsYou(state).map(w => {
-    const waiting = waitingIn(w)[0]
-    if (waiting) return `${w.label}: session ${waiting.name} is waiting (${waitingNote(waiting)})`
-    return w.card?.status === 'needs-you' ? `${w.label}: card needs you` : `${w.label}: needs you`
+  return needsYou(state).flatMap(w => {
+    const waiting = waitingIn(w)
+    if (waiting.length) return waiting.map(s => `${w.label}: session ${s.name} is waiting`)
+    return [w.card?.status === 'needs-you' ? `${w.label}: card needs you` : `${w.label}: needs you`]
   })
 }
 
@@ -84,6 +91,15 @@ export function parseGithub(lines: string[]): Github {
     } else if (line.startsWith('(') && line !== '(none)') github.note = line
   }
   return github
+}
+
+/**
+ * The issue rows the pane draws: every ready-for-agent issue (each must stay startable), then the newest others until
+ * there are ISSUES_SHOWN rows. Within each group, the newest first, as hub-scan.sh lists them.
+ */
+export function issuesToShow(issues: Issue[]): Issue[] {
+  const ready = issues.filter(i => i.isReady)
+  return [...ready, ...issues.filter(i => !i.isReady).slice(0, Math.max(0, ISSUES_SHOWN - ready.length))]
 }
 
 /** "#45 title [branch] review:APPROVED DRAFT" -> "#45 title · approved · draft"; review:none is dropped. */
@@ -222,13 +238,16 @@ async function waitingPanes($: EngineInterface, worktreePath: string): Promise<s
  */
 async function openInOrca($: EngineInterface, name: string, worktreePath: string): Promise<void> {
   try {
-    const listed = await $.process.run(['orca', 'terminal', 'list', '--worktree', `path:${worktreePath}`, '--json'], { timeoutMs: 15_000 })
+    // Both Orca questions at once: a click shouldn't wait for two round trips in a row.
+    const [listed, panes] = await Promise.all([
+      $.process.run(['orca', 'terminal', 'list', '--worktree', `path:${worktreePath}`, '--json'], { timeoutMs: 15_000 }),
+      waitingPanes($, worktreePath).catch(() => null),
+    ])
     if (listed.exitCode !== 0) {
       $.ui.toast(`Couldn't ask Orca: ${orcaError(listed).slice(0, 120)}`)
       return
     }
     const terminals = (JSON.parse(listed.stdout) as { result?: { terminals?: OrcaTerminal[] } }).result?.terminals ?? []
-    const panes = await waitingPanes($, worktreePath).catch(() => null)
     const { pick, isWaiting } = pickTerminal(terminals, panes ?? [])
     if (!pick) {
       $.ui.toast(`No open Orca terminal in ${name}`)
@@ -287,27 +306,29 @@ async function locateTower($: EngineInterface): Promise<string | null> {
  * timeout, and an escaped rejection would leave the pane frozen on an old scan with no reason shown.
  */
 async function refresh($: EngineInterface, withGithub: boolean): Promise<void> {
-  try {
-    await scanOnce($)
-  } catch (error) {
+  const local = scanOnce($).catch(async error => {
     const at = await $.clock.now()
-    await update($, scanAtom, () => ({ ok: false, state: null, error: `scan didn't run: ${String(error).slice(0, 200)}`, at, items: [] }))
+    await update($, scanAtom, () => ({ ok: false, state: null, error: `scan didn't run: ${String(error).slice(0, 200)}`, at }))
     $.ui.status(undefined)
-  }
-  if (withGithub) await loadGithub($).catch(error => $.ui.toast(`Couldn't load GitHub: ${String(error).slice(0, 120)}`))
+  })
+  // hub-scan.sh is slow (it runs every section, GitHub's included): run it beside the local scan, not after it.
+  const github = withGithub ? loadGithub($).catch(error => $.ui.toast(`Couldn't load GitHub: ${String(error).slice(0, 120)}`)) : null
+  await Promise.all([local, github])
 }
 
-/** Why `tower state --json` failed, from its stderr; an old tower without the core says so. */
+const UPDATE_TOWER = 'the pane needs tower 0.9.1 or later: claude plugin update tower@tower'
+
+/** Why `tower state --json` failed, from its stderr; a tower too old to have the core says so. */
 function stateError(stderr: string, exitCode: number): string {
   const last = lastLine(stderr, exitCode)
-  return stderr.includes('run-tower.py') ? `${last} (the pane needs tower 0.9.0 or later: claude plugin update tower@tower)` : last
+  return /can't open file .*run-tower\.py/.test(stderr) ? `${last} (${UPDATE_TOWER})` : last
 }
 
 /** Runs `tower state --json`, stores it for the pane, updates the status line, toasts what's new. */
 async function scanOnce($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   const failed = async (error: string) => {
-    await update($, scanAtom, () => ({ ok: false, state: null, error, at, items: [] }))
+    await update($, scanAtom, () => ({ ok: false, state: null, error, at }))
     $.ui.status(undefined)
   }
   if (towerRoot === null) towerRoot = await locateTower($)
@@ -322,9 +343,10 @@ async function scanOnce($: EngineInterface): Promise<void> {
     return failed('tower state printed something that is not JSON')
   }
   if (!Array.isArray(state.worktrees)) return failed('tower state printed JSON without worktrees (its format may have changed)')
+  if (!Array.isArray(state.housekeeping)) return failed(`tower state printed no housekeeping (${UPDATE_TOWER})`)
 
   const items = toastLabels(state)
-  await update($, scanAtom, () => ({ ok: true, state, error: '', at, items }))
+  await update($, scanAtom, () => ({ ok: true, state, error: '', at }))
   await readBacklog($, state.ledger)
 
   const count = needsYou(state).length
@@ -482,7 +504,8 @@ export const register: Register = on => {
     const others = state.worktrees.filter(w => w.status !== 'needs-you')
     const housekeeping = state.housekeeping.map(item => `${item.label}: ${item.note}`) // the hub's own list
     const issues = github?.issues ?? []
-    const moreIssues = issues.length - Math.min(issues.length, ISSUES_SHOWN)
+    const shownIssues = issuesToShow(issues)
+    const moreIssues = issues.length - shownIssues.length
     let hotkey = 0 // 1-9 on the Needs you rows
     const nextHotkey = () => (hotkey < 9 ? String(++hotkey) : undefined)
 
@@ -529,7 +552,8 @@ export const register: Register = on => {
         {title('Worktrees')}
         {others.map(w => {
           const names = w.sessions.map(s => s.name)
-          const canNudge = (w.stale || hasNoCard(w)) && names.length > 0
+          // Event-log sessions are named by their id's start, which a message can't reach: only live names are nudged.
+          const canNudge = (w.stale || hasNoCard(w)) && names.length > 0 && state.sessions_source === 'live'
           const top = [
             orcaName(w),
             ticket(w),
@@ -554,7 +578,7 @@ export const register: Register = on => {
           return bullet(`pr-${number}`, ` ${number}`, words.join(' '))
         })}
         {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length}${issues.length >= HUB_SCAN_ISSUE_LIMIT ? '+' : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
-        {issues.slice(0, ISSUES_SHOWN).map(issue => (
+        {shownIssues.map(issue => (
           <Box key={`issue-${issue.number}`} flexDirection="row" columnGap={1}>
             <Box flexShrink={0}>
               <Text> </Text>

@@ -118,7 +118,8 @@ so the two can't disagree.
   question is open.
 - **Approvals never go through the pane.** A push or a GitHub comment is approved only in the session doing it,
   so nothing else can approve on your behalf.
-- **Buttons:** Refresh (r), Refresh GitHub (g: PRs and every open issue, the newest ten and "+ N more";
+- **Buttons:** Refresh (r), Refresh GitHub (g: PRs and every open issue: each ready one, then the newest others
+  up to ten, and "+ N more";
   `start #N` on a `ready-for-agent` issue starts it, `discuss #N` on any other asks the hub to discuss it first),
   What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
 

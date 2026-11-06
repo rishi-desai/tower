@@ -54,8 +54,6 @@ export type Scan = {
   error: string
   /** When it ran, from $.clock.now(). */
   at: number
-  /** One label per worktree that needs the user, for toasts: only new labels toast. */
-  items: string[]
 }
 
 /** The GitHub section from the last full hub-scan.sh run (only Refresh GitHub runs it). */

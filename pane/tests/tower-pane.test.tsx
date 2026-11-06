@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { StateWorktree, TowerState } from '../types'
-import { parseGithub } from '../hooks/register'
+import { issuesToShow, parseGithub } from '../hooks/register'
 import { SHARED } from './fixtures/tower-state'
 
 // SHARED is `tower state --json`'s real output for the fixture in tests/test_state.py, which checks it: feat-3's card
@@ -177,8 +177,8 @@ test('a toast only for what is new since the last scan', async ($, on) => {
   await $.command.run({ command: 'tower' }) // same items again: no new toasts
 
   expect(w.toasts).toContain('tower: feat-3: card needs you — /tower')
-  expect(w.toasts).toContain('tower: feat-8: session w8 is waiting (approve Bash) — /tower')
-  expect(w.toasts).toContain('tower: feat-9: session w9 is waiting (input needed) — /tower')
+  expect(w.toasts).toContain('tower: feat-8: session w8 is waiting — /tower')
+  expect(w.toasts).toContain('tower: feat-9: session w9 is waiting — /tower')
   expect(w.toasts.length).toBe(before)
 })
 
@@ -187,7 +187,7 @@ test('a scan that fails shows its reason instead of freezing the pane', async ($
   w.stateRun = { exitCode: 1, stderr: "python3: can't open file '/tower/scripts/run-tower.py': No such file\n" }
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('the pane needs tower 0.9.0 or later')
+  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('the pane needs tower 0.9.1 or later')
   expect(w.statuses.at(-1)).toBeUndefined()
   await ui.unmount()
 })
@@ -345,6 +345,34 @@ test('parseGithub reads PRs and every issue, ready or not', () => {
   ])
   expect(github.note).toBe('(gh failed: rate limited)')
   expect(parseGithub(['-- open issues assigned to you --', '(none)']).issues).toEqual([])
+})
+
+test('a ready-for-agent issue older than the newest ten still gets its start button', () => {
+  const issues = parseGithub(['-- open issues (all — your repo) --', ...ISSUES.slice(1), '- #12 old but ready [ready-for-agent]']).issues
+  const shown = issuesToShow(issues)
+  expect(shown.map(i => i.number)).toEqual(['12', '60', '59', '58', '57', '56', '55', '54', '53', '52'])
+})
+
+test('a tower too old for the pane says to update it, and a real failure keeps its own reason', async ($, on) => {
+  const w = world(on, { ...SHARED, housekeeping: undefined } as unknown as TowerState) // tower 0.9.0's JSON
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /tower scan failed: / }))?.text).toContain('claude plugin update tower@tower')
+  await ui.unmount()
+
+  w.stateRun = { exitCode: 1, stderr: 'Traceback:\n  File "/tower/scripts/run-tower.py", line 24\nKeyError: boom\n' }
+  await $.command.run({ command: 'tower' })
+  const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await again.find({ type: 'Text', text: /tower scan failed: / }))?.text).toBe('tower scan failed: KeyError: boom')
+  await again.unmount()
+})
+
+test('without live sessions (event log only) nothing offers a nudge it could not deliver', async ($, on) => {
+  world(on, { ...SHARED, sessions_source: 'events' })
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'nudge-feat-5' })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('a backlog that cannot be read says why instead of showing nothing', async ($, on) => {
