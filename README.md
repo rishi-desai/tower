@@ -397,7 +397,7 @@ API_URL = "http://localhost:{port}/api"
 ```
 
 - **Runtime slot**: each worktree's stable number, 0 for the main checkout and the smallest free one (1, 2, …) for
-  every other worktree. It's kept in `~/.claude/tower/slots/<Project>.json` for as long as the worktree's folder
+  every other worktree. It's kept in `~/.claude/tower/runtime-slots/<Project>.json` for as long as the worktree's folder
   exists, so a worker's port never changes under it; removing a worktree frees its slot. Not to be confused with an
   execution slot, which is what the WIP limit counts.
 - **In every Claude session**, the plugin's SessionStart hook (`session-env.py`) sets `TOWER_SLOT`, `PORT` and the
@@ -435,7 +435,7 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
 | `~/.claude/tower/projects/<Project>.toml` | that project's runtime config: ports, database name, seed command (optional) |
-| `~/.claude/tower/slots/<Project>.json` | each worktree's runtime slot (written by tower; delete it to hand them out again) |
+| `~/.claude/tower/runtime-slots/<Project>.json` | each worktree's runtime slot (written by tower; delete it to hand them out again) |
 | `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
 | `~/.claude/tower/events.jsonl` | the event log, this month (UTC); earlier months are `events-YYYY-MM.jsonl` beside it |
 | `~/.claude/tower/errors.log` | anything the event-log hook couldn't do (it never fails the session instead) |

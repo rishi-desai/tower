@@ -69,7 +69,7 @@ def test_without_a_config_nothing_is_exported(repo: Fixture, capsys: pytest.Capt
 
     assert out == ""
     assert f"no runtime config at {repo.tower_dir / 'projects' / 'repo.toml'}" in err
-    assert not (repo.tower_dir / "slots").exists()  # no slot is taken for a project that doesn't use them
+    assert not (repo.tower_dir / "runtime-slots").exists()  # no slot is taken for a project that doesn't use them
 
 
 def test_extra_ports_env_and_the_seed_command(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
@@ -178,13 +178,13 @@ def test_a_damaged_slots_file_stops_instead_of_handing_out_slots_again(
     repo: Fixture, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_config(repo, "port_base = 3000\n")
-    slots = repo.tower_dir / "slots" / "repo.json"
+    slots = repo.tower_dir / "runtime-slots" / "repo.json"
     slots.parent.mkdir(parents=True)
     slots.write_text("{not json", encoding="utf-8")
 
     err = tower_env(capsys, repo.add_worktree("feat-1"), code=1)[1]
 
-    assert f"the slots file {slots} is damaged" in err
+    assert f"the runtime slots file {slots} is damaged" in err
     assert slots.read_text(encoding="utf-8") == "{not json"
 
 

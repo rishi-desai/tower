@@ -1,4 +1,4 @@
-"""Tests for file conflicts between worktrees in `tower state`: each worktree's changed files come from git (commits
+"""Tests for file overlaps between worktrees in `tower state`: each worktree's changed files come from git (commits
 since it split from the other branch, plus uncommitted and untracked files), never from cards, and every pair of
 worktrees that changed the same file is reported, with the files, under Housekeeping.
 """

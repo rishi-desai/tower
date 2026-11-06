@@ -18,7 +18,7 @@ recent events stand in), then the card, then git and, when asked, the PR. An exe
 counts) is a worktree other than the main checkout whose effective state is running or needs-you, so a busy worker
 with no card counts and a worker only waiting on CI doesn't.
 
-Around the statuses, the report also carries the pairs of worktrees that changed the same files (conflicts.py), which
+Around the statuses, the report also carries the pairs of worktrees that changed the same files (overlaps.py), which
 the hub lists under Housekeeping.
 
 Every fact source degrades to "unknown" instead of failing: no `claude` CLI, no ledger, no `gh`. The note fields say
@@ -39,8 +39,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tower import events, ledger, sessions
-from tower.conflicts import Overlap, find_overlaps
 from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
+from tower.overlaps import Overlap, find_overlaps
 from tower.sessions import owning_worktree
 
 STATUSES = ("needs-you", "running", "waiting-ci", "blocked", "done", "ready-to-clean", "no-card", "main")
@@ -200,7 +200,7 @@ class Report:
 
     sessions_source is "live" (`claude agents --json`), "events" (the event log stood in) or "none". agents is
     `claude agents --json`'s list when it could be read, so the scan's LIVE SESSIONS section draws the same snapshot the
-    statuses were decided from. overlaps are the pairs of worktrees that changed the same files (conflicts.py). notes
+    statuses were decided from. overlaps are the pairs of worktrees that changed the same files (overlaps.py). notes
     says, in plain words, which facts were missing and why.
     """
 

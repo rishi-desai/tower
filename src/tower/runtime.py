@@ -15,7 +15,7 @@ dir is ~/.claude/tower, or $TOWER_DIR; <Project> is the project name the cards u
     API_URL = "http://localhost:{port}/api"
 
 Each worktree gets a runtime slot: 0 for the main checkout, and for every other worktree the smallest number no other
-live worktree of the project holds, kept in `<tower dir>/slots/<Project>.json` so it never changes while the worktree
+live worktree of the project holds, kept in `<tower dir>/runtime-slots/<Project>.json` so it never changes while the worktree
 exists (a dev server keeps its port across sessions). A worktree whose folder is gone gives its slot back.
 `tower env` prints the variables as `export` lines; the SessionStart hook (plugin/scripts/session-env.py) writes them
 into each session's environment, so the worker's commands run on its own port without being told.
@@ -89,7 +89,7 @@ def config_dir() -> Path:
 def worktree_env(directory: Path) -> tuple[WorktreeEnv | None, Path]:
     """The runtime of the worktree holding directory, and the config file it came from; None (and the path it
     looked at) when the project has no runtime config, in which case no slot is taken. Raises NotARepo outside a git
-    repo, LedgerError when tower.conf can't be read, RuntimeConfigError for a bad config or slots file."""
+    repo, LedgerError when tower.conf can't be read, RuntimeConfigError for a bad config or runtime slots file."""
     top = git(directory, "rev-parse", "--show-toplevel")
     if top is None:
         raise NotARepo(f"not a git repo: {directory}")
@@ -151,10 +151,11 @@ def parse_config(text: str) -> ProjectConfig:
         if name in taken:
             raise RuntimeConfigError(f"{name} is set twice (TOWER_SLOT, PORT and DB_NAME come from the settings)")
         taken.add(name)
+    port_base, db_name, seed = top.get("port_base"), top.get("db_name"), top.get("seed")  # types checked above
     return ProjectConfig(
-        port_base=top.get("port_base"),  # type: ignore[arg-type]  # checked against TOP_LEVEL above
-        db_name=top.get("db_name"),  # type: ignore[arg-type]
-        seed=top.get("seed"),  # type: ignore[arg-type]
+        port_base=port_base if isinstance(port_base, int) else None,
+        db_name=db_name if isinstance(db_name, str) else None,
+        seed=seed if isinstance(seed, str) else None,
         ports={k: int(str(v)) for k, v in tables["ports"].items()},
         env={k: str(v) for k, v in tables["env"].items()},
     )
@@ -187,7 +188,7 @@ def derive(config: ProjectConfig, slot: int, main: str, worktree: str) -> Worktr
     extra_ports = [(name, base + slot) for name, base in config.ports.items()]
     for name, number in ([("PORT", port)] if port is not None else []) + extra_ports:
         if not 0 < number <= MAX_PORT:
-            raise RuntimeConfigError(f"{name} would be {number} in slot {slot}, outside 1-{MAX_PORT}")
+            raise RuntimeConfigError(f"{name} would be {number} in runtime slot {slot}, outside 1-{MAX_PORT}")
     variables = [("TOWER_SLOT", str(slot))]
     if port is not None:
         variables.append(("PORT", str(port)))
@@ -221,7 +222,7 @@ def allocate_slot(project: str, worktree: str) -> int:
     """worktree's slot in project (1 or more), taking the smallest free one the first time. Holds the project's lock
     while reading and writing the slots file. Raises RuntimeConfigError when the file is damaged (guessing would hand
     out slots already in use) or can't be written."""
-    directory = events.default_dir() / "slots"
+    directory = events.default_dir() / "runtime-slots"
     path = directory / f"{project}.json"
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -238,7 +239,9 @@ def allocate_slot(project: str, worktree: str) -> int:
                 write_atomically(path, json.dumps(live, indent=2, sort_keys=True) + "\n")
             return slot
     except OSError as error:
-        raise RuntimeConfigError(f"can't keep slots in {path} ({error.strerror or type(error).__name__})") from error
+        raise RuntimeConfigError(
+            f"can't keep runtime slots in {path} ({error.strerror or type(error).__name__})"
+        ) from error
 
 
 def read_slots(path: Path) -> dict[str, int]:
@@ -252,7 +255,9 @@ def read_slots(path: Path) -> dict[str, int]:
     except ValueError:
         held = None
     if not isinstance(held, dict) or not all(isinstance(s, int) and s > 0 for s in held.values()):
-        raise RuntimeConfigError(f"the slots file {path} is damaged; fix or delete it (slots are handed out again)")
+        raise RuntimeConfigError(
+            f"the runtime slots file {path} is damaged; fix or delete it (runtime slots are then handed out again)"
+        )
     return {str(p): int(s) for p, s in held.items()}
 
 
@@ -264,7 +269,10 @@ def write_atomically(path: Path, text: str) -> None:
             out.write(text)
         os.replace(temporary, path)
     except BaseException:
-        os.unlink(temporary)
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass  # the error being raised matters more than a leftover hidden temporary file
         raise
 
 

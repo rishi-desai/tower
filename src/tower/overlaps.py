@@ -1,4 +1,4 @@
-"""conflicts.py: worktrees that changed the same files, found from git, never from cards.
+"""overlaps.py: worktrees that changed the same files, found from git, never from cards.
 
 Two workers editing one file find out at merge time, after both have built on their version. tower state checks every
 pair of worktrees (the main checkout excluded: it is the hub's) and reports the files both changed, so the hub can say
@@ -62,12 +62,18 @@ def own_commit_files(
     main_checkout: Path, worktree: GitWorktree, other: GitWorktree, base: str | None
 ) -> set[str] | None:
     """Files touched by worktree's commits that neither other nor base has; None if git can't say."""
-    excluded = [f"^{other.branch or other.sha}", *([f"^{base}"] if base else [])]
+    excluded = [f"^{revision(other)}", *([f"^{base}"] if base else [])]
     out = git(
-        main_checkout, "log", "--no-renames", "--name-only", "-z", "--format=", worktree.branch or worktree.sha,
+        main_checkout, "log", "--no-renames", "--name-only", "-z", "--format=", revision(worktree),
         *excluded, "--",
     )  # fmt: skip
     return None if out is None else null_separated(out)
+
+
+def revision(worktree: GitWorktree) -> str:
+    """How git names the worktree's commit: its branch in full (a tag with the same name can't be taken for it), or
+    the commit itself on a detached HEAD."""
+    return f"refs/heads/{worktree.branch}" if worktree.branch else worktree.sha
 
 
 def uncommitted_files(worktree: Path) -> set[str] | None:
