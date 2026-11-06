@@ -40,15 +40,20 @@ into. A repo from a variable or command output, a line naming GH_REPO or GH_HOST
 GIT_WORK_TREE (for git push), and `cd -` get the strictest profile. If tower's core can't be loaded, the
 built-in strictest profile (work: everything asks) applies.
 
-Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf or a file
-under ~/.claude/tower/ (the rules, the policy file, the event log), by its path or one a symlink resolves
-to, always asks. So does any Bash command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/),
+Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf, a file
+under ~/.claude/tower/ (the rules, the policy file, the event log) or a Claude Code settings file
+(.claude/settings.json or settings.local.json, the user's or a project's), by its path or one a symlink
+resolves to, always asks. So does any Bash command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/),
 running `tower policy use` (however tower is run, tower's policy module used in python/node code
-included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile. A Bash command naming tower.conf, a policy.toml or another
-file in ~/.claude/tower asks unless it only reads it with a program like cat, grep or tail, and so does one
-writing to a path under .claude that comes from a variable or $'...' quoting. Rule files are standing
-instructions loaded into every session, and tower.conf and the policy file set the approvals above, so a
-prompt injection must not be able to change them silently: an agent can't loosen its own rules.
+included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile, or
+turning tower's plugin off: `claude plugin disable|uninstall|remove` or `claude plugin marketplace remove|rm`
+naming tower, with a name from a variable or none, disable --all, or any name xargs, parallel or find may add. A
+Bash command naming tower.conf, a policy.toml, another file in ~/.claude/tower, a Claude Code settings file or a
+.claude folder itself (cp settings.json ~/.claude/) asks unless it only reads it with a program like cat, grep,
+tail or jq, and so does one writing to a path under .claude that comes from a variable or $'...' quoting. Rule
+files are standing instructions loaded into every session, tower.conf and the policy file set the approvals above,
+and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook runs
+at all, so a prompt injection must not be able to change them silently: an agent can't loosen its own rules.
 
 How a command is read: it is split into simple commands roughly the way bash or zsh splits it: on
 && || ; | & and newlines and around ( ), respecting quotes, escapes, comments, heredocs, case
@@ -67,9 +72,10 @@ When unsure, we ask: a command that can't be split (an unclosed quote, $( or bac
 delimiter with $, a ${ cmd; } substitution), a shell reading code it can't see (from a pipe, <( ), a
 redirect or xargs), a git/gh subcommand, gh api method or GraphQL query taken from a variable or command
 output, and a command too big to check quickly. Those ask unless the policy lets every push and GitHub
-write through (sandbox), and even then they ask when their text names tower.conf, ~/.claude/tower or a
-rule file, or `tower policy use`. JSON that isn't a well-formed tool call, and any crash in this hook,
-always ask. (Input that isn't JSON at all passes, leaving the call to Claude Code's own rules.)
+write through (sandbox), and even then they ask when their text names tower.conf, ~/.claude/tower, a
+Claude Code settings file or a rule file, `tower policy use`, or a `claude plugin` command that turns one
+off. JSON that isn't a well-formed tool call, and any crash in this hook, always ask. (Input that isn't
+JSON at all passes, leaving the call to Claude Code's own rules.)
 
 Limits: this sees only the command text. These are not caught:
   - scripts and programs: `bash script.sh`, `python x.py`, `make`, or anything that calls the GitHub
@@ -79,7 +85,7 @@ Limits: this sees only the command text. These are not caught:
     tower.conf path supplied at run time (`... | xargs sed -i`);
   - aliases and functions: git aliases set outside the command (`git p` for push) and shell functions;
   - disguised names: globs, brace expansion or zsh glob qualifiers in a program name, and a protected
-    path reached through cd and a relative path, a glob or a variable;
+    path reached through cd and a relative path, a variable, or a glob other than right under a .claude folder;
   - under push=force, a variable holding a force refspec (`git push origin "$REF"`, REF=+main), or git
     config set outside the command that changes what push does;
   - a plain push straight to the default branch (`git push origin HEAD:main`) is judged by push, not
@@ -90,8 +96,12 @@ Limits: this sees only the command text. These are not caught:
     repo; TOWER_DIR and TOWER_CONF, which move the policy file and tower.conf for tests, aren't known to the
     safety floor;
   - the safety floor matches text, so a protected file reached by a path built at run time (pieces joined
-    in python, a glob, a relative path after a cd that names no protected folder) isn't caught. Claude
-    Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that.
+    in python, a glob, a relative path after a cd that names no protected folder, a copy or unpack into the
+    folder above .claude, a symlink inside it) isn't caught. Claude
+    Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
+  - Claude Code run another way to turn tower's plugin off (npx @anthropic-ai/claude-code, a script), a
+    nested session started with hooks off (claude --bare, --settings with disableAllHooks; #87), and an edit
+    of the installed plugin's own files under ~/.claude/plugins/.
 """
 
 from __future__ import annotations
@@ -960,7 +970,7 @@ class CommandChecker:
         runs as its own command (TOP_LEVEL; merge_reasons() checks nothing is chained), straight or from python with
         only python's switches, merge comes right after it, and at most a PR number follows."""
         self.spend(len(words) - index)
-        position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
+        position = next_operand(words, index + 1)
         if position is None or not (words[position].dynamic or words[position].text == "merge"):
             return
         launcher, after = words[:index], words[position + 1 :]
@@ -983,7 +993,7 @@ class CommandChecker:
         it are all tower's, not another command's as in find -exec ... \\; -exec ... --dry-run), clean right after it,
         and the exact --dry-run among clean's options (before any --, which makes the words after it worktree
         names), with no word from a variable among them (one could be --)."""
-        position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
+        position = next_operand(words, index + 1)
         if position is None or not (words[position].dynamic or words[position].text == "clean"):
             return []
         launcher, after = words[program_position(words) : index], words[position + 1 :]
@@ -1673,23 +1683,61 @@ def parse_gh_api(args: list[Word]) -> GhApiCall:
 # --- Rule files, tower's files, and the hook itself -----------------------------------------------
 
 # Case-insensitive, since macOS's disk is: TOWER.conf is tower.conf. Paths are normalized (a//b, a/./b) first.
-# Edit/Write: CLAUDE.local.md, tower.conf, and anything under ~/.claude/tower/ (rules, policy file, event log).
-PROTECTED_PATH = re.compile(r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/|(?:^|/)tower\.conf$", re.IGNORECASE)
+# Edit/Write: CLAUDE.local.md, tower.conf, anything under ~/.claude/tower/ (rules, policy file, event log), and Claude
+# Code's settings files, the user's and any project's (enabledPlugins or disableAllHooks there turns this hook off).
+PROTECTED_PATH = re.compile(
+    r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/|(?:^|/)tower\.conf$|(?:^|/)\.claude/settings(?:\.local)?\.json$",
+    re.IGNORECASE,
+)
 # Bash: naming a rule file asks even for a read.
 RULE_FILE_MENTION = re.compile(r"CLAUDE\.local\.md|\.claude/tower/rules", re.IGNORECASE)
-# Bash: tower.conf and the rest of ~/.claude/tower/ (policy file, event log) may be read by READ_ONLY_PROGRAMS.
-TOWER_FILE_MENTION = re.compile(r"tower\.conf|policy\.toml|\.claude/tower(?![\w.-])", re.IGNORECASE)
+# Bash: tower.conf, the rest of ~/.claude/tower/ (policy file, event log) and Claude Code's settings files may be read
+# by READ_ONLY_PROGRAMS.
+TOWER_FILE_MENTION = re.compile(
+    r"tower\.conf|policy\.toml|\.claude/tower(?![\w.-])|\.claude/settings(?:\.local)?\.json"
+    r"|\.claude/[^/\s]*[{*?[]",  # a glob or brace expansion right under a .claude folder (.claude/{settings.json,x})
+    re.IGNORECASE,
+)
+# Bash: a word that is a .claude folder itself, which a copy, download or unpack can put a settings file into
+# (cp settings.json ~/.claude/); only READ_ONLY_PROGRAMS may name it. A whole word, or an option's attached value
+# (--output-dir=.claude, -C.claude), so prose naming it doesn't count.
+CLAUDE_FOLDER = re.compile(r"(?:\S*[/=]|-[A-Za-z]+)?\.claude", re.IGNORECASE)
 # Programs that can't write a file except through a redirection.
 READ_ONLY_PROGRAMS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "ls", "stat", "file", "diff", "cmp"}
-READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":"}
+READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":", "jq"}
 RULE_FILE_REASON = "the command touches a personal rule file (CLAUDE.local.md or ~/.claude/tower/rules)"
-TOWER_FILE_REASON = "the command may change tower.conf, the policy file (which sets these approvals) or tower's files"
+TOWER_FILE_REASON = (
+    "the command may change tower.conf, the policy file (which sets these approvals), tower's files or Claude Code's "
+    "settings (which can turn this hook off)"
+)
+TOWER_PLUGIN_REASON = "the command may turn off tower's plugin, whose hook asks for these approvals"
+# `claude plugin` subcommands that turn a plugin off (uninstall's alias is remove), and `claude plugin marketplace`
+# ones that remove a marketplace with its plugins (remove's alias is rm).
+PLUGIN_OFF_VERBS = {"disable", "uninstall", "remove"}
+MARKETPLACE_OFF_VERBS = {"remove", "rm"}
+# Programs that add words of their own to the command they run: xargs and parallel from their input, find -exec's {}.
+ARGUMENT_SUPPLIERS = {"xargs", "parallel", "find"}
+# More words "plugin" after claude than a real command has (one, or one more as an option's value): asking is cheaper
+# than reading each one as the group.
+MAX_PLUGIN_GROUPS = 3
+# Characters that make the shell expand a word into others (a glob, brace expansion), so its text isn't the name.
+EXPANDING = re.compile(r"[{*?[]")
+PLUGIN_GROUPS = {"plugin", "plugins"}  # claude's plugin command and its alias
+# Text that may turn a plugin off, in this order (see mentions_in_order): in a command that couldn't be checked fully,
+# or in another language's code.
+PLUGIN_OFF_MENTION = (
+    re.compile(r"\bclaude\b", re.IGNORECASE),
+    re.compile(r"\bplugins?\b", re.IGNORECASE),
+    re.compile(rf"\b(?:{'|'.join(sorted(PLUGIN_OFF_VERBS | MARKETPLACE_OFF_VERBS))})\b", re.IGNORECASE),
+)
 POLICY_COMMAND_REASON = (
     "the command may change tower's policy (tower policy use, its policy module, or tower's setup.sh), "
     "which only you do"
 )
-# Bash text that may run `tower policy use` or setup.sh --profile, for a command that couldn't be checked fully.
-POLICY_COMMAND_MENTION = re.compile(r"tower.*\bpolicy\b|setup\.sh", re.IGNORECASE | re.DOTALL)
+# Bash text that may run `tower policy use` (tower, then policy) or setup.sh --profile, for a command that couldn't be
+# checked fully.
+POLICY_COMMAND_MENTION = (re.compile("tower", re.IGNORECASE), re.compile(r"\bpolicy\b", re.IGNORECASE))
+SETUP_MENTION = re.compile(r"setup\.sh", re.IGNORECASE)
 # Interpreter code that uses tower's policy module, or runs `tower policy use` (not a path that merely holds both words).
 POLICY_CODE = re.compile(
     r"from\s+tower(?:\.\w+)*\s+import\b[^\n;]*\bpolicy\b|\btower\.policy\b|\bimport\s+tower\b|\btower\s+policy\s+use\b"
@@ -1701,7 +1749,7 @@ def check_protected_edit(file_path: str) -> str | None:
     the one its symlinks resolve to (a link to ~/.claude reaches tower's files under another name)."""
     path = os.path.expanduser(file_path)
     if any(PROTECTED_PATH.search(candidate) for candidate in (os.path.normpath(path), os.path.realpath(path))):
-        return f"edits a personal rule file or tower's settings ({file_path})"
+        return f"edits a personal rule file, tower's settings or Claude Code's ({file_path})"
     return None
 
 
@@ -1710,9 +1758,12 @@ def protected_reasons(command: SimpleCommand, cwd: str) -> list[str]:
     targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf, a
     policy.toml and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any
     other program naming them, asks, and so does a write to a path under .claude whose text is only known at run
-    time ($HOME, $'...'). CWD is the session's folder (see changes_policy)."""
+    time ($HOME, $'...'), and so does a non-read program naming a .claude folder itself. CWD is the session's folder
+    (see changes_policy)."""
     if changes_policy(command.words, cwd):
         return [POLICY_COMMAND_REASON]
+    if turns_tower_off(command.words):
+        return [TOWER_PLUGIN_REASON]
     words = [os.path.normpath(word.text) for word in command.words if word.text]
     targets = [(redirect.writes, os.path.normpath(redirect.target.text)) for redirect in command.redirects]
     texts = words + [target for _, target in targets]
@@ -1723,6 +1774,8 @@ def protected_reasons(command: SimpleCommand, cwd: str) -> list[str]:
     hidden = [redirect.target for redirect in command.redirects if redirect.writes]
     hidden += [] if reads_only else command.words
     if any(word.dynamic and ".claude" in word.text for word in hidden):
+        return [TOWER_FILE_REASON]
+    if not reads_only and any(CLAUDE_FOLDER.fullmatch(text) for text in words):
         return [TOWER_FILE_REASON]
     if not any(TOWER_FILE_MENTION.search(text) for text in [*texts, command.stdin_text or ""]):
         return []
@@ -1752,6 +1805,69 @@ def changes_policy(words: list[Word], cwd: str) -> bool:
             if any(word.text == "use" or word.dynamic for word in after_policy):
                 return True
     return False
+
+
+def turns_tower_off(words: list[Word]) -> bool:
+    """Whether a simple command's WORDS run `claude plugin disable|uninstall|remove` or `claude plugin marketplace
+    remove|rm` on what may be tower (see plugin_args_turn_tower_off). claude counts wherever it is a word, unless the
+    command's program only reads or prints its words (echo, grep); any later word "plugin" may be the group, since an
+    option's value can say plugin too (claude -d plugin plugin disable tower), and so may a word from a variable. The
+    first claude word is the one that runs: the words after it are its own. Code in another language (python -c)
+    that mentions claude, plugin and an off verb in that order counts too."""
+    program = program_position(words)
+    if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
+        return False
+    if any(LANGUAGE_RUNNER.fullmatch(program_name(word)) for word in words[program:]) and any(
+        mentions_in_order(word.text, PLUGIN_OFF_MENTION) for word in words[program + 1 :]
+    ):
+        return True
+    index = next((i for i in range(program, len(words)) if program_name(words[i]) == "claude"), None)
+    if index is None:
+        return False
+    supplied = any(program_name(word) in ARGUMENT_SUPPLIERS for word in words[program:index])
+    rest = words[index + 1 :]
+    groups = [i for i, word in enumerate(rest) if word.text in PLUGIN_GROUPS or word.dynamic]
+    if len(groups) > MAX_PLUGIN_GROUPS:
+        return True
+    return any(plugin_args_turn_tower_off(rest[i + 1 :], supplied) for i in groups)
+
+
+def plugin_args_turn_tower_off(args: list[Word], supplied: bool) -> bool:
+    """Whether `claude plugin` with ARGS turns off what may be tower: a name holding "tower", from a variable or that
+    the shell expands (t{ow,}er), no name at all, disable --all, or any name when SUPPLIED (xargs, parallel or find
+    run claude and may add tower's).
+    A subcommand from a variable may be one that does. --help counts like any option, and after -- every word is a
+    name."""
+    verb_at, verbs = next_operand(args, 0), PLUGIN_OFF_VERBS
+    if verb_at is not None and args[verb_at].text == "marketplace":  # its own subcommand comes next
+        verb_at, verbs = next_operand(args, verb_at + 1), MARKETPLACE_OFF_VERBS
+    if verb_at is None or not (args[verb_at].dynamic or args[verb_at].text in verbs):
+        return False
+    after = args[verb_at + 1 :]
+    end = next((i for i, word in enumerate(after) if word.text == "--"), len(after))
+    options = [word.text for word in after[:end] if word.text.startswith("-")]
+    names = [word for word in after[:end] if not word.text.startswith("-")] + after[end + 1 :]  # -s user's too
+    disables_all = "--all" in options or any(has_short_option(option, "a") for option in options)
+    hidden = any(word.dynamic or EXPANDING.search(word.text) or "tower" in word.text.lower() for word in names)
+    return supplied or not names or disables_all or hidden
+
+
+def mentions_in_order(text: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    """Whether TEXT has a match of each of PATTERNS, each after the one before. The earliest match of each leaves the
+    most room for the next, so this finds any such sequence in linear time, where one regex joining them with .*
+    would backtrack for minutes over a long padded command."""
+    position = 0
+    for pattern in patterns:
+        match = pattern.search(text, position)
+        if match is None:
+            return False
+        position = match.end()
+    return True
+
+
+def next_operand(words: list[Word], start: int) -> int | None:
+    """Index of the first of WORDS from START on that isn't an option (doesn't start with -), or None."""
+    return next((i for i in range(start, len(words)) if not words[i].text.startswith("-")), None)
 
 
 def ask(reasons: list[str], prefix: str) -> None:
@@ -1802,8 +1918,11 @@ def decide(call: object) -> tuple[list[str], str] | None:
     if checker.incomplete:  # the safety floor holds for what couldn't be checked, even when nothing else asks
         if TOWER_FILE_MENTION.search(command) and TOWER_FILE_REASON not in reasons:
             reasons.append(TOWER_FILE_REASON)
-        if POLICY_COMMAND_MENTION.search(command) and POLICY_COMMAND_REASON not in reasons:
+        mentions_policy = mentions_in_order(command, POLICY_COMMAND_MENTION) or SETUP_MENTION.search(command)
+        if mentions_policy and POLICY_COMMAND_REASON not in reasons:
             reasons.append(POLICY_COMMAND_REASON)
+        if mentions_in_order(command, PLUGIN_OFF_MENTION) and TOWER_PLUGIN_REASON not in reasons:
+            reasons.append(TOWER_PLUGIN_REASON)
     if not reasons:
         return None
     problems = session_policy.problems

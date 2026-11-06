@@ -70,7 +70,10 @@ def test_the_session_learns_its_profile_and_what_asks(tmp_path: Path, widget: Pa
     assert (
         "Asks the user first: force pushes and branch deletes; merging PRs into the default branch; PR and" in printed
     )
-    assert printed.endswith("Changing tower's policy, tower.conf or rule files always asks.\n")
+    assert printed.endswith(
+        "Changing tower's policy, tower.conf, rule files or Claude Code's settings, or turning tower's plugin off, "
+        "always asks.\n"
+    )
 
 
 def test_with_no_policy_file_the_session_hears_everything_asks(tmp_path: Path, widget: Path) -> None:

@@ -38,8 +38,8 @@ Migration: tower.conf used to hold push_approval and pr_approval. When there is 
 either, load() writes one that keeps exactly what they did; from then on tower.conf's values are ignored.
 
 Whatever a profile says, the approval hook (plugin/scripts/confirm-public.py) asks before an agent changes this file,
-tower.conf, a rule file or CLAUDE.local.md, or runs `tower policy use`: that safety floor holds in every profile,
-sandbox included, so an agent can't loosen its own rules.
+tower.conf, a rule file, CLAUDE.local.md or Claude Code's settings files, runs `tower policy use`, or turns tower's
+plugin off: that safety floor holds in every profile, sandbox included, so an agent can't loosen its own rules.
 
 The hooks import this module under macOS's Python 3.9, which has no tomllib, so the file is read by parse_toml(), a
 small reader for the part of TOML a policy needs: tables, bare or quoted keys, strings, whole numbers, true/false and
@@ -486,8 +486,8 @@ SHORT_HELP = {
     "cleanup": "cleaning up finished worktrees",
 }
 FLOOR_NOTE = (
-    "The safety floor holds in every profile: an agent's changes to this policy, tower.conf, rule files and "
-    "CLAUDE.local.md always ask."
+    "The safety floor holds in every profile: an agent's changes to this policy, tower.conf, rule files, "
+    "CLAUDE.local.md and Claude Code's settings files, and turning tower's plugin off, always ask."
 )
 
 
@@ -521,7 +521,8 @@ def session_line(repo_policy: RepoPolicy, slug: str | None) -> str:
     return (
         f"tower policy for {where}: {repo_policy.profile} ({repo_policy.why}). "
         f"Without asking: {'; '.join(free) or 'nothing'}. Asks the user first: {'; '.join(asking) or 'nothing'}. "
-        "Changing tower's policy, tower.conf or rule files always asks."
+        "Changing tower's policy, tower.conf, rule files or Claude Code's settings, or turning tower's plugin off, "
+        "always asks."
     )
 
 
