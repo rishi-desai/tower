@@ -42,6 +42,22 @@ export type TowerState = {
   orphan_cards: Array<{ name: string; status: string; path: string }>
   /** The cleanup the hub suggests (its Housekeeping group): a worktree or orphan card's label and what to do. */
   housekeeping: Array<{ label: string; note: string }>
+  /** The repo's approval policy (src/tower/policy.py); missing from a core older than tower 0.11. */
+  policy?: StatePolicy | null
+}
+
+/** Which of an agent's actions ask you first in this repo: its profile, why it applies, and each key's value. */
+export type StatePolicy = {
+  profile: string
+  why: string
+  push: 'every' | 'force' | 'none'
+  merge_to_main: 'ask' | 'auto'
+  merge_to_branch: 'ask' | 'auto'
+  comments: 'ask' | 'auto'
+  issue_writes: 'ask' | 'auto'
+  pr_writes: 'ask' | 'auto'
+  cleanup: 'ask' | 'auto'
+  problems: string[]
 }
 
 /** One run of `tower state --json`, as the pane draws it. */

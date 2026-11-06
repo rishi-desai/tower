@@ -137,10 +137,11 @@ test('the pane draws tower state: what needs you, the WIP count, and every workt
 
   expect(w.argvs.some(argv => argv.join(' ') === 'python3 -I /tower/scripts/run-tower.py state --json')).toBe(true)
   expect(w.argvs.some(argv => argv[0] === 'bash')).toBe(false) // hub-scan.sh runs only for GitHub
-  expect(w.statuses.at(-1)).toBe('tower WIP 5/3 · 3 need you')
+  expect(w.statuses.at(-1)).toBe('tower · personal · 5/3 · 3 need you')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /AT LIMIT/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^policy personal$/ })).toBeTruthy()
   // Needs you: feat-8 and feat-9 wait in their sessions (WAITING with what they need), feat-3's card asks (NEEDS YOU).
   expect((await ui.findAll({ type: 'Text', text: /^ WAITING\s*$/ })).length).toBe(2)
   expect((await ui.findAll({ type: 'Text', text: /^ NEEDS YOU\s*$/ })).length).toBe(1)
@@ -170,7 +171,7 @@ test('the pane draws tower state: what needs you, the WIP count, and every workt
 test('a toast only for what is new since the last scan', async ($, on) => {
   const w = world(on, CALM)
   await $.command.run({ command: 'tower' }) // baseline: nothing needs you
-  expect(w.statuses.at(-1)).toBe('tower WIP 5/3')
+  expect(w.statuses.at(-1)).toBe('tower · personal · 5/3')
   w.state = SHARED
   await $.command.run({ command: 'tower' })
   const before = w.toasts.length
