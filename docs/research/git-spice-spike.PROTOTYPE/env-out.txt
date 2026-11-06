@@ -36,3 +36,17 @@ install: 536 (30 days), 1,120 (90 days), 4,245 (365 days)
 install-on-request: 536 (30 days), 1,120 (90 days), 4,245 (365 days)
 build-error: 0 (30 days)
 
+$ orca worktree create --help | grep -E "base-branch|parent-worktree"
+Usage: orca worktree create --name <name> [--repo <selector>|--project <id-or-name> [--host <host>]|--project-host-setup <id>] [--agent <id>] [--prompt <text>] [--model <id>] [--effort <level>] [--surface chat|terminal] [--setup run|skip|inherit] [--base-branch <ref>] [--reference <url-or-jira-key>...] [--reference-site <id>] [--issue <number>] [--pr <number>] [--linear-issue <identifier-or-url>] [--gitlab-issue <number-or-url>] [--gitlab-mr <number-or-url>] [--comment <text>] [--parent-worktree <selector>] [--no-parent] [--run-hooks] [--activate] [--retry-launch <operationId>] [--json]
+  --base-branch <ref>    Base branch/ref to create the worktree from
+  --parent-worktree <selector> Parent selector such as identity:<identity>, active/current, id:<repo-id>::<path>, branch:<branch>, issue:<number>, path:<path>, folder:<id>, or worktree:<worktreeId>
+  For related work, use the inferred parent or pass --parent-worktree active, folder:<id>, or worktree:<worktreeId> to make the relationship explicit. Worktree ids are the full <repo-id>::<path> values returned by `orca worktree list --json`.
+  --no-parent only affects Orca lineage; omit --base-branch to use the repo default base, or pass the default base ref explicitly for independent top-level work.
+  $ orca worktree create --repo id:<repoId> --name folder-child --parent-worktree folder:<folderId> --json
+  $ orca worktree create --repo id:<repoId> --name related-task --parent-worktree active --json
+
+$ gh stack --help
+gh stack is available as an official extension.
+To install it, run:
+  gh extension install github/gh-stack
+
