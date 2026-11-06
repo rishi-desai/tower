@@ -550,6 +550,7 @@ export const register: Register = on => {
     }
     const ticketOf = (w: { ticket: string }) => (w.ticket && w.ticket !== 'none' ? w.ticket : '')
     const hasCard = (w: Worktree) => !w.isMain && w.card !== 'none' && w.card !== ''
+    const hasNoCard = (w: Worktree) => !w.isMain && w.card === 'none'
 
     const { needCards, waiting, loneWaiting } = needRows(report)
     const others = report.worktrees.filter(w => !needCards.includes(w))
@@ -563,7 +564,7 @@ export const register: Register = on => {
     const housekeeping = [
       ...Object.entries(report.shared).map(([branch, n]) => `${branch}: ${n} sessions share one worktree (rule: one each)`),
       ...report.worktrees.filter(w => w.isStale).map(w => `${w.branch}: card not updated in over a day`),
-      ...report.worktrees.filter(w => !w.isMain && w.card === 'none').map(w => `${w.branch}: no card yet`),
+      ...report.worktrees.filter(hasNoCard).map(w => `${w.branch}: no card yet`),
       ...report.worktrees.filter(w => w.status === 'ready-to-clean').map(w => `${w.branch}: ready to clean up (${w.reason})`),
       ...report.orphans.map(o => `${o}: card left over from a removed worktree`),
     ]
@@ -636,7 +637,7 @@ export const register: Register = on => {
 
         {title('Worktrees')}
         {others.map(w => {
-          const canNudge = (w.isStale || (!w.isMain && w.card === 'none')) && namesIn(w.branch).length > 0
+          const canNudge = (w.isStale || hasNoCard(w)) && namesIn(w.branch).length > 0
           const top = [
             orcaName(`orca-${w.branch}`, w.branch),
             ticketOf(w) ? <Text>{ticketOf(w)}</Text> : null,

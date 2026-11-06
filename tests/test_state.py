@@ -347,3 +347,22 @@ def test_the_hub_and_the_pane_are_tested_on_the_same_report(repo: Fixture, tmp_p
     assert "- feat-7 | status: running | card: needs-you" in report
     assert "- feat-8 | status: needs-you | card: running" in report
     assert "WIP: 3 of 3 (execution slots: running + needs-you, main excluded) — AT LIMIT" in report
+
+
+def test_just_after_midnight_on_the_1st_last_months_events_still_count(tmp_path: Path) -> None:
+    """The log rotates monthly, so the 24h window can reach into last month's file."""
+    from datetime import datetime, timezone
+
+    from tower import state
+
+    worktree = str(tmp_path / "wt")
+    rotated = tmp_path / "events-2026-11.jsonl"
+    late = events.Event("2026-11-30T23:50:00.000Z", "prompt", "s-late", "/r", worktree, "feat-1")
+    rotated.write_text(late.to_json() + "\n", encoding="utf-8")
+    events.append(events.Event("2026-12-01T00:10:00.000Z", "stop", "s-early", "/r", worktree, "feat-1"), tmp_path)
+
+    now = datetime(2026, 12, 1, 0, 30, tzinfo=timezone.utc).timestamp()
+    found = state.sessions_from_events(tmp_path, [os.path.realpath(worktree)], now)
+
+    activities = {s.name: s.activity for s in found[os.path.realpath(worktree)]}
+    assert activities == {"s-late": "busy", "s-early": "idle"}

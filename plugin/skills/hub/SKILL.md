@@ -144,7 +144,7 @@ Never write `/effort <level>` for the user to paste: a level typed after `/effor
 - The main checkout is labelled `main checkout (no card expected)`. Don't flag it for having no card.
 - You run in the main checkout yourself, so LIVE SESSIONS counts you there. Only flag main if there are other interactive sessions besides you.
 - LIVE SESSIONS only covers this machine, and its format isn't a documented contract. If it prints a "skipping" line, the WORKTREES section's `NOTE:` lines say what tower used instead (the event log's last 24h, or cards alone): report from GROUPS as usual and mention it once.
-- For a branch's PR state in the statuses (merged → ready to clean up, open with nobody working → waiting on CI), run `python3 -I <plugin>/scripts/run-tower.py state --pr` (from this skill's base directory, `../../scripts/run-tower.py`). hub-scan.sh leaves it out so the pane's 30-second refresh never asks GitHub, and both show the same statuses.
+- The scan's statuses never use PR state (hub-scan.sh doesn't pass `--pr`), so the pane's 30-second refresh and your report always agree. Don't re-decide a status from the GITHUB section; if an open PR looks merged or a Done worktree looks finished, say so as a Housekeeping suggestion.
 - If context is getting long, tell the user to `/clear` and run the hub again — all state is on disk, nothing is lost.
 - Never delete worktrees, branches or cards on your own; suggest it and wait for a yes.
 - Creating a parked-idea issue is a public GitHub write, so it triggers an approval prompt here too. That's expected.

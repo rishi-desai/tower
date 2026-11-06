@@ -40,8 +40,9 @@ hub and the pane always agree. It can differ from what the card says.
 _Avoid_: card status (that is only the card's claim), real status
 
 **Execution slot**:
-What the WIP limit counts: a worktree whose session is busy or waiting on you, or whose card says running or
-needs-you. A worktree only waiting on CI or review doesn't hold one.
+What the WIP limit counts: a worktree whose effective state is running or needs-you. That is one whose session is
+busy or waiting on you, or whose card says running or needs-you, except a worktree only waiting on CI or review
+(waiting-ci, even while its session watches the PR) and the main checkout (the hub's, and never a worker's).
 _Avoid_: WIP item, active worktree
 
 **Waiting on CI** (`waiting-ci`):

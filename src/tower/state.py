@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -100,6 +101,9 @@ class Verdict:
     holds_slot: bool
 
 
+WAITING_CI_CARD = "the card says it is waiting on CI, review or a merge"
+
+
 def decide(worktree: WorktreeFacts) -> Verdict:
     """The effective state of one worktree from its facts. Live sessions beat the card; the card beats git and PR."""
     card = worktree.card
@@ -116,7 +120,8 @@ def decide(worktree: WorktreeFacts) -> Verdict:
     if worktree.is_main:
         return verdict("main", "the main checkout", worktree)
     if busy and card_status == "waiting-ci":
-        return verdict("waiting-ci", f"{WAITING_CI_CARD}; session {busy[0].name} is watching it", worktree)
+        watching = f"session {busy[0].name} is busy (watching CI, or fixing it without updating the card)"
+        return verdict("waiting-ci", f"{WAITING_CI_CARD}; {watching}", worktree)
     if busy:
         if card_status is None:
             return verdict("running", f"no card yet, but session {busy[0].name} is busy", worktree)
@@ -128,13 +133,16 @@ def decide(worktree: WorktreeFacts) -> Verdict:
         return verdict("running", f"the card says {card_status} but session {busy[0].name} is busy again", worktree)
 
     pr = worktree.pr
-    if pr and pr.state == "MERGED":
+    # A merged PR settles a card that says the work is finished (or no card), never one that says work goes on: the
+    # branch name may have been reused after an old PR merged.
+    if pr and pr.state == "MERGED" and card_status not in ("running", "needs-you", "blocked"):
         if worktree.dirty is False:
             return verdict("ready-to-clean", f"PR #{pr.number} is merged", worktree)
-        merged_but_dirty = f"PR #{pr.number} is merged but the worktree has uncommitted changes"
-        if worktree.dirty is None:
-            merged_but_dirty = f"PR #{pr.number} is merged but tower couldn't check for uncommitted changes"
-        return verdict(card_status if card_status in CARD_STATUSES else "no-card", merged_but_dirty, worktree, card)
+        unsure = "has uncommitted changes" if worktree.dirty else "couldn't be checked for uncommitted changes"
+        merged = f"PR #{pr.number} is merged but the worktree {unsure}"
+        if card_status in CARD_STATUSES:
+            return verdict(str(card_status), f"the card says {card_status}; {merged}", worktree)
+        return verdict("no-card", merged, worktree)
     if card is None:
         return verdict("no-card", "no card yet", worktree)
     if card.status not in CARD_STATUSES:
@@ -157,16 +165,8 @@ def decide(worktree: WorktreeFacts) -> Verdict:
     return verdict(card.status, f"the card says {card.status}", worktree)
 
 
-WAITING_CI_CARD = "the card says it is waiting on CI, review or a merge"
-
-
-def verdict(status: str, reason: str, worktree: WorktreeFacts, card: Card | None = None) -> Verdict:
-    """A Verdict whose slot follows the rule: running or needs-you, never the main checkout.
-
-    card, when given, prefixes the reason with what the card says (for verdicts that keep the card's status).
-    """
-    if card is not None:
-        reason = f"the card says {card.status}; {reason}"
+def verdict(status: str, reason: str, worktree: WorktreeFacts) -> Verdict:
+    """A Verdict whose slot follows the rule: running or needs-you, never the main checkout (that's the hub's)."""
     return Verdict(status, reason, status in SLOT_STATUSES and not worktree.is_main)
 
 
@@ -247,6 +247,10 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         prs = found or {}
 
     base = base_ref(Path(main.path), main.branch)
+    if base is None:
+        notes.append(
+            "no base branch (no origin/HEAD, and the main checkout is detached), so unshipped work wasn't counted"
+        )
     seen_cards: set[str] = set()
     rows: list[tuple[WorktreeFacts, Verdict]] = []
     for index, wt in enumerate(worktrees):
@@ -255,7 +259,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         if ledger is not None:
             card_file = card_name(wt.branch, wt.sha, Path(main.path))
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
-            card = None if is_main else read_card(ledger / card_file, now)
+            card = None if is_main else card_or_note(ledger / card_file, now, notes)
         facts = WorktreeFacts(
             label=wt.branch or f"(detached {wt.sha[:7]})",
             branch=wt.branch,
@@ -279,7 +283,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         base=base,
         wip_limit=wip_limit(conf),
         worktrees=rows,
-        orphan_cards=orphan_cards(ledger, seen_cards, Path(main.path)) if ledger is not None else [],
+        orphan_cards=orphan_cards(ledger, seen_cards, notes) if ledger is not None else [],
         sessions_source=sessions_source,
         notes=notes,
     )
@@ -383,11 +387,14 @@ def frontmatter_field(lines: list[str], key: str) -> str:
 
 
 def read_card(path: Path, now: float) -> Card | None:
-    """The card at path, or None if there is none. Fields come from the frontmatter block when there is one."""
+    """The card at path, or None if there is none. Fields come from the frontmatter block when there is one.
+
+    Raises OSError when the card exists but can't be read (permissions, an unsynced vault file): that isn't "no card".
+    """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
         mtime = path.stat().st_mtime
-    except OSError:
+    except FileNotFoundError:
         return None
     lines = text.splitlines()
     if lines and lines[0].strip() == "---":
@@ -403,19 +410,33 @@ def read_card(path: Path, now: float) -> Card | None:
     )
 
 
-def orphan_cards(ledger: Path, seen: set[str], repo_dir: Path) -> list[OrphanCard]:
-    """Cards in the ledger that no worktree claimed (the backlog file isn't a card)."""
+def card_or_note(path: Path, now: float, notes: list[str]) -> Card | None:
+    """read_card, with an unreadable card noted in notes (and treated as missing) instead of failing the report."""
+    try:
+        return read_card(path, now)
+    except OSError as error:
+        notes.append(f"couldn't read the card {path} ({error.strerror or type(error).__name__}), so it was skipped")
+        return None
+
+
+def orphan_cards(ledger: Path, seen: set[str], notes: list[str]) -> list[OrphanCard]:
+    """Cards in the ledger that no worktree claimed (the backlog file isn't a card). A ledger folder that doesn't exist
+    yet has none; one that can't be listed is noted in notes."""
     try:
         names = sorted(p.name for p in ledger.iterdir() if p.suffix == ".md" and p.name != "_backlog.md")
-    except OSError:
+    except FileNotFoundError:
         return []
-    return [
-        OrphanCard(
-            name[: -len(".md")], (read_card(ledger / name, 0) or Card("", "", "", "", False)).status, str(ledger / name)
+    except OSError as error:
+        notes.append(
+            f"couldn't list the ledger {ledger} ({error.strerror or type(error).__name__}), so orphans weren't checked"
         )
-        for name in names
-        if name not in seen
-    ]
+        return []
+    orphans = []
+    for name in names:
+        if name not in seen:
+            card = card_or_note(ledger / name, 0, notes)
+            orphans.append(OrphanCard(name.removesuffix(".md"), card.status if card else "", str(ledger / name)))
+    return orphans
 
 
 def owning_worktree(cwd: str, worktrees: list[str]) -> str | None:
@@ -488,11 +509,13 @@ def sessions_from_events(directory: Path, worktrees: list[str], now: float) -> d
 
     Each session's latest event in the last 24h says what it is doing: a prompt or an answer means busy, a needs-you
     notification means waiting, a stop or a start means idle, and a session-end means it's gone. Older events are
-    ignored: a session that crashed never records its end.
+    ignored: a session that crashed never records its end. Known limit: approving a permission prompt records nothing,
+    so a session can read as waiting until its turn ends; live sessions don't have that problem.
     """
     cutoff = datetime.fromtimestamp(now, timezone.utc) - EVENTS_WINDOW
+    now_utc = datetime.fromtimestamp(now, timezone.utc)
     latest: dict[str, dict[str, object]] = {}
-    for line in events.tail(directory, EVENTS_READ):
+    for line in recent_event_lines(directory, cutoff, now_utc):
         try:
             event = json.loads(line)
         except ValueError:
@@ -513,6 +536,20 @@ def sessions_from_events(directory: Path, worktrees: list[str], now: float) -> d
         if owner and activity:
             found.setdefault(owner, []).append(Session(name=session_id[:8], kind="?", activity=activity))
     return found
+
+
+def recent_event_lines(directory: Path, cutoff: datetime, now: datetime) -> list[str]:
+    """The log's last lines, oldest first, starting in last month's file when cutoff falls in last month (just after
+    midnight on the 1st, the current file holds only today). Rotated files are `events-YYYY-MM.jsonl`; when a month has
+    several (`events-YYYY-MM.N.jsonl`, rare), only the first is read."""
+    lines = events.tail(directory, EVENTS_READ)
+    if cutoff.strftime("%Y-%m") < now.strftime("%Y-%m"):
+        try:
+            with open(directory / f"events-{cutoff:%Y-%m}.jsonl", encoding="utf-8", errors="replace") as handle:
+                lines = [line.rstrip("\n") for line in deque(handle, maxlen=EVENTS_READ)] + lines
+        except FileNotFoundError:
+            pass  # no rotation yet: the current file still holds last month's events
+    return lines
 
 
 def event_activity(event: dict[str, object]) -> str | None:
@@ -581,8 +618,10 @@ def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
         listed = json.loads(proc.stdout)
     except ValueError:
         return None, "gh pr list printed something that isn't JSON"
+    if not isinstance(listed, list):
+        return None, "gh pr list printed something unexpected (expected a list)"
     found: dict[str, Pr] = {}
-    for entry in listed if isinstance(listed, list) else []:
+    for entry in listed:
         if not isinstance(entry, dict) or not isinstance(entry.get("number"), int):
             continue
         pr = Pr(number=entry["number"], state=str(entry.get("state")), url=str(entry.get("url")))

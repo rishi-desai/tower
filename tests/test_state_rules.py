@@ -80,7 +80,10 @@ def test_waiting_on_ci_holds_no_slot_even_while_its_session_watches_ci() -> None
     )
     verdict = state.decide(facts(card("waiting-ci"), (BUSY,)))
     assert (verdict.status, verdict.holds_slot) == ("waiting-ci", False)
-    assert verdict.reason == "the card says it is waiting on CI, review or a merge; session feat-42-a1 is watching it"
+    assert verdict.reason == (
+        "the card says it is waiting on CI, review or a merge; session feat-42-a1 is busy"
+        " (watching CI, or fixing it without updating the card)"
+    )
 
 
 def test_an_open_pr_with_no_session_working_is_waiting_ci() -> None:
@@ -138,3 +141,12 @@ def test_a_busy_session_beats_a_blocked_or_done_card() -> None:
     verdict = state.decide(facts(card("done"), (BUSY,)))
     assert (verdict.status, verdict.holds_slot) == ("running", True)
     assert verdict.reason == "the card says done but session feat-42-a1 is busy again"
+
+
+def test_a_merged_pr_never_overrides_a_running_or_needs_you_card() -> None:
+    """A branch name reused after an old merged PR, with new work: the card wins, not the stale PR."""
+    merged = Pr(number=57, state="MERGED", url="https://github.com/o/r/pull/57")
+    for status in ("running", "needs-you"):
+        verdict = state.decide(facts(card(status), pr=merged))
+        assert (verdict.status, verdict.holds_slot) == (status, True), status
+    assert state.decide(facts(card("waiting-ci"), pr=merged)).status == "ready-to-clean"
