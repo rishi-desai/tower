@@ -160,3 +160,25 @@ def test_an_unpaired_surrogate_in_a_payload_is_still_logged(tmp_path: Path) -> N
 
     [line] = (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     assert json.loads(line)["data"]["message"] == "cut emoji \ud83d"
+
+
+def test_read_all_returns_every_month_in_ts_order_and_counts_damaged_lines(tmp_path: Path) -> None:
+    events.append(make_event(ts="2026-10-30T10:00:00.000Z", event_type="prompt"), tmp_path)
+    events.append(make_event(ts="2026-11-02T10:00:01.000Z", event_type="stop"), tmp_path)
+    events.append(make_event(ts="2026-11-02T10:00:00.000Z", event_type="answer"), tmp_path)  # landed out of ts order
+    with open(tmp_path / "events.jsonl", "ab") as log:
+        log.write(b'{"ts":"2026-11-0\n\xff\xfe junk\n[1]\n')  # torn, not UTF-8, not an object
+
+    read, damaged = events.read_all(tmp_path)
+
+    assert [(event.ts, event.type) for event in read] == [
+        ("2026-10-30T10:00:00.000Z", "prompt"),
+        ("2026-11-02T10:00:00.000Z", "answer"),
+        ("2026-11-02T10:00:01.000Z", "stop"),
+    ]
+    assert read[0] == make_event(ts="2026-10-30T10:00:00.000Z", event_type="prompt")
+    assert damaged == 3
+
+
+def test_read_all_of_a_missing_directory_is_empty(tmp_path: Path) -> None:
+    assert events.read_all(tmp_path / "nowhere") == ([], 0)

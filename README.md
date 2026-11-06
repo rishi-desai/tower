@@ -288,9 +288,13 @@ description, or you type `/tower:<name>`.
 - **The event log** (`record-event.py`, on SessionStart, UserPromptSubmit, Notification, PostToolUse on
   AskUserQuestion, Stop and SessionEnd): appends one line per event (`session-start`, `prompt`, `needs-you`,
   `answer`, `stop`, `session-end`) to `~/.claude/tower/events.jsonl`, one file for every repo, tagged with repo,
-  worktree and branch. It records the length of your prompts, never their text. Nothing reads the log yet; it's the
-  history later parts of tower's core will compute status and metrics from. It never blocks or fails a session:
+  worktree and branch. It records the length of your prompts, never their text. It never blocks or fails a session:
   problems go to `~/.claude/tower/errors.log`. To look at it from this checkout: `uv run tower events tail -n 20`.
+- **Metrics** (`uv run tower stats [--since 14d] [--repo [PATH]]`): one row per PR merged in the window, from the
+  event log and GitHub (through `gh`): start → merged, your active minutes, time waiting on you, interruptions and
+  the median time to resume, follow-up prompts per report, and rework (later PRs for the same ticket or branch, and
+  reopened tickets). Every repo in the log by default; `--repo` limits it to one. Each metric's exact definition is
+  in `src/tower/stats.py`.
 
 ## Approvals: public actions and rule changes
 

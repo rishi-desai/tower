@@ -93,6 +93,58 @@ def tail(directory: Path, count: int) -> list[str]:
         return []
 
 
+def read_all(directory: Path) -> tuple[list[Event], int]:
+    """Every event in directory's logs (this month's and every rotated month), sorted by ts, plus how many lines were
+    skipped because they aren't events (torn, not UTF-8, not a JSON object with a string ts and type).
+
+    Holds the log's lock shared while reading, so a rotation can't move a file between listing and reading it.
+    """
+    if not directory.is_dir():
+        return [], 0
+    read: list[Event] = []
+    damaged = 0
+    with open(directory / LOCK_NAME, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        try:
+            for path in sorted(directory.glob("events*.jsonl")):
+                with open(path, "rb") as handle:
+                    for line in handle:
+                        event = parse_line(line)
+                        if event is None:
+                            damaged += 1
+                        else:
+                            read.append(event)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    read.sort(key=lambda event: event.ts)  # stable: equal ts keep append order
+    return read, damaged
+
+
+def parse_line(line: bytes) -> Event | None:
+    """The event on one log line, or None if the line isn't one (see read_all)."""
+    try:
+        record = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get("ts"), str) or not isinstance(record.get("type"), str):
+        return None
+    data = record.get("data")
+
+    def text(key: str) -> str | None:
+        value = record.get(key)
+        return value if isinstance(value, str) else None
+
+    return Event(
+        ts=record["ts"],
+        type=record["type"],
+        session_id=text("session_id"),
+        repo=text("repo"),
+        worktree=text("worktree"),
+        branch=text("branch"),
+        data=data if isinstance(data, dict) else {},
+    )
+
+
 def rotate_if_new_month(directory: Path, month: str) -> None:
     """If the log's first event is from a month before month ("YYYY-MM"), rename the log after that month.
 
