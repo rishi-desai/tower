@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tower import cli, events
+from tower import cli, events, merge
 
 PLUGIN_JSON = Path(__file__).resolve().parent.parent / "plugin" / ".claude-plugin" / "plugin.json"
 
@@ -210,3 +210,85 @@ def test_policy_use_repo_needs_a_github_origin(
 
     assert cli.main(["policy", "use", "sandbox", "--repo"]) == 1
     assert "isn't in a repo with a GitHub origin" in capsys.readouterr().err
+
+
+# `tower merge`: a fake gh with one open PR, #5 (feat -> main); FAKE_GH_STACK=1 puts it in a stack whose merge never
+# finishes. Each call is logged to FAKE_GH_LOG.
+MERGE_GH = """#!{python}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_GH_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+stacked = os.environ.get("FAKE_GH_STACK") == "1"
+if args[:3] == ["pr", "view", "5"]:
+    print(json.dumps({{"url": "https://github.com/acme/widget/pull/5"}}))
+elif args[:2] == ["pr", "view"]:
+    sys.exit("no pull requests found for branch \\"feat\\"")
+elif args[:4] == ["api", "--hostname", "github.com", "repos/acme/widget/pulls/5"]:
+    print(json.dumps({{"number": 5, "state": "open", "merged": False, "base": {{"ref": "main"}},
+                      "head": {{"ref": "feat", "sha": "abc", "repo": {{"full_name": "acme/widget"}}}},
+                      "stack": {{"base": {{"ref": "main"}}, "position": 1, "size": 2}} if stacked else None}}))
+elif args[-6:-2] == ["-f", "state=open", "-f", "base=feat"] or args[-6:-2] == ["-f", "state=closed", "-f", "base=feat"]:
+    print("[]")  # no PR is based on its branch, open or merged
+elif args[:4] == ["api", "--hostname", "github.com", "repos/acme/widget"]:
+    print(json.dumps({{"allow_merge_commit": True, "allow_squash_merge": True, "delete_branch_on_merge": False}}))
+elif args[:2] == ["pr", "merge"]:
+    print("Squashed and merged pull request acme/widget#5", file=sys.stderr)
+elif "merge-async" in args[-1] or "PUT" in args:
+    print(json.dumps({{"status": "pending", "details": {{"uuid": "u-1"}}}}))
+else:
+    sys.exit("fake gh: unexpected " + " ".join(args))
+"""
+
+
+@pytest.fixture
+def merge_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The fake gh for `tower merge` first on PATH; returns the log of its calls."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(MERGE_GH.format(python=sys.executable), encoding="utf-8")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_GH_LOG", str(tmp_path / "gh.log"))
+    monkeypatch.chdir(tmp_path)
+    return tmp_path / "gh.log"
+
+
+def test_merge_squash_merges_the_pr_with_gh_and_relays_what_gh_said(
+    merge_gh: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["merge", "5"]) == 0
+
+    out = capsys.readouterr().out
+    assert out == "tower: Squashed and merged pull request acme/widget#5\ntower: merged PR #5 into main with a squash\n"
+    calls = [json.loads(line) for line in merge_gh.read_text(encoding="utf-8").splitlines()]
+    assert calls[-1] == ["pr", "merge", "5", "--squash", "--delete-branch", "--match-head-commit", "abc"]
+
+
+def test_merge_exits_1_with_the_reason_when_nothing_was_merged(
+    merge_gh: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["merge"]) == 1
+
+    assert capsys.readouterr().err == 'tower: couldn\'t find the PR: no pull requests found for branch "feat"\n'
+
+
+def test_merge_exits_3_when_github_is_still_merging_at_the_timeout(
+    merge_gh: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("FAKE_GH_STACK", "1")
+    monkeypatch.setattr(merge, "MERGE_TIMEOUT_SECONDS", 0)
+
+    assert cli.main(["merge", "5"]) == 3
+
+    assert "run tower merge 5 again" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("pr", ["#5", "five", "0", "-5", "５"])
+def test_merge_takes_only_a_pr_number(pr: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["merge", pr])
+
+    assert exited.value.code == 2
+    assert "isn't a PR number" in capsys.readouterr().err

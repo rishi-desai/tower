@@ -13,12 +13,16 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
   issue_writes     gh issue create, edit, close, reopen, delete, lock, pin, transfer, develop, ...
   pr_writes        gh pr create, edit, ready, close, reopen, update-branch (an edit that changes
                    the base, -B/--base, also needs merge_to_main: it can retarget an armed auto-merge at main)
-  merge_to_main /  gh pr merge, by the PR's base: the repo's default branch, or any other. The hook asks gh
-  merge_to_branch  (`gh pr view`, `gh repo view`) only when the two keys differ, and only when the merge is the
-                   whole command line (one simple command, nothing before it); otherwise, or if gh can't say,
+  merge_to_main /  gh pr merge, `tower merge` (the workers' merge path, src/tower/merge.py, whose own gh calls this
+  merge_to_branch  hook can't see) and a gh api write to a PR's merge or merge-async endpoint, by the branch the PR
+                   lands on: the repo's default branch, or any other. A PR lands on its base, but a PR in a GitHub
+                   stack lands on the stack's base, since merging it merges every PR below it too. The hook asks
+                   gh (`gh pr view` for the PR, then `gh api` for its base, its stack and the default branch) only
+                   when the two keys differ, and only when the merge is the whole command line (one simple command,
+                   nothing before it but python and its switches for tower merge); otherwise, or if gh can't say,
                    it asks unless both keys are auto.
 The rest ask unless every GitHub key above is auto (as in the sandbox profile), since no one key covers
-them: gh release and gh label writes, gh pr lock/unlock, `gh api` calls that write (GraphQL mutations or queries read from a
+them: gh release and gh label writes, gh pr lock/unlock, other `gh api` calls that write (GraphQL mutations or queries read from a
 file, REST with a write method or with fields, since gh defaults to POST when fields are given), and a gh
 subcommand taken from a variable.
 
@@ -47,9 +51,11 @@ statements and arithmetic. Commands inside $( ), backticks and <( ) are checked 
 given to `bash -c` (or sh, zsh, csh, ...), `env -S`, eval, ssh/su/watch/tmux/screen/script, or a shell
 through a heredoc. In each simple command, every word naming git or gh (by any path, in any letter
 case) starts an invocation to check, so wrappers like env, command, xargs, nohup, sudo and timeout need
-no special case. git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and
-gh's command words are found the way gh itself finds them, so -R/--repo can come anywhere. In code for
-python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is checked.
+no special case; so does every word naming tower (or the plugin's run-tower.py) followed by `merge`.
+git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and gh's command
+words are found the way gh itself finds them, so -R/--repo can come anywhere. In code for
+python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is checked, and code naming
+both tower and merge counts as a tower merge.
 
 When unsure, we ask: a command that can't be split (an unclosed quote, $( or backtick, a heredoc
 delimiter with $, a ${ cmd; } substitution), a shell reading code it can't see (from a pipe, <( ), a
@@ -164,6 +170,20 @@ GH_MERGE_SWITCHES = {
 }
 # A gh api REST endpoint under one repo: repos/OWNER/REPO/...
 REPOS_ENDPOINT = re.compile(r"/?repos/([^/\s?#]+/[^/\s?#]+)")
+# A gh api REST endpoint that merges a PR: the synchronous merge, or merge-async (the only one stacked PRs take).
+MERGE_ENDPOINT = re.compile(r"/?repos/(?P<repo>[^/\s?#]+/[^/\s?#]+)/pulls/(?P<number>[^/\s?#]+)/merge(?:-async)?")
+# A PR number as this hook and `tower merge` both read it: ASCII digits only.
+PR_NUMBER = re.compile(r"[1-9][0-9]*")
+# How tower is run: its console script, or the plugin's run-tower.py (python3 -I <plugin>/scripts/run-tower.py merge).
+TOWER_PROGRAMS = {"tower", "run-tower.py"}
+# Python's own switches, which change nothing about which script runs or where (the -I in python3 -I run-tower.py).
+PYTHON_SWITCHES = re.compile(r"-[IEsSBuqbOP]+")
+# Interpreter code (python3 -c '...') that may run `tower merge`: it names both.
+TOWER_MERGE_CODE = re.compile(r"\btower\b.*\bmerge\b|\bmerge\b.*\btower\b", re.DOTALL)
+# What a merge's PR lookup (`gh api repos/OWNER/REPO/pulls/N`) prints, on one line: the PR's base, its repo's default
+# branch and, for a PR in a GitHub stack, the stack's base (null otherwise).
+PR_LOOKUP_JQ = "[.base.ref, .base.repo.default_branch, .stack.base.ref] | @json"
+PR_URL = re.compile(r"https://(?P<host>[^/\s]+)/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<number>[0-9]+)")
 # A line naming these points gh or git at a repo other than the one the hook judges by.
 GH_ENV_MENTION = re.compile(r"\bGH_(?:REPO|HOST)\b")
 GIT_ENV_MENTION = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b")
@@ -822,6 +842,9 @@ class CommandChecker:
         name = program_name(command.words[index])
         is_language = bool(LANGUAGE_RUNNER.fullmatch(name))
         is_git_dashed = name.startswith("git-") and runs_as_program(command.words, index)  # not `man git-push`
+        if name in TOWER_PROGRAMS:  # tower merge is judged at the end, like gh pr merge
+            self.note_tower_merge(command.words, index, depth == 0)
+            return []
         if name not in INVOKERS and not is_git_dashed and not is_language:
             return []
         self.spend(len(command.words) - index)
@@ -838,7 +861,9 @@ class CommandChecker:
             return self.check_shell(args, command, runs_as_program(command.words, index), depth)
         if name in CODE_STRING_RUNNERS:  # each argument with spaces or operators may be a command line
             return [r for arg in args if re.search(r"[\s;|&]", arg.text) for r in self.check(arg.text, depth + 1)]
-        if is_language:  # code in another language: check the git/gh commands written inside it
+        if is_language:  # code in another language: check the git/gh commands and tower merges written inside it
+            if any(re.search(r"\s", arg.text) and TOWER_MERGE_CODE.search(arg.text) for arg in args):
+                self.merges.append(PendingMerge("tower merge (in interpreter code)", self.gates_for([], []), False))
             return [
                 r for arg in args for m in EMBEDDED_COMMAND.finditer(arg.text) for r in self.check(m.group(), depth + 1)
             ]
@@ -848,6 +873,28 @@ class CommandChecker:
             git_args = args if name == "git" else [Word(name[4:]), *args]
             reason = check_git(git_args, lambda: self.push_mode(git_args))
         return [reason] if reason else []
+
+    def note_tower_merge(self, words: list[Word], index: int, top_level: bool) -> None:
+        """Collect the `tower merge` that word INDEX of WORDS (tower or run-tower.py) runs, if it does (a subcommand
+        from a variable may be merge), to judge at the end like gh pr merge. Its PR can be looked up only when tower
+        runs as its own command (TOP_LEVEL; merge_reasons() checks nothing is chained), straight or from python with
+        only python's switches, merge comes right after it, and at most a PR number follows."""
+        self.spend(len(words) - index)
+        position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
+        if position is None or not (words[position].dynamic or words[position].text == "merge"):
+            return
+        launcher, after = words[:index], words[position + 1 :]
+        from_python = bool(launcher) and program_name(launcher[0]).startswith("python")
+        readable = (
+            top_level
+            and position == index + 1  # tower's own options before merge (--version, -h) only print
+            and not any(word.dynamic for word in words[: position + 1])
+            and (not launcher or (from_python and all(PYTHON_SWITCHES.fullmatch(w.text) for w in launcher[1:])))
+            and len(after) <= 1
+            and all(not word.dynamic and PR_NUMBER.fullmatch(word.text) for word in after)
+        )
+        selector = after[0].text if readable and after else None
+        self.merges.append(PendingMerge("tower merge", self.gates_for([], []), readable, selector))
 
     def push_mode(self, git_args: list[Word]) -> str:
         """The push key for git run with GIT_ARGS: the stricter of the session's and that of every repo the push
@@ -928,6 +975,10 @@ class CommandChecker:
         if group.dynamic:
             return None if gates().github_open else GH_DYNAMIC_REASON
         if group.text == "api":
+            api_merge = gh_api_merge(without_group, is_whole_command)
+            if api_merge is not None:
+                self.merges.append(PendingMerge("gh api merge", gates(), *api_merge))
+                return None
             reason = check_gh_api(without_group)
             return None if reason is None or gates().github_open else reason
         writes = GH_WRITE_SUBCOMMANDS.get(group.text, set())
@@ -972,23 +1023,25 @@ class CommandChecker:
                 asking = [key for key in ("merge_to_main", "merge_to_branch") if gates.asks(key)]
                 into = "into a base gh wasn't asked about or couldn't name"
             else:
-                asking = [target] if gates.asks(target) else []
-                into = (
-                    "into the default branch" if target == "merge_to_main" else "into a branch other than the default"
-                )
+                key, stacked = target
+                asking = [key] if gates.asks(key) else []
+                branch = "the default branch" if key == "merge_to_main" else "a branch other than the default"
+                into = f"onto its stack's base, {branch}" if stacked else f"into {branch}"
             if asking:
-                reasons.append(f"gh pr merge merges a PR {into} ({', '.join(k + '=ask' for k in asking)})")
+                reasons.append(f"{merge.action} merges a PR {into} ({', '.join(k + '=ask' for k in asking)})")
         return reasons
 
 
 @dataclass(frozen=True)
 class PendingMerge:
-    """A gh pr merge found in the command line, judged once the whole line has been read."""
+    """A merge found in the command line (gh pr merge, tower merge, a gh api merge), judged once the whole line has
+    been read."""
 
+    action: str  # what merges, for the prompt
     gates: Gates
-    selector: str | None  # the PR: a number, URL or branch; None for the current branch's PR
-    repo: str | None  # the -R/--repo value
-    readable: bool  # gh is the top-level program, every flag is known, nothing comes from a variable, at most one PR
+    readable: bool  # it is the top-level program, every flag is known, nothing comes from a variable, at most one PR
+    selector: str | None = None  # the PR as gh pr view takes it: a number, URL or branch; None for this branch's PR
+    repo: str | None = None  # gh pr view's -R/--repo value
 
 
 def gh_named_repos(words: list[Word]) -> list[Word]:
@@ -1066,25 +1119,56 @@ def parse_merge(words: list[Word], gates: Gates, is_whole_command: bool) -> Pend
     repo = repos[-1].text if repos else None  # gh's flag library keeps the last -R
     readable = readable and len(positionals) <= 1
     selector = positionals[0] if positionals else None
-    return PendingMerge(gates, selector, repo, readable)
+    return PendingMerge("gh pr merge", gates, readable, selector, repo)
 
 
-def merge_target(merge: PendingMerge, cwd: str) -> str | None:
-    """The key MERGE is judged by: merge_to_main if its PR goes into its repo's default branch, else merge_to_branch,
-    asking gh the way the merge itself would find the PR (same selector and -R, same folder); None if gh can't say."""
-    view = ["gh", "pr", "view", "--json", "baseRefName,url", "--jq", '.baseRefName + " " + .url']
+def gh_api_merge(args: list[Word], is_whole_command: bool) -> tuple[bool, str | None, str | None] | None:
+    """For `gh api` with ARGS (all but `api`) writing to a PR's merge or merge-async endpoint: whether its PR can be
+    looked up, and the PR and repo to look it up by (gh pr view's selector and -R). None for any other gh api call,
+    and for a merge endpoint with a method from a variable (check_gh_api() asks about that). The PR can be looked up
+    only when gh is the top-level program (IS_WHOLE_COMMAND) and the endpoint names the repo and PR on gh's default
+    host; gh fills {owner}/{repo} in gh api from its own repo resolution, which may differ from gh pr view's."""
+    call = parse_gh_api(args)
+    found = MERGE_ENDPOINT.fullmatch(call.endpoint.text) if call.endpoint and not call.endpoint.dynamic else None
+    if found is None or (call.method is not None and call.method.dynamic):
+        return None
+    implied = "POST" if call.fields or call.has_input else "GET"  # gh's default method
+    if (call.method.text.upper() if call.method is not None else implied) not in WRITE_METHODS:
+        return None
+    repo, number = found.group("repo"), found.group("number")
+    other_host = any(arg.text == "--hostname" or arg.text.startswith("--hostname=") for arg in args)
+    if is_whole_command and "{" not in repo and PR_NUMBER.fullmatch(number) and not other_host:
+        return True, number, repo
+    return False, None, None
+
+
+def merge_target(merge: PendingMerge, cwd: str) -> tuple[str, bool] | None:
+    """The key MERGE is judged by, and whether its PR is in a GitHub stack; None if gh can't say. The key is
+    merge_to_main if the PR lands on its repo's default branch, else merge_to_branch. A PR lands on its base, but a
+    stacked one on its stack's base: merging it merges every PR below it too. gh finds the PR the way the merge does
+    (same selector and -R, same folder), then reads it from the REST API, the only one that shows its stack."""
+    view = ["gh", "pr", "view", "--json", "url", "--jq", ".url"]
     view += [f"--repo={merge.repo}"] if merge.repo is not None else []
     view += ["--", merge.selector] if merge.selector is not None else []
-    base, _, url = (gh_lookup(view, cwd) or "").partition(" ")
-    if not base or "/pull/" not in url:
+    url = PR_URL.fullmatch(gh_lookup(view, cwd) or "")
+    if url is None:
         return None
-    repo_url = url.rsplit("/pull/", 1)[0]
-    default = gh_lookup(
-        ["gh", "repo", "view", repo_url, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"], cwd
-    )
-    if not default:
+    endpoint = f"repos/{url.group('repo')}/pulls/{url.group('number')}"
+    try:
+        found = json.loads(
+            gh_lookup(["gh", "api", "--hostname", url.group("host"), endpoint, "--jq", PR_LOOKUP_JQ], cwd) or ""
+        )
+    except ValueError:
         return None
-    return "merge_to_main" if base == default else "merge_to_branch"
+    if not (isinstance(found, list) and len(found) == 3):
+        return None
+    base, default, stack_base = found
+    if not all(isinstance(name, str) and name for name in (base, default)):
+        return None
+    if stack_base is not None and not (isinstance(stack_base, str) and stack_base):
+        return None
+    lands = stack_base or base
+    return ("merge_to_main" if lands == default else "merge_to_branch"), stack_base is not None
 
 
 def gh_lookup(argv: list[str], cwd: str) -> str | None:

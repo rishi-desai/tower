@@ -13,8 +13,9 @@ The policy file is ~/.claude/tower/policy.toml (in $TOWER_DIR when that's set):
 
 Keys, strictest value first:
     push             every | force | none   which git pushes ask: all, only force pushes and deletes, or none
-    merge_to_main    ask | auto             merging a PR into its repo's default branch
-    merge_to_branch  ask | auto             merging a PR into any other branch (a stack or integration branch)
+    merge_to_main    ask | auto             merging a PR that lands on its repo's default branch
+    merge_to_branch  ask | auto             merging a PR that lands on any other branch (an integration branch)
+A PR lands on its base, but a PR in a GitHub stack lands on the stack's base: merging it merges every PR below it.
     comments         ask | auto             PR and issue comments and reviews
     issue_writes     ask | auto             creating, editing, closing, reopening (and so on) issues
     pr_writes        ask | auto             opening, editing, readying, closing and reopening PRs

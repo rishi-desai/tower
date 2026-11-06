@@ -14,6 +14,13 @@ The one session in a repo's main checkout that reports what every worker is doin
 never edits code or reads transcripts.
 _Avoid_: control session, dashboard (that is a separate view)
 
+**Stack**:
+PRs whose bases chain (feat2 → feat1 → main), submitted as one stack (git-spice or `gh stack` do this; PRs created one
+by one stay separate), which GitHub then groups into a stack of its own. GitHub merges a stacked PR only through its
+asynchronous merge API, and merging one merges every unmerged PR below it too, onto the stack's
+base (the branch the bottom PR targets). Workers merge a stack with `tower merge`, from the bottom, one PR at a time.
+_Avoid_: chain, train, dependent PRs
+
 **Adopt mode**:
 The hub's flow for a repo with work in flight that hasn't been brought under tower: one plan that gives every piece
 of work its own worktree and card, run one approved step at a time. The hub switches to it when `tower scan` says
@@ -115,6 +122,11 @@ _Avoid_: settings, permissions (Claude Code's own allow rules are a separate thi
 One kind of action the approval hook may stop for your approval (a push, a merge, a comment, an issue write); each is
 judged by one key of the repo's profile, or, for what no key covers, asks unless every GitHub key is auto.
 _Avoid_: check, permission
+
+**Lands on**:
+The branch a merge puts a PR's commits on, which merge_to_main and merge_to_branch judge: the PR's base, or for a
+stacked PR the stack's base. A PR based on feat1 in a stack on main lands on main.
+_Avoid_: target, into (alone: a stacked PR's base isn't where it lands)
 
 **Profile**:
 A named set of the policy's keys (push, merge_to_main, merge_to_branch, comments, issue_writes, pr_writes, cleanup,

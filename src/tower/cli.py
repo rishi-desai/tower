@@ -17,6 +17,8 @@ tower stats [--since 14d] [--repo [PATH]]
                            metrics per PR merged in the window, from the event log and GitHub (see stats.py);
                            every repo in the log, or only PATH's (default: this one) with --repo
 tower policy               the approval profile for this repo, why it applies, and what each key says (see policy.py)
+tower merge [PR]           squash-merge PR (default: this branch's), stacked or not, and delete its head branch when
+                           that's safe; exit 1 when nothing was merged, 3 when GitHub is still merging (see merge.py)
 tower policy use PROFILE [--repo]
                            make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
                            terminal (the approval hook asks before an agent runs it)
@@ -41,6 +43,7 @@ from tower import (
     github,
     hook_events,
     ledger,
+    merge,
     multirepo,
     policy,
     rules,
@@ -55,6 +58,7 @@ SINCE_SPAN = re.compile(r"(\d+)([hdw])")
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 # Merges this far before the window are fetched too, only to cut a reused branch's events at its earlier merge.
 BOUNDARY_LOOKBACK = timedelta(days=30)
+PR_NUMBER = re.compile(r"[1-9][0-9]*")
 MAX_SINCE = timedelta(days=3650)  # a longer --since overflows datetime arithmetic, and no log is that old
 
 
@@ -64,6 +68,13 @@ def non_negative_int(text: str) -> int:
     if value < 0:
         raise argparse.ArgumentTypeError(f"must be 0 or more, got {value}")
     return value
+
+
+def pr_number(text: str) -> int:
+    """argparse type for a PR: its number, digits only (the approval hook reads the same form)."""
+    if not PR_NUMBER.fullmatch(text):
+        raise argparse.ArgumentTypeError(f"{text!r} isn't a PR number")
+    return int(text)
 
 
 def since_span(text: str) -> timedelta:
@@ -113,6 +124,10 @@ def parser() -> argparse.ArgumentParser:
     stats_parser.add_argument(
         "--repo", nargs="?", const=".", metavar="PATH", help="only this checkout's repo (default with no PATH: here)"
     )
+    merge_parser = commands.add_parser(
+        "merge", help="squash-merge a PR, stacked or not, and delete its head branch when that's safe"
+    )
+    merge_parser.add_argument("pr", nargs="?", type=pr_number, help="the PR's number (default: this branch's PR)")
     policy_parser = commands.add_parser("policy", help="the approval profile for this repo, and why it applies")
     policy_commands = policy_parser.add_subparsers(dest="policy_command")
     use = policy_commands.add_parser("use", help="switch the default profile, or this repo's (run it yourself)")
@@ -275,6 +290,20 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
     return 1 if failed else 0
 
 
+def merge_pr(pr: int | None) -> int:
+    """Run `tower merge`: say each step on stdout; exit 1 (saying why) when nothing was merged, 3 when GitHub accepted
+    the merge but hasn't finished it."""
+    try:
+        merge.merge_pr(pr, merge.run_gh(Path(".")), lambda line: print(f"tower: {line}", flush=True))
+    except merge.MergeError as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    except merge.StillMerging as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 3
+    return 0
+
+
 def show_policy() -> int:
     """Print the policy for the repo holding the current folder."""
     loaded = policy.load()
@@ -337,6 +366,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return show_env(args.dir)
     if args.command == "stats":
         return stats_command(args.since, args.repo)
+    if args.command == "merge":
+        return merge_pr(args.pr)
     if args.command == "policy":
         return use_profile(args.profile, args.repo) if args.policy_command == "use" else show_policy()
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable

@@ -1,12 +1,8 @@
-# Drafted follow-up issue (not filed yet)
+# Drafted follow-up issue (never filed: resolved)
 
-Drafted during #30 (T12a, the git-spice + worktrees spike). File it with:
-
-```sh
-gh issue create --label needs-triage \
-  --title "Stacked PRs: GitHub's native stacks refuse gh pr merge; tower's merge path needs merge-async (and consider gh-stack)" \
-  --body-file <(sed -n '/^<!-- body -->$/,$p' docs/research/followup-issue-stacked-merge.md | tail -n +2)
-```
+Drafted during #30 (T12a, the git-spice + worktrees spike). Not filed: `tower merge` (`src/tower/merge.py`) resolved
+it without an issue, and [stacked-merge.md](stacked-merge.md) answers its questions from an end-to-end run. Kept as
+the record of what was asked.
 
 **Title:** Stacked PRs: GitHub's native stacks refuse gh pr merge; tower's merge path needs merge-async (and consider gh-stack)
 
