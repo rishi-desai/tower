@@ -9,8 +9,9 @@ first issue if a label is missing. Nothing else creates them.
 
 Prints one command per missing label, ready to run as-is, and nothing when all five exist. It never
 creates labels itself: tower's approval hook only sees the command text the agent runs, so the hub
-runs the printed commands directly, where the hook can ask the user. If `gh label list` fails, its
-error goes to stderr and we exit non-zero with nothing on stdout.
+runs the printed commands directly, where the hook can ask the user. If gh is missing or
+`gh label list` fails, the error goes to stderr and we exit non-zero with nothing on stdout.
+Names compare case-insensitively, as GitHub does, so `Wayfinder:Map` counts as present.
 """
 
 from __future__ import annotations
@@ -33,17 +34,22 @@ LIST_LIMIT = "1000"
 
 
 def existing_labels() -> set[str] | None:
-    """Names of the repo's labels, or None (after passing gh's error through) if gh fails."""
-    proc = subprocess.run(
-        ["gh", "label", "list", "--limit", LIST_LIMIT, "--json", "name"], capture_output=True, text=True
-    )
+    """Lower-cased names of the repo's labels, or None (after printing why) if gh is missing or fails."""
+    try:
+        proc = subprocess.run(
+            ["gh", "label", "list", "--limit", LIST_LIMIT, "--json", "name"], capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        sys.stderr.write("gh (GitHub CLI) is not installed or not on PATH\n")
+        return None
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr or f"gh label list exited {proc.returncode}\n")
         return None
-    return {label["name"] for label in json.loads(proc.stdout)}
+    return {label["name"].lower() for label in json.loads(proc.stdout)}
 
 
 def main() -> int:
+    """Print a create command for each wayfinder label the repo lacks; exit 1 if the labels can't be listed."""
     existing = existing_labels()
     if existing is None:
         return 1

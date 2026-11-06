@@ -139,11 +139,12 @@ if it's too big for one session. Then "start #N". If the discussion needs a prot
 parks the question as its own issue and starts a worktree for it early; the discussion moves there, and its answer
 comes back to the hub with `/handoff`.
 
-For a huge, foggy effort, the hub hands off to `/wayfinder` instead of grilling: it starts a worktree on its own
-branch (`chore/wayfinder-<slug>`) with `/wayfinder` as the prompt, never in the hub session, because wayfinder
-writes GLOSSARY.md and ADRs into the repo. First it creates any of the five `wayfinder:*` labels the repo is missing
-(after you approve; decline and it shows you the `gh label create` commands), since wayfinder fails without them.
-You go back to that worktree for each wayfinder ticket.
+For a huge, foggy effort, the hub hands off to `/wayfinder` instead of grilling: it starts a worktree named
+`chore/wayfinder-<slug>` with `/wayfinder` as the prompt, never in the hub session, because wayfinder writes
+GLOSSARY.md and ADRs into the repo. Before starting it, the hub creates any of the five `wayfinder:*` labels a GitHub
+repo is missing (after you approve), since wayfinder fails without them; decline and it shows you the
+`gh label create` commands and waits until you've run them. You go back to that worktree for each wayfinder ticket,
+with the line the hub gives you.
 
 The first `/to-spec` in a repo needs `/setup-matt-pocock-skills` to have run; the hub suggests running it in a
 worktree, never on main.

@@ -51,9 +51,11 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return log
 
 
-def run_script(existing: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run wayfinder-labels.py with EXISTING as the repo's labels."""
+def run_script(existing: list[str], path: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run wayfinder-labels.py with EXISTING as the repo's labels (and PATH, if given)."""
     env = {**os.environ, "FAKE_GH_LABELS": "\n".join(existing)}
+    if path is not None:
+        env["PATH"] = path
     return subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, env=env, check=False)
 
 
@@ -113,3 +115,16 @@ def test_fails_loudly_when_gh_fails(fake_gh: Path, monkeypatch: pytest.MonkeyPat
     assert result.returncode != 0
     assert result.stdout == ""
     assert "no git remotes found" in result.stderr
+
+
+def test_matches_existing_labels_case_insensitively(fake_gh: Path) -> None:
+    result = run_script(["Wayfinder:Map", "WAYFINDER:RESEARCH", "wayfinder:prototype", "wayfinder:grilling", "wayfinder:task"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_says_so_in_one_line_when_gh_is_missing(tmp_path: Path) -> None:
+    result = run_script([], path=str(tmp_path))
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr == "gh (GitHub CLI) is not installed or not on PATH\n"
