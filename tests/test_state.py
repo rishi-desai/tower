@@ -101,6 +101,59 @@ def test_a_done_worktree_with_uncommitted_changes_is_not_ready_to_clean(
     assert (row["status"], row["dirty"]) == ("done", True)
 
 
+def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_its_head(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Squash-merged branches: none of their commits are on main, so the PR's head commit (headRefOid) is what the
+    worktree's HEAD is compared with. A head this clone doesn't have can't be compared, so it isn't ready-to-clean."""
+    heads = {}
+    for branch in ("squashed", "more-work", "head-elsewhere", "pulled-main", "not-a-sha"):
+        path = repo.add_worktree(branch, commits=2)
+        repo.write_card(branch, "done")
+        heads[branch] = git(path, "rev-parse", "HEAD").strip()
+    git(repo.main / "worktrees" / "more-work", "commit", "-q", "--allow-empty", "-m", "after the merge")
+    # main moves on and pulled-main merges it in: the merge commit is past the PR's head and may hold conflict fixes,
+    # so it stays (a cautious "no", not a lost commit)
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "squashed PRs")
+    git(repo.main / "worktrees" / "pulled-main", "merge", "-q", "--no-edit", "main")
+    heads["head-elsewhere"] = "0123456789abcdef0123456789abcdef01234567"
+    heads["not-a-sha"] = "--all"  # never reaches git as an option
+    listed = [
+        {
+            "number": n,
+            "state": "MERGED",
+            "headRefName": b,
+            "headRefOid": heads[b],
+            "url": f"https://github.com/o/r/pull/{n}",
+        }
+        for n, b in enumerate(heads, start=7)
+    ]
+    gh = tmp_path / "bin" / "gh"
+    gh.write_text(f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(listed)}\nEOF\n", encoding="utf-8")
+    gh.chmod(0o755)
+
+    found = rows(tower_state(capsys, "--pr"))
+
+    assert (found["squashed"]["status"], found["squashed"]["reason"]) == ("ready-to-clean", "PR #7 is merged")
+    assert (found["more-work"]["status"], found["more-work"]["reason"]) == (
+        "done",
+        "the card says done; PR #8 is merged but the worktree has 1 commit the PR doesn't include",
+    )
+    assert (found["head-elsewhere"]["status"], found["head-elsewhere"]["reason"]) == (
+        "done",
+        "the card says done; PR #9 is merged but the worktree couldn't be checked for commits the PR doesn't include",
+    )
+    assert (found["pulled-main"]["status"], found["pulled-main"]["reason"]) == (
+        "done",
+        "the card says done; PR #10 is merged but the worktree has 2 commits the PR doesn't include",
+    )
+    assert found["not-a-sha"]["reason"] == (
+        "the card says done; PR #11 is merged but the worktree couldn't be checked for commits the PR doesn't include"
+    )
+    not_a_sha_pr = found["not-a-sha"]["pr"]
+    assert isinstance(not_a_sha_pr, dict) and not_a_sha_pr["head_oid"] is None
+
+
 def test_cards_without_a_worktree_are_orphans(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     repo.add_worktree("feat/9-x")
     repo.write_card("feat/9-x", "running")  # feat__9-x.md: claimed by the worktree
