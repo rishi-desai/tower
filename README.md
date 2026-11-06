@@ -494,7 +494,8 @@ API_URL = "http://localhost:{port}/api"
 ```ini
 projects_dir=/Users/rishi/Library/Mobile Documents/com~apple~CloudDocs/Vault/Projects
 wip_limit=3                # unless the repo's profile sets its own
-worktrees_dir=/Users/rishi/worktrees   # every project's worktrees, one subfolder per repo (match Orca's)
+# every project's worktrees, one subfolder per repo (match Orca's); comments go on their own line, as here
+worktrees_dir=/Users/rishi/worktrees
 project.poot=Poot          # optional: repo folder name -> project folder name
 ```
 

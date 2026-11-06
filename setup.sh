@@ -107,7 +107,10 @@ ask() {   # ask PROMPT DEFAULT [path] -> prints the answer (or the default on En
   local answer
   if [ ! -t 0 ]; then echo "no terminal to ask '$1'; pass it as a flag (see --help)" >&2; exit 2; fi
   if [ "${3-}" = path ]; then
-    read -e -r -p "$1 [${2:-none}]: " answer   # -e: readline's Tab completion (bash 3.2 has no -i to prefill it)
+    # -e: readline's Tab completion (bash 3.2 has no -i to prefill it). No -r: completion writes a space as "\ ",
+    # and read without -r turns that back into the space ("Mobile\ Documents" -> "Mobile Documents").
+    # shellcheck disable=SC2162
+    read -e -p "$1 [${2:-none}]: " answer
   else
     read -r -p "$1 [${2:-none}]: " answer
   fi
@@ -127,7 +130,9 @@ if [ -z "$worktrees_dir" ]; then   # scripted runs without it keep the saved fol
 fi
 projects_dir="${projects_dir/#\~/$HOME}"                  # allow ~/... in the answer
 worktrees_dir="${worktrees_dir/#\~/$HOME}"
-[ "$worktrees_dir" = / ] || worktrees_dir="${worktrees_dir%/}"   # Tab completion leaves a trailing /
+while [ "$worktrees_dir" != / ] && [ "${worktrees_dir%/}" != "$worktrees_dir" ]; do   # Tab completion leaves a /
+  worktrees_dir="${worktrees_dir%/}"
+done
 case "$wip_limit" in ''|*[!0-9]*) echo "WIP limit must be a whole number, got '$wip_limit'" >&2; exit 2 ;; esac
 profiles="$(policy_py 'print(" ".join(policy.available_profiles()))')"
 case " $profiles " in *" $profile "*) ;; *) echo "profile must be one of: $profiles; got '$profile'" >&2; exit 2 ;; esac
@@ -147,10 +152,11 @@ if [ ! -d "$projects_dir" ]; then
   run mkdir -p "$projects_dir"
 fi
 if [ -n "$worktrees_dir" ] && [ ! -d "$worktrees_dir" ]; then
-  echo "Creating the worktrees folder: $worktrees_dir"
+  echo "Worktrees folder doesn't exist yet, so creating it: $worktrees_dir"
   run mkdir -p "$worktrees_dir"
 fi
-if [ -d "$worktrees_dir" ] && git -C "$worktrees_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+# Prints "false" (exit 0) inside a .git folder or a bare repo, where worktrees wouldn't show as untracked.
+if [ -d "$worktrees_dir" ] && [ "$(git -C "$worktrees_dir" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
   echo "warning: $worktrees_dir is inside a git checkout, which will show the worktrees in it as untracked" >&2
 fi
 

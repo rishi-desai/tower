@@ -150,7 +150,7 @@ Two different `/code-review` skills run, so the prompt names each: Matt Pocock's
 
 ### Fallback: the two-step paste
 
-When Orca isn't reachable, the user creates the worktree in their worktree app with the branch name `<short-type>/<ticket>-<slug>` (create it yourself with `git worktree add` only if they ask, under `<worktrees_dir>/<repo>/`, with `worktrees_dir` read from `~/.claude/tower.conf`), opens a new Claude session in it, and pastes two steps, labelled "Step 1" and "Step 2". Anything they paste goes in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
+When Orca isn't reachable, the user creates the worktree in their worktree app with the branch name `<short-type>/<ticket>-<slug>` (create it yourself with `git worktree add` only if they ask, under `<worktrees_dir>/<repo>/`, with `worktrees_dir` read from `~/.claude/tower.conf`; if it isn't set, ask where), opens a new Claude session in it, and pastes two steps, labelled "Step 1" and "Step 2". Anything they paste goes in its own fenced code block. Never use `>` quotes for anything to paste: the terminal copies the quote bar with the text. Leave backticks out of the pasted text.
 
 **Step 1: set the effort for this session only.** Type this on its own, pick `<level>` in the slider, and press **s**. If the session already shows that level, skip this step. (Starting Claude by hand instead: `claude --effort <level>`.)
 

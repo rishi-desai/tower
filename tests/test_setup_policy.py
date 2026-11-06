@@ -112,11 +112,11 @@ def conf_lines(home: Path) -> list[str]:
 
 
 def test_the_worktrees_folder_is_created_and_saved(home: Path) -> None:
-    proc = setup(home, "--worktrees-dir", str(home / "worktrees") + "/")
+    proc = setup(home, "--worktrees-dir", str(home / "worktrees") + "//")
 
     assert proc.returncode == 0, proc.stderr
     assert (home / "worktrees").is_dir()
-    assert f"worktrees_dir={home / 'worktrees'}" in conf_lines(home)  # without the trailing /
+    assert f"worktrees_dir={home / 'worktrees'}" in conf_lines(home)  # without the trailing //
     assert f"Settings > General > Workspace > Workspace Directory: {home / 'worktrees'}" in proc.stdout
 
 
@@ -163,26 +163,30 @@ def test_setup_says_where_the_policy_file_is_and_how_to_tune_it(home: Path) -> N
 
 @pytest.mark.skipif(not Path("/bin/bash").exists(), reason="needs /bin/bash")
 def test_the_worktrees_prompt_completes_paths_with_tab(home: Path) -> None:
-    """In a terminal, under /bin/bash (3.2 on macOS): Tab completes the typed path, a folder that doesn't exist yet
-    is created, and the answer lands in tower.conf. The other answers are flags, so this is the only prompt."""
-    (home / "code-worktrees").mkdir()
+    """In a terminal, under /bin/bash (3.2 on macOS): Tab completes the typed path (a space in it too, which readline
+    writes as "\\ "), a folder that doesn't exist yet is created, and the answer lands in tower.conf. The other
+    answers are flags, so this is the only prompt."""
+    (home / "code worktrees").mkdir()
     (home / "vault").mkdir()  # else setup asks whether to create it
     env = {"HOME": str(home), "PATH": os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1", "TERM": "dumb"}
     args = ["--no-plugin", "--projects-dir", str(home / "vault"), "--wip-limit", "4", "--profile", "work"]
     pid, fd = pty.fork()
     if pid == 0:  # the child: setup.sh with the pty as its terminal
-        os.execve("/bin/bash", ["/bin/bash", str(SETUP), *args], env)
+        try:
+            os.execve("/bin/bash", ["/bin/bash", str(SETUP), *args], env)
+        finally:
+            os._exit(127)  # exec failed: never fall back into this copy of pytest
     output = read_until(fd, b"worktrees")  # the prompt
-    os.write(fd, str(home / "code-wo").encode() + b"\t")
-    output += read_until(fd, b"code-worktrees/")  # readline completed it
+    os.write(fd, str(home / "code").encode() + b"\t")
+    output += read_until(fd, b"code\\ worktrees/")  # readline completed it, escaping the space
     os.write(fd, b"all\r")
     output += read_until(fd, b"")  # to the end
     _, status = os.waitpid(pid, 0)
     os.close(fd)
 
     assert os.waitstatus_to_exitcode(status) == 0, output.decode(errors="replace")
-    assert (home / "code-worktrees" / "all").is_dir()
-    assert f"worktrees_dir={home / 'code-worktrees' / 'all'}" in conf_lines(home)
+    assert (home / "code worktrees" / "all").is_dir()
+    assert f"worktrees_dir={home / 'code worktrees' / 'all'}" in conf_lines(home)
 
 
 def read_until(fd: int, wanted: bytes, timeout: float = 20) -> bytes:

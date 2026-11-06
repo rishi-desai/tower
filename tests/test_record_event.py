@@ -213,4 +213,4 @@ def test_errors_log_is_capped_by_moving_a_full_one_aside(tmp_path: Path) -> None
 
     assert (tower_dir / "errors.log.1").read_text(encoding="utf-8").startswith("old\n")
     fresh = (tower_dir / "errors.log").read_text(encoding="utf-8")
-    assert "old\n" not in fresh and "record-event:" in fresh  # "old" alone can be in the traceback's paths ("folder")
+    assert not fresh.startswith("old") and "record-event:" in fresh  # "old" can be in the traceback's paths ("folder")
