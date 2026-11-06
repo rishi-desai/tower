@@ -54,15 +54,21 @@ def wip_limit(conf: dict[str, str]) -> int:
     return int(value) if value.isdigit() else 3
 
 
-def project_dir(repo: str, conf: dict[str, str]) -> Path:
-    """The repo's project folder in the vault. Raises LedgerError, instead of guessing a fallback, when projects_dir is
-    unset or missing (a typo, or an unsynced vault), so a card is never written where the hub won't look."""
+def projects_root(conf: dict[str, str]) -> Path:
+    """The vault folder holding one folder per project. Raises LedgerError, instead of guessing a fallback, when
+    projects_dir is unset or missing (a typo, or an unsynced vault), so a card is never written where the hub won't look."""
     projects_dir = conf.get("projects_dir", "")
     if not projects_dir:
         raise LedgerError(f"no projects_dir in {conf_path()} (run setup.sh on this machine)")
     if not os.path.isdir(projects_dir):
         raise LedgerError(f"projects_dir does not exist: {projects_dir} (check {conf_path()})")
-    return Path(projects_dir) / conf_get(conf, f"project.{repo}", repo)
+    return Path(projects_dir)
+
+
+def project_dir(repo: str, conf: dict[str, str]) -> Path:
+    """The repo's project folder in the vault: <projects_dir>/<project.<repo>= or the repo's name>. Raises LedgerError
+    when projects_dir is unset or missing (see projects_root)."""
+    return projects_root(conf) / conf_get(conf, f"project.{repo}", repo)
 
 
 def ledger_dir(repo: str, conf: dict[str, str]) -> tuple[Path | None, str]:

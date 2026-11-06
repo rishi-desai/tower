@@ -6,7 +6,7 @@ which session owns what, what needs you, and how the pieces fit together.
 Each agent works one ticket in its own git worktree and leaves a short **status card** in your Obsidian vault.
 One **hub** session reads only those cards plus git, GitHub, and Claude Code's live session list, and tells you
 on one screen what needs you and what to do next. Nothing it uses is committed to any repo, so it is safe on a
-shared work repo. Already have a messy repo? **adopt** brings it under tower without losing a change.
+shared work repo. Already have a messy repo? The hub's **adopt mode** brings it under tower without losing a change.
 
 tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small per-machine `setup.sh`.
 
@@ -26,18 +26,18 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
  worktree B ──┼─ a card when it stops ─────────────┼─> Vault/Projects/<Project>/Ledger/fix__51-y.md
  worktree C ──┘                                    └─> ...
                                                           │
- main checkout: /tower:hub ── hub-scan.sh ── tower state ──┤ cards
+ main checkout: /tower:hub ── tower scan ── tower state ───┤ cards
                                                            ├ git worktree list, commits not on main
                                                            ├ claude agents --json  (live: busy / idle / waiting)
                                                            ├ the event log (stands in when agent view can't be read)
-                                    hub-scan.sh also reads └ gh: your PRs, open issues
+                                     tower scan also reads └ gh: your PRs, open issues
                      └─> one screen: Needs you → Blocked → Running → Waiting on CI → Done → Housekeeping → ONE next action
 ```
 
-- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. Its top block is YAML frontmatter, so Obsidian shows the fields as properties.
+- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. The worker writes only the prose; tower's core (`tower card write`) fills the top block (YAML frontmatter: `status`, `ticket`, `updated`, `branch`, `pr`, `base`, and `reason` on `needs-you` and `blocked`) from git and GitHub, so Obsidian shows the fields as properties and a card can't say `done` without a PR.
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
-- **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR).
+- **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR, `--all` for every repo on this machine: each one in the event log, this one, and any with a Ledger folder in the vault).
 
 ## Install
 
@@ -51,17 +51,34 @@ gh repo clone rishi-desai/tower ~/Developer/personal/tower
 
 `setup.sh` writes `~/.claude/tower.conf` and the default profile in `~/.claude/tower/policy.toml` (see
 [Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
-global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the two plugins:
+global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the one plugin:
 
 ```bash
 claude plugin marketplace add rishi-desai/tower
-claude plugin install tower@tower          # skills, approval hook, card hooks
-claude plugin install tower-pane@tower     # optional: the live pane (see "The tower pane")
+claude plugin install tower@tower          # skills, approval hook, card hooks, and the live pane
 # or, in one step inside Claude Code 2.1.275+:  /plugin install tower --marketplace rishi-desai/tower
 ```
 
-If an organization's policy refuses mods, the pane install fails and `setup.sh` says so and carries on: everything
-else works without it.
+The pane is a mod (a hooks module) inside the same plugin. Claude Code admits or refuses each hooks module on its
+own (`plugin.register` in its mod docs), so a policy that refuses mods should cost only the pane, with the skills and
+the approval and card hooks still loading; that case hasn't been tried under a real policy.
+
+### Upgrading from two plugins (tower 0.10.0 and earlier)
+
+Before 0.11.0 the pane was a second plugin, `tower-pane@tower`. It's no longer in the marketplace: once the
+marketplace is updated, an installed copy stays in `claude plugin list` as `✘ failed to load` (`Plugin tower-pane
+not found in marketplace tower`) and `claude plugin update` can't move it. Re-running `setup.sh` does the upgrade
+when it finds `tower-pane@tower`: it uninstalls it, updates the marketplace and updates `tower@tower`. An install
+that never had the pane updates the usual way (see "Updating and uninstalling"). By hand:
+
+```bash
+claude plugin uninstall tower-pane@tower
+claude plugin marketplace update tower
+claude plugin update tower@tower           # 0.11.0 or later carries the pane
+```
+
+Then restart Claude Code. The pane starts with an empty cache (its saved state moved from `tower-pane` to
+`tower`), so the first scan fills it.
 
 Restart Claude Code afterwards. Re-run `setup.sh` any time to change settings; it keeps what it doesn't own.
 
@@ -73,7 +90,7 @@ If the plugin is already installed (for example from a restored `settings.json`)
 ### First time in a repo
 
 1. Open one Claude Code session in the repo's **main checkout** (in Orca: the main worktree). This is your **hub**. Use it only to check status and start work, never to write code.
-2. If the repo already has work in flight (several sessions in one checkout, worktrees with no cards, uncommitted changes in main), type `/tower:adopt` and follow its plan. See [Adopting an existing repo](#adopting-an-existing-repo). Otherwise type `/tower:hub`.
+2. Type `/tower:hub`. If the repo already has work in flight (most worktrees with no card, uncommitted changes in main, several sessions in it), the hub says so and switches to its adopt mode: follow its plan. See [Adopting an existing repo](#adopting-an-existing-repo).
 3. If the project's vault folder isn't named like the repo folder, add `project.<repo>=<Folder>` to `~/.claude/tower.conf` (e.g. `project.poot=Poot`).
 
 ### Starting a ticket
@@ -101,7 +118,8 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 
 ### The tower pane
 
-`tower-pane` is a mod: a panel inside Claude Code, beside the chat. Run `/tower` in the hub session to open it.
+The pane is a mod inside the tower plugin: a panel inside Claude Code, beside the chat. Run `/tower` in the hub
+session to open it.
 It never reads transcripts either: it draws `tower state --json`, the same effective state the hub reports from,
 so the two can't disagree.
 
@@ -200,7 +218,7 @@ PR change.
 | "no projects_dir … run setup.sh" | run `setup.sh` on this machine |
 | `STALE` on a card | go to that session and ask it to update its card, or check whether it has quietly died |
 | "skipping live sessions" | fine; the hub falls back to cards only |
-| a worktree with `NO CARD` | ask that session to "write your status card", or run adopt |
+| a worktree with `NO CARD` | ask that session to "write your status card", or ask the hub to adopt the repo |
 | no approval prompt before a comment or push | run `tower policy`: the profile may let it through. Otherwise check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
 | prompts for everything, `tower policy: work` | `tower policy` says why: no policy file, or a problem in it (each listed with its line) |
 
@@ -228,8 +246,7 @@ approach, which is what grilling and the spec are for.
 
 | Where | Effort | Why |
 |---|---|---|
-| `status-card`, `project-rules`, `hub` | medium | in-the-loop, quick work |
-| `adopt` | high | must not lose a change, but you approve each step, so it shouldn't assume more |
+| `status-card`, `project-rules`, `hub` (adopt mode included) | medium | in-the-loop, quick work; in adopt mode you approve each step, so it shouldn't assume more |
 | `babysit-pr` | high | verifying bot findings and fixing CI in existing code, often while you're away |
 | worker: feature slice from a clear ticket | medium | "most regular software engineering work" |
 | worker: bug fix in existing code, or runs while you're away | high | "verification is important or there are edge cases" |
@@ -243,16 +260,16 @@ approach, which is what grilling and the spec are for.
 
 ## Adopting an existing repo
 
-`/tower:adopt` (run from the main checkout) is for a repo where work is already in flight and you've lost track.
+The hub's adopt mode is for a repo where work is already in flight and you've lost track. `/tower:hub` (run from the main checkout) switches to it by itself when `tower scan`'s `ADOPT:` line says `yes`: more than half the worktrees (and at least two) have no card, the main checkout has uncommitted changes (a folder that only holds worktrees doesn't count), or more than one interactive session is open in it (the hub is one). Ask the hub to adopt the repo to run it anyway. `/tower:adopt` still works for one release and does the same.
 
-1. **Scan (read-only).** `adopt-scan.sh` (`tower adopt-scan`) lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
+1. **Scan (read-only).** `tower adopt-scan` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
 2. **One plan, which you approve.** In order:
    - a **paste-in prompt for every live session**: it writes its own first card and, if it's in the main checkout, lists exactly which uncommitted files are its work;
    - **untangling the main checkout**: each session's files move to their own branch + worktree (`git stash push -- <its files>` → `git stash pop` in the new worktree; never `reset`, `checkout .`, or `clean`);
    - **draft cards** from git facts for worktrees with no live session, marked `needs-you` until you confirm;
    - **WIP**: what to park first (merged or untouched longest), and cleanup suggestions;
    - **tickets** for work with no issue (creating one asks you).
-3. **Steps run one at a time**, only the ones you approve. Nothing is deleted. It ends by running the hub.
+3. **Steps run one at a time**, only the ones you approve. Nothing is deleted. It ends with the hub's usual report.
 
 ## Skills
 
@@ -263,9 +280,9 @@ description, or you type `/tower:<name>`.
 
 | Skill | Fires when | What it does |
 |---|---|---|
-| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Finds this worktree's card in the vault (`card-path.sh`) and overwrites it with the current state. The card is the short version for the hub; the final chat message is the full version for you. |
-| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Suggests `adopt` when the repo clearly hasn't been adopted. |
-| `tower:adopt` | you want to start tower on a messy, in-flight repo | See [above](#adopting-an-existing-repo). |
+| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Pipes the card's sections (Done, Why it matters, Needs you, Verify, Words used) into `tower card write`, which picks the status from the branch's PR (none → running, open → waiting-ci, merged → done; the agent may ask for needs-you or blocked with a reason, or done while its PR waits on your merge, never without a PR) and overwrites the card in the vault. The card is the short version for the hub; the final chat message is the full version for you. |
+| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `tower scan` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Switches to adopt mode when the repo hasn't been brought under tower yet ([above](#adopting-an-existing-repo)). |
+| `tower:adopt` | you type `/tower:adopt` | The old name for the hub's adopt mode, kept for one release. |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
 | `tower:babysit-pr` | you say "babysit / watch / monitor the PR" | Runs `pr-wait` (one line per real event: check failed, comment, review, base moved, merged) and fixes real CI failures and review findings. Drafts every public action and waits for your approval. Waits on your repo's own required checks (`--until green`). |
 | `tower:leaving-pr-comments` | any agent comment on GitHub | Starts each comment with "🤖 <model> responding on behalf of <you>", keeps it short, checks for secrets. |
@@ -297,8 +314,9 @@ description, or you type `/tower:<name>`.
   stop to ask about what the policy allows. It comes back after `/clear`, `/resume` and compaction.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
-  answer a session, by typing or in its pop-up, a card that says `needs-you` is switched to `running` (only the
-  `status` and `updated` lines). The session rewrites the rest when it next stops. Without it, a card stayed
+  answer a session, by typing or in its pop-up, a card that says `needs-you` is re-rendered by tower's core as `running` (the
+  answer itself is recorded by the event log hook). The body and the other properties stay; the session rewrites the
+  rest when it next stops. Without it, a card stayed
   needs-you for the whole stretch between your answer and the session's next stop.
 - **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
 - **The event log** (`record-event.py`, on SessionStart, UserPromptSubmit, Notification, PostToolUse on
@@ -448,21 +466,20 @@ Repo layout:
 
 ```
 tower/
-  .claude-plugin/marketplace.json     this repo is its own marketplace: plugins tower and tower-pane
+  .claude-plugin/marketplace.json     this repo is its own marketplace, with one plugin: tower
   plugin/
-    .claude-plugin/plugin.json
-    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
-    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
+    .claude-plugin/plugin.json        its `types` names types/index.d.ts, the pane's saved state
+    hooks/hooks.json                  command hooks (approval, card reminder, card resume, needs-you notification,
+                                      event log) and, under `modules`, the pane mod
+    hooks/register.tsx                the pane mod: the pane, status line, toasts, Orca jump, the back-to-hub line
+    types/index.d.ts                  the pane's saved state, as Claude Code checks it
+    tests/                            claude plugin test plugin; fixtures/ holds `tower state --json` output tests/test_state.py checks
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for the skills and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
-    skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
-                                      (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
-                                      `card-path` and `rules`, kept for one release)
-  pane/                               the tower-pane mod
-    hooks/register.tsx                the pane, status line, toasts, Orca jump, the back-to-hub line
-    types/index.d.ts                  its saved state, as Claude Code checks it
-    tests/                            claude plugin test pane; fixtures/ holds `tower state --json` output tests/test_state.py checks
+    skills/                           hub/ (ADOPT.md: its adopt mode) status-card/ project-rules/ babysit-pr/
+                                      leaving-pr-comments/ adopt/ (an alias for the hub's adopt mode, for one release)
   src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
-  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI
+  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI, setup.sh's install
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`
@@ -474,13 +491,13 @@ tower/
 `mise run ci` runs every check, and GitHub runs the same task on each pull request through
 [rishi-desai/ci](https://github.com/rishi-desai/ci)'s shared workflow, so a local pass means CI passes. It runs ruff
 (lint and format), mypy (strict), pytest, shellcheck on every `.sh`, gitleaks (secret scan),
-`claude plugin validate --strict` on the marketplace and both plugins, and the pane's tests (`claude plugin test pane`,
+`claude plugin validate --strict` on the marketplace and the plugin, and the pane's tests (`claude plugin test plugin`,
 which needs no login). Run `mise install` once first.
 
 - **The approval hook's tests** live in `tests/test_confirm_public.py`. A known bypass goes in as an `xfail` test:
   pytest fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
-- **The pane's type check isn't in `ci`.** Its type stubs (`pane/.claude-plugin/types/`) are written by Claude Code
-  only when a logged-in session loads the pane, which CI can't do. Start `claude --plugin-dir pane` once, then run
+- **The pane's type check isn't in `ci`.** Its type stubs (`plugin/.claude-plugin/types/`) are written by Claude Code
+  only when a logged-in session loads the plugin, which CI can't do. Start `claude --plugin-dir plugin` once, then run
   `mise run pane-typecheck`.
 
 ## Using it on the work laptop
@@ -495,7 +512,7 @@ which needs no login). Run `mise install` once first.
 - **Cards are only as fresh as the last time an agent wrote one.** The hub flags `running` cards untouched for 24h as `STALE`, and `tower state` trusts live session status over a card.
 - **Agent view's JSON format isn't documented.** If it changes, the hub prints one "skipping live sessions" line and works from cards alone.
 - **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. In Poot, `data/` exists only in the main checkout, so worktrees don't have it.
-- **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). adopt checks the actual diff before calling a branch unshipped.
+- **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). Adopt mode checks the actual diff before calling a branch unshipped.
 - **Orca names the branch, not the hub.** `--name feat/42-x` is Orca's display name; with Orca's Branch prefix set to
   your git username the branch is `rishi-desai/feat-42-x`, and the card is named after that branch. Set the prefix to
   none in Orca's settings if you want the two to match.
@@ -507,10 +524,11 @@ which needs no login). Run `mise install` once first.
 
 ## Updating and uninstalling
 
-- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower && claude plugin update tower-pane@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` (and `pane/.claude-plugin/plugin.json` for pane changes) so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
-- **Change the pane:** edit `pane/`, run `claude plugin validate pane && claude plugin test pane`, and try it with `claude --plugin-dir pane` before pushing (uninstalled, or the installed copy loads too).
+- **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
+- **Change the pane:** edit `plugin/hooks/register.tsx`, run `claude plugin validate --strict plugin && claude plugin test plugin`, and try it with `claude --plugin-dir plugin` before pushing: for that session the checkout replaces the installed
+  tower (Claude Code logs `Plugin "tower" from --plugin-dir overrides installed version`), so nothing runs twice.
 - **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the local patches, update the fingerprints.
-- **Uninstall:** `claude plugin uninstall tower-pane@tower`, `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
+- **Uninstall:** `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
 
 ## Credits
 

@@ -30,18 +30,17 @@ run = [
   "gitleaks dir --redact --no-banner .",
   "claude plugin validate --strict .",
   "claude plugin validate --strict plugin",
-  "claude plugin validate --strict pane",
-  "claude plugin test pane",
+  "claude plugin test plugin",
 ]
 
 # Not part of `ci`: the pane's type stubs are written only when a logged-in Claude Code session loads the
-# pane (`claude --plugin-dir pane`), so CI can't run this. See "Checks and CI" in README.md.
+# plugin (`claude --plugin-dir plugin`), so CI can't run this. See "Checks and CI" in README.md.
 [tasks.pane-typecheck]
 description = "Type-check the pane against the stubs Claude Code wrote when it last loaded it"
 run = """
-if [ ! -f pane/.claude-plugin/types/tsconfig.json ]; then
-  echo "pane-typecheck: no type stubs in pane/.claude-plugin/types/; start 'claude --plugin-dir pane' once to write them" >&2
+if [ ! -f plugin/.claude-plugin/types/tsconfig.json ]; then
+  echo "pane-typecheck: no type stubs in plugin/.claude-plugin/types/; start 'claude --plugin-dir plugin' once to write them" >&2
   exit 1
 fi
-npx --yes --package typescript@5.9.3 tsc -p pane
+npx --yes --package typescript@5.9.3 tsc -p plugin
 """

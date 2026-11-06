@@ -14,11 +14,18 @@ The one session in a repo's main checkout that reports what every worker is doin
 never edits code or reads transcripts.
 _Avoid_: control session, dashboard (that is a separate view)
 
+**Adopt mode**:
+The hub's flow for a repo with work in flight that hasn't been brought under tower: one plan that gives every piece
+of work its own worktree and card, run one approved step at a time. The hub switches to it when `tower scan` says
+`ADOPT: yes` (most worktrees, at least two, have no card, or the main checkout has uncommitted work or other sessions).
+_Avoid_: onboarding, the adopt skill (it is part of the hub since T19)
+
 ## State
 
 **Card**:
 A worker's short Markdown note in the vault saying where its worktree stands: status, ticket, PR, what's done, the
-one decision it needs, how to verify. One card per worktree.
+one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
+the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
 _Avoid_: status file, report
 
 **Ledger**:
@@ -33,6 +40,12 @@ _Avoid_: log entry, message
 **Event log**:
 The machine-wide, append-only record of every event across all repos. Events are added, never changed.
 _Avoid_: history, audit log
+
+**Known repo**:
+A repo `tower state --all` covers: one with events in this machine's event log, the repo it runs in, or a Ledger
+folder in this machine's vault. A Ledger folder with cards that no such checkout maps to is listed as cards only (what
+its cards claim, no worktree facts).
+_Avoid_: tracked repo, project (that is the vault folder, which can be named differently)
 
 **Effective state**:
 The one status tower gives a worktree after weighing every fact it has (card, live sessions, events, git, PR), so the

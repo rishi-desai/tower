@@ -3,9 +3,9 @@
 
   python3 -I run-tower.py scan [--no-github]      (or any other `tower` subcommand)
 
-The skills' scripts (hub-scan.sh, adopt-scan.sh, card-path.sh, project-rules.sh) are one-line wrappers around this,
-and the tower pane runs it for `state --json`. Like record-event.py, it reaches tower's core through the
-plugin's `lib/tower` symlink (a marketplace install copies the link's target), so it works under whatever `python3` is
+The skills run it for `scan`, `adopt-scan`, `rules` and `card write`, the card-reminder hook for `card-path`, and the
+tower pane for `state --json` and `scan`. Like record-event.py, it reaches
+tower's core through the plugin's `lib/tower` symlink (a marketplace install copies the link's target), so it works under whatever `python3` is
 on PATH, 3.9 included. It isn't named tower.py: Python puts this folder first on sys.path, and a tower.py here would
 shadow the package.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import sys
 
-# From this file's place, never $CLAUDE_PLUGIN_ROOT: when the tower pane runs hub-scan.sh, that can be the pane's own
+# From this file's place, never $CLAUDE_PLUGIN_ROOT: when the tower pane runs this, that can be the pane's own
 # plugin, which has no lib/.
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
