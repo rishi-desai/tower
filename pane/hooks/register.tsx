@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { GithubSection, Scan, StateSession, StateWorktree, TowerState } from '../types'
+import type { GithubSection, Scan, StateSession, StateWorktree, Status, TowerState } from '../types'
 
 // tower-pane: tower's hub report as a live pane beside the chat, a status-line summary, a toast when something new
 // needs the user, and in each worker a "0: back to the hub" band. Read-only by design: it only ever runs tower's own
@@ -20,7 +20,7 @@ const HUB_SCAN_ISSUE_LIMIT = 30 // hub-scan.sh's `gh issue list --limit`: a full
 const scanAtom = atom({ plugin: 'tower-pane', key: 'scan' } as const, null)
 const parkAtom = atom({ plugin: 'tower-pane', key: 'park' } as const, 0) // bumped to clear the park field
 const githubAtom = atom({ plugin: 'tower-pane', key: 'github' } as const, null)
-const backlogAtom = atom({ plugin: 'tower-pane', key: 'backlog' } as const, [] as string[])
+const backlogAtom = atom({ plugin: 'tower-pane', key: 'backlog' } as const, { lines: [] as string[], error: '' })
 
 // ---------- reading tower state ----------
 
@@ -40,7 +40,7 @@ export function waitingNote(session: StateSession): string {
 }
 
 /** One label per worktree that needs the user, for toasts: a new label is something new. */
-export function needItems(state: TowerState): string[] {
+export function toastLabels(state: TowerState): string[] {
   return needsYou(state).map(w => {
     const waiting = waitingIn(w)[0]
     if (waiting) return `${w.label}: session ${waiting.name} is waiting (${waitingNote(waiting)})`
@@ -115,11 +115,11 @@ export function ageOf(updated: string, now: number): string {
 
 const BADGE_WIDTH = 11
 /** Badge text and colour per status: dark text on a coloured block reads on any pane background. */
-function badgeOf(status: string, isStale: boolean): { label: string; color: string } {
+function badgeOf(status: Status | 'session-waiting', isStale: boolean): { label: string; color: string } {
   if (isStale) return { label: 'STALE', color: 'error' }
   switch (status) {
     case 'needs-you': return { label: 'NEEDS YOU', color: 'warning' }
-    case 'waiting': return { label: 'WAITING', color: 'warning' } // a session waiting on you: a question or an approval
+    case 'session-waiting': return { label: 'WAITING', color: 'warning' } // a needs-you row whose session waits on you
     case 'blocked': return { label: 'BLOCKED', color: 'error' }
     case 'running': return { label: 'RUNNING', color: 'suggestion' }
     case 'waiting-ci': return { label: 'WAITING CI', color: 'inactive' }
@@ -170,6 +170,11 @@ export type OrcaTerminal = { handle: string; title: string; connected: boolean; 
 /** One agent of `orca worktree ps --json`. Orca's hooks set state: working, waiting or blocked (on you), done. */
 type OrcaAgent = { paneKey?: string; state?: string; updatedAt?: number }
 
+/** A failed command's reason: the last line of its stderr, else its exit code. */
+function lastLine(stderr: string, exitCode: number): string {
+  return stderr.trim().split('\n').pop() || `exit ${exitCode}`
+}
+
 /** Why an orca command failed: it prints a JSON error on stdout, other failures go to stderr. */
 function orcaError(ran: { stdout: string; stderr: string; exitCode: number }): string {
   try {
@@ -178,7 +183,7 @@ function orcaError(ran: { stdout: string; stderr: string; exitCode: number }): s
   } catch {
     // not JSON: fall through to stderr
   }
-  return ran.stderr.trim().split('\n').pop() || `exit ${ran.exitCode}`
+  return lastLine(ran.stderr, ran.exitCode)
 }
 
 /**
@@ -294,7 +299,7 @@ async function refresh($: EngineInterface, withGithub: boolean): Promise<void> {
 
 /** Why `tower state --json` failed, from its stderr; an old tower without the core says so. */
 function stateError(stderr: string, exitCode: number): string {
-  const last = stderr.trim().split('\n').pop() || `exit ${exitCode}`
+  const last = lastLine(stderr, exitCode)
   return stderr.includes('run-tower.py') ? `${last} (the pane needs tower 0.9.0 or later: claude plugin update tower@tower)` : last
 }
 
@@ -305,10 +310,8 @@ async function scanOnce($: EngineInterface): Promise<void> {
     await update($, scanAtom, () => ({ ok: false, state: null, error, at, items: [] }))
     $.ui.status(undefined)
   }
-  if (towerRoot === null) {
-    towerRoot = await locateTower($)
-    if (towerRoot === null) return failed('tower plugin not installed or disabled (claude plugin list)')
-  }
+  if (towerRoot === null) towerRoot = await locateTower($)
+  if (towerRoot === null) return failed('tower plugin not installed or disabled (claude plugin list)')
   // The session's own folder is the process's working folder, so `tower state` reports this repo.
   const ran = await $.process.run(['python3', '-I', `${towerRoot}/scripts/run-tower.py`, 'state', '--json'], { timeoutMs: 30_000 })
   if (ran.exitCode !== 0) return failed(stateError(ran.stderr, ran.exitCode))
@@ -320,7 +323,7 @@ async function scanOnce($: EngineInterface): Promise<void> {
   }
   if (!Array.isArray(state.worktrees)) return failed('tower state printed JSON without worktrees (its format may have changed)')
 
-  const items = needItems(state)
+  const items = toastLabels(state)
   await update($, scanAtom, () => ({ ok: true, state, error: '', at, items }))
   await readBacklog($, state.ledger)
 
@@ -334,12 +337,19 @@ async function scanOnce($: EngineInterface): Promise<void> {
   lastItems = items
 }
 
-/** Reads the ledger's parked ideas (_backlog.md); none when there's no ledger or no file yet. */
+/** Reads the ledger's parked ideas (_backlog.md): none without a ledger or the file; any other failure is kept. */
 async function readBacklog($: EngineInterface, ledger: string | null): Promise<void> {
-  const text = ledger === null ? '' : await $.fs.read(`${ledger}/_backlog.md`).catch(() => '')
-  const lines = text.split('\n').filter(line => line.trim() !== '')
+  let backlog = { lines: [] as string[], error: '' }
+  if (ledger !== null) {
+    try {
+      backlog.lines = (await $.fs.read(`${ledger}/_backlog.md`)).split('\n').filter(line => line.trim() !== '')
+    } catch (error) {
+      // No backlog file yet is normal (nothing parked); anything else is shown, not swallowed.
+      if (!String(error).includes('ENOENT')) backlog = { lines: [], error: String(error).slice(0, 160) }
+    }
+  }
   const before = await read($, backlogAtom)
-  if (JSON.stringify(before) !== JSON.stringify(lines)) await update($, backlogAtom, () => lines)
+  if (JSON.stringify(before) !== JSON.stringify(backlog)) await update($, backlogAtom, () => backlog)
 }
 
 /** Runs hub-scan.sh in full for its GitHub section: the same PR and issue lines the hub reads. */
@@ -352,7 +362,7 @@ async function loadGithub($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   const ran = await $.process.run(['bash', `${towerRoot}/skills/hub/scripts/hub-scan.sh`], { timeoutMs: 90_000 })
   if (ran.exitCode !== 0) {
-    $.ui.toast(`Couldn't load GitHub: ${(ran.stderr.trim().split('\n').pop() ?? `exit ${ran.exitCode}`).slice(0, 120)}`)
+    $.ui.toast(`Couldn't load GitHub: ${lastLine(ran.stderr, ran.exitCode).slice(0, 120)}`)
     return
   }
   const section: GithubSection = { lines: sectionLines(ran.stdout, 'GITHUB'), at }
@@ -387,8 +397,8 @@ export const register: Register = on => {
   // A bare 0 in an empty prompt presses a band button; the band steps aside while a question's survey holds it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const state = (await read($, scanAtom))?.state
-    const own = state && sessionCwd ? worktreeAt(state, sessionCwd) : undefined
-    if (e.props.hasSurvey || !inOrca || !state || !own || own.is_main) return next(e)
+    const ownWorktree = state && sessionCwd ? worktreeAt(state, sessionCwd) : undefined
+    if (e.props.hasSurvey || !inOrca || !state || !ownWorktree || ownWorktree.is_main) return next(e)
     const { Box, Button } = $.ui.resolve(e)
     return (
       <Box>
@@ -400,11 +410,12 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Input, Text } = $.ui.resolve(e)
     const scan: Scan | null = await read($, scanAtom)
-    const stored = await read($, githubAtom)
+    const storedGithub = await read($, githubAtom)
     const parkCount = await read($, parkAtom)
     const backlog = await read($, backlogAtom)
-    if (scan === null) return <Text>Scanning…</Text>
-    if (!scan.ok || scan.state === null) {
+    // $.state outlives a reload: a scan stored by the pane before 0.7.0 has no `state` until the next scan replaces it.
+    if (scan === null || (scan.ok && !scan.state)) return <Text>Scanning…</Text>
+    if (!scan.ok || !scan.state) {
       return (
         <Box flexDirection="column">
           <Text color="error" weight="bold">tower scan failed: {scan.error}</Text>
@@ -415,11 +426,11 @@ export const register: Register = on => {
 
     const state = scan.state
     const now = scan.at
-    const github = stored ? parseGithub(stored.lines) : null
+    const github = storedGithub ? parseGithub(storedGithub.lines) : null
 
     // Each row is a fixed-width badge, then a column that wraps inside what's left of the pane: a
     // narrow pane gets more lines, each one starting under the name, never under the badge.
-    const badge = (status: string, isStale = false) => {
+    const badge = (status: Status | 'session-waiting', isStale = false) => {
       const { label, color } = badgeOf(status, isStale)
       return (
         <Box flexShrink={0}>
@@ -427,7 +438,7 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const row = (key: string, status: string, isStale: boolean, top: RenderChildren, detail: string) => (
+    const row = (key: string, status: Status | 'session-waiting', isStale: boolean, top: RenderChildren, detail: string) => (
       <Box key={key} flexDirection="row" columnGap={1}>
         {badge(status, isStale)}
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
@@ -454,6 +465,11 @@ export const register: Register = on => {
       const age = ageOf(updated, now)
       return age === '' ? 'card' : age === 'now' ? 'card just updated' : `card ${age} ago`
     }
+    // The card's age; when the effective state isn't what the card says, why (e.g. "...busy: you already answered").
+    const cardDetail = (w: StateWorktree) => {
+      const age = cardAge(w.card?.updated ?? '')
+      return w.card !== null && w.card.status !== w.status && w.reason !== '' ? `${age}, ${w.reason}` : age
+    }
     const ticket = (w: StateWorktree) => (w.card && w.card.ticket !== 'none' ? <Text>{w.card.ticket}</Text> : null)
     const hasNoCard = (w: StateWorktree) => !w.is_main && w.card === null
     const sessionsOf = (w: StateWorktree) => {
@@ -464,16 +480,7 @@ export const register: Register = on => {
 
     const needs = needsYou(state)
     const others = state.worktrees.filter(w => w.status !== 'needs-you')
-    const housekeeping = [
-      ...state.worktrees.flatMap(w => {
-        const n = w.sessions.filter(s => s.kind === 'interactive').length
-        return n > 1 ? [`${w.label}: ${n} sessions share one worktree${w.is_main ? ' (one is the hub)' : ' (rule: one each)'}`] : []
-      }),
-      ...state.worktrees.filter(w => w.stale).map(w => `${w.label}: card not updated in over a day`),
-      ...state.worktrees.filter(hasNoCard).map(w => `${w.label}: no card yet`),
-      ...state.worktrees.filter(w => w.status === 'ready-to-clean').map(w => `${w.label}: ready to clean up (${w.reason})`),
-      ...state.orphan_cards.map(o => `${o.name}: card left over from a removed worktree`),
-    ]
+    const housekeeping = state.housekeeping.map(item => `${item.label}: ${item.note}`) // the hub's own list
     const issues = github?.issues ?? []
     const moreIssues = issues.length - Math.min(issues.length, ISSUES_SHOWN)
     let hotkey = 0 // 1-9 on the Needs you rows
@@ -510,10 +517,10 @@ export const register: Register = on => {
           if (first) {
             // Answer it in its own session: the pop-up there has every option (free text, "chat about this").
             const more = waiting.length > 1 ? ` (+${waiting.length - 1} more waiting)` : ''
-            return row(`need-${w.label}`, 'waiting', false, top, `${first.name}: ${waitingNote(first)}${more}`)
+            return row(`need-${w.label}`, 'session-waiting', false, top, `${first.name}: ${waitingNote(first)}${more}`)
           }
           // Needs you with no session waiting here: the card says so (or sessions came from the event log).
-          const detail = w.card ? (w.card.status === 'needs-you' ? cardAge(w.card.updated) : `${cardAge(w.card.updated)}, ${w.reason}`) : w.reason
+          const detail = w.card ? cardDetail(w) : w.reason
           return row(`need-${w.label}`, 'needs-you', false, top, detail)
         })}
         {needs.length > 0 && <Text italic wrap="wrap">Click a name or press 1-9 to jump to its waiting terminal in Orca and answer there; press 0 there to come back.</Text>}
@@ -529,10 +536,7 @@ export const register: Register = on => {
             w.card ? cardLink(w) : null,
             canNudge ? <Button key={`nudge-${w.label}`} plain dimColor label="nudge" onPress={() => void nudge($, names)} /> : null,
           ]
-          // When the effective state isn't what the card says, say why (e.g. "...busy: you already answered").
-          const overruled = w.card !== null && w.card.status !== w.status && w.reason !== ''
-          const age = w.card ? (overruled ? `${cardAge(w.card.updated)}, ${w.reason}` : cardAge(w.card.updated)) : ''
-          const detail = [age, sessionsOf(w)].filter(Boolean).join(' · ')
+          const detail = [w.card ? cardDetail(w) : '', sessionsOf(w)].filter(Boolean).join(' · ')
           return row(`wt-${w.label}`, w.status, w.stale, top, detail)
         })}
 
@@ -562,7 +566,7 @@ export const register: Register = on => {
           </Box>
         ))}
         {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= HUB_SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
-        {stored && <Text italic>{`as of ${clockTime(stored.at)}`}</Text>}
+        {storedGithub && <Text italic>{`as of ${clockTime(storedGithub.at)}`}</Text>}
 
         {gap()}
         <Input
@@ -576,9 +580,10 @@ export const register: Register = on => {
             void update($, parkAtom, n => n + 1) // a new key draws a fresh, empty field
           }}
         />
-        {backlog.length > 0 && gap()}
-        {backlog.length > 0 && title(`Parked ideas (${backlog.length})`)}
-        {backlog.map(item => bullet(`idea-${item}`, ' ', item.replace(/^- /, '')))}
+        {(backlog.lines.length > 0 || backlog.error !== '') && gap()}
+        {backlog.lines.length > 0 && title(`Parked ideas (${backlog.lines.length})`)}
+        {backlog.error !== '' && <Text color="error" wrap="wrap">{`Couldn't read the parked ideas: ${backlog.error}`}</Text>}
+        {backlog.lines.map(item => bullet(`idea-${item}`, ' ', item.replace(/^- /, '')))}
       </Box>
     )
   })

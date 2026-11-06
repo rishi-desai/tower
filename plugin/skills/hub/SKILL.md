@@ -37,7 +37,7 @@ When the user wants to start something new and the scan says `AT LIMIT`, say so 
 
 ## 4. Discuss or park an idea
 
-The hub is where new work gets discussed, not only tracked. An idea mentioned mid-flow ("oh, also the worm theme", or "park: <idea>") gets parked straight away, as before. When the user wants to talk it through ("discuss: <idea>"), discuss it. "discuss #N" (typed, or sent by the pane's `discuss #N` button on an issue that isn't `ready-for-agent`) means the same for an existing issue: read it with `gh issue view <n>` first, and end by speccing that issue (`/to-spec` on it) rather than parking a new one.
+The hub is where new work gets discussed, not only tracked. An idea mentioned mid-flow ("oh, also the worm theme", or "park: <idea>") gets parked straight away, as before. When the user wants to talk it through ("discuss: <idea>"), discuss it. "discuss #N" (typed, or sent by the pane's `discuss #N` button on an issue that isn't `ready-for-agent`) is the same discussion for an issue that already exists: read it with `gh issue view <n>` first, discuss it as below, then write what was settled back to #N (edit its body, or add a comment) and label it `ready-for-agent`, or leave it unlabelled if the discussion shows it isn't ready. Don't create a new issue for it. Each of those is an issue write, so it asks for approval.
 
 You may read code here to inform the discussion, but you run in the main checkout: edit nothing and commit nothing on main. That includes GLOSSARY.md and ADRs (architecture decision records); domain decisions go in the spec, and the worker records them in its branch.
 

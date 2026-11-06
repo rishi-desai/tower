@@ -1,5 +1,8 @@
-/** One Claude session open in a worktree, as `tower state --json` lists it. activity: busy, waiting (on you) or idle. */
-export type StateSession = { name: string; kind: string; activity: string; waiting_for: string }
+/** A worktree's effective state, as src/tower/state.py's STATUSES name them. */
+export type Status = 'needs-you' | 'running' | 'waiting-ci' | 'blocked' | 'done' | 'ready-to-clean' | 'no-card' | 'main'
+
+/** One Claude session open in a worktree, as `tower state --json` lists it. waiting means waiting on you. */
+export type StateSession = { name: string; kind: string; activity: 'busy' | 'waiting' | 'idle'; waiting_for: string }
 
 /** One worktree of `tower state --json`: its effective state (status), why (reason), and the facts behind it. */
 export type StateWorktree = {
@@ -7,8 +10,7 @@ export type StateWorktree = {
   branch: string | null
   path: string
   is_main: boolean
-  /** needs-you, running, waiting-ci, blocked, done, ready-to-clean, no-card or main. */
-  status: string
+  status: Status
   reason: string
   holds_slot: boolean
   /** What the card itself says; null without one. */
@@ -38,6 +40,8 @@ export type TowerState = {
   worktrees: StateWorktree[]
   unshipped: Array<{ label: string; commits: number }>
   orphan_cards: Array<{ name: string; status: string; path: string }>
+  /** The cleanup the hub suggests (its Housekeeping group): a worktree or orphan card's label and what to do. */
+  housekeeping: Array<{ label: string; note: string }>
 }
 
 /** One run of `tower state --json`, as the pane draws it. */
@@ -63,8 +67,8 @@ declare module 'claude-code' {
       scan: Scan | null
       github: GithubSection | null
       park: number
-      /** The ledger's _backlog.md lines, read with each scan. */
-      backlog: string[]
+      /** The ledger's _backlog.md lines, read with each scan; error says why it couldn't be read ('' when it could). */
+      backlog: { lines: string[]; error: string }
     }
   }
 }

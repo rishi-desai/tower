@@ -214,5 +214,19 @@ export const SHARED: TowerState = {
       "status": "done",
       "path": "/vault/repo/Ledger/feat__2-gone.md"
     }
+  ],
+  "housekeeping": [
+    {
+      "label": "feat-1",
+      "note": "no card"
+    },
+    {
+      "label": "feat-5",
+      "note": "no card"
+    },
+    {
+      "label": "feat__2-gone",
+      "note": "orphan card (worktree gone), status: done"
+    }
   ]
 }

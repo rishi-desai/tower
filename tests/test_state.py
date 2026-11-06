@@ -375,6 +375,14 @@ def test_the_pane_is_tested_on_tower_states_own_output(repo: Fixture, capsys: py
     }
 
 
+def test_the_panes_issue_limit_matches_hub_scans() -> None:
+    """The pane says "+ N or more" when hub-scan.sh listed as many issues as its `gh issue list --limit` allows."""
+    pane = (ROOT / "pane" / "hooks" / "register.tsx").read_text(encoding="utf-8")
+    limit = pane.split("const HUB_SCAN_ISSUE_LIMIT = ")[1].split(" ")[0]
+    assert HUB_SCAN.read_text(encoding="utf-8").count(f'issue list --assignee "@me" --state open --limit {limit}') == 1
+    assert HUB_SCAN.read_text(encoding="utf-8").count(f"issue list --state open --limit {limit}") == 1
+
+
 def test_the_hub_groups_the_shared_fixture_as_the_pane_does(repo: Fixture) -> None:
     """hub-scan.sh's GROUPS (what the hub reports from) put the same worktrees under NEEDS YOU and RUNNING as the
     statuses in the pane's fixture: the hub and the pane can't disagree."""

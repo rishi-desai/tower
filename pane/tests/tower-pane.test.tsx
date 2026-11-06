@@ -3,6 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { StateWorktree, TowerState } from '../types'
+import { parseGithub } from '../hooks/register'
 import { SHARED } from './fixtures/tower-state'
 
 // SHARED is `tower state --json`'s real output for the fixture in tests/test_state.py, which checks it: feat-3's card
@@ -23,16 +24,15 @@ const CALM = variant(w => w.status !== 'needs-you' ? w : {
 })
 
 // hub-scan.sh's GitHub section (only Refresh GitHub runs it): one PR, twelve open issues, one ready for an agent.
-const ISSUES = Array.from({ length: 11 }, (_, i) => `- #${60 - i} idea ${60 - i}`)
-const GITHUB_REPORT = `REPO: repo
+const ISSUES = ['- #61 Copilot: analyst [level] calls [ready-for-agent] [enhancement]', ...Array.from({ length: 11 }, (_, i) => `- #${60 - i} idea ${60 - i}`)]
+const githubReport = (issues: string[]) => `REPO: repo
 
 == GITHUB ==
 repo: me/repo | you: me
 -- my open PRs --
 - #57 Alert copilot [feat/37-copilot] review:none
 -- open issues (all — your repo) --
-- #61 Copilot: analyst [level] calls [ready-for-agent] [enhancement]
-${ISSUES.join('\n')}
+${issues.join('\n') || '(none)'}
 
 == BACKLOG (parked ideas) ==
 (empty)
@@ -69,6 +69,7 @@ const BAND = {
 
 type World = {
   state: TowerState
+  issues: string[]
   stateRun: { exitCode: number; stderr: string } | null
   orcaPs: unknown
   statuses: (string | undefined)[]
@@ -76,12 +77,13 @@ type World = {
   argvs: string[][]
   files: Record<string, string>
   writes: string[]
+  readError?: string
   clock: ReturnType<typeof mock.clock>
 }
 
 /** The engine beneath the mod: canned commands, captured status line, toasts and file writes. */
 function world(on: On, state: TowerState, env: Record<string, string> = {}): World {
-  const w: World = { state, stateRun: null, orcaPs: ORCA_PS, statuses: [], toasts: [], argvs: [], files: {}, writes: [], clock: mock.clock(on, { now: 0 }) }
+  const w: World = { state, issues: ISSUES, stateRun: null, orcaPs: ORCA_PS, statuses: [], toasts: [], argvs: [], files: {}, writes: [], clock: mock.clock(on, { now: 0 }) }
   mock.env(on, env)
   on('ui.open', () => ({ value: { isPlaced: true } }))
   // The engine's own band above the prompt, drawn when no plugin draws one.
@@ -104,13 +106,13 @@ function world(on: On, state: TowerState, env: Record<string, string> = {}): Wor
     if (e.argv[0] === 'claude') return ok(JSON.stringify([{ id: 'tower@tower', enabled: true, installPath: '/tower' }]))
     if (e.argv[0] === 'git') return ok('true\n')
     if (e.argv[0] === 'python3') return w.stateRun ? ran(w.stateRun.exitCode, '', w.stateRun.stderr) : ok(JSON.stringify(w.state))
-    if (e.argv[0] === 'bash') return ok(GITHUB_REPORT)
+    if (e.argv[0] === 'bash') return ok(githubReport(w.issues))
     if (e.argv[0] === 'orca' && e.argv[2] === 'list') return ok(JSON.stringify({ ok: true, result: { terminals: ORCA_TERMINALS } }))
     if (e.argv[0] === 'orca' && e.argv[1] === 'worktree') return w.orcaPs === null ? ran(1, '', 'orca: not running') : ok(JSON.stringify(w.orcaPs))
     if (e.argv[0] === 'orca' || e.argv[0] === 'open') return ok('{"ok":true}')
     return ran(127, '', `unexpected command ${e.argv.join(' ')}`)
   })
-  on('fs.read', (_, e) => (e.path in w.files ? { value: w.files[e.path] ?? '' } : { deny: 'ENOENT' }))
+  on('fs.read', (_, e) => (e.path in w.files ? { value: w.files[e.path] ?? '' } : { deny: w.readError ?? 'ENOENT: no such file' }))
   on('fs.write', (_, e) => {
     w.writes.push(e.path)
     return { value: undefined }
@@ -145,15 +147,20 @@ test('the pane draws tower state: what needs you, the WIP count, and every workt
   expect(await ui.find({ type: 'Text', text: /^w8: approve Bash$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^w9: input needed$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^card just updated$/ })).toBeTruthy() // feat-3
-  expect(await ui.find({ type: 'Button', key: 'orca-feat-9' })).toBeTruthy()
+  // 1-9 press the Needs you rows' names in order (the kit presses by key; the engine maps the hotkey to the same press).
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-3' }))?.props.hotkey).toBe('1')
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-8' }))?.props.hotkey).toBe('2')
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-9' }))?.props.hotkey).toBe('3')
+  expect((await ui.find({ type: 'Button', key: 'orca-feat-1' }))?.props.hotkey).toBeUndefined() // Worktrees rows have none
   // Worktrees: the core's status, and its reason where it overrules the card.
   expect((await ui.findAll({ type: 'Text', text: /^ RUNNING\s*$/ })).length).toBe(2)
   expect(await ui.find({ type: 'Text', text: /^card just updated, the card says needs-you but session w7 is busy: you already answered · busy session w7$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^busy session w1$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^idle session w5$/ })).toBeTruthy()
   // Housekeeping, and the parked ideas from the ledger.
-  expect(await ui.find({ type: 'Text', text: /feat-5: no card yet/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /feat__2-gone: card left over/ })).toBeTruthy()
+  // Housekeeping is the core's own list (the hub's Housekeeping group), drawn as it comes.
+  expect(await ui.find({ type: 'Text', text: /^feat-5: no card$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^feat__2-gone: orphan card \(worktree gone\), status: done$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /worm theme for the dashboard/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /\/p\/worktrees/ })).toBeUndefined() // no paths in the pane
   expect(await ui.find({ type: 'Text', text: /Press Refresh GitHub/ })).toBeTruthy()
@@ -315,6 +322,39 @@ function actions(on: On): Acts {
   })
   return acts
 }
+
+test('with no open issues the GitHub section has no issue rows and no "+ more"', async ($, on) => {
+  const w = world(on, SHARED)
+  w.issues = []
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'github' })
+  expect(await ui.find({ type: 'Text', text: /^Open issues \(0\)/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'discuss-60' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /more$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('parseGithub reads PRs and every issue, ready or not', () => {
+  const github = parseGithub(['-- my open PRs --', '- #57 Alert [feat/x] review:none', '-- open issues (all — your repo) --', ...ISSUES.slice(0, 3), '(gh failed: rate limited)'])
+  expect(github.prs).toEqual(['#57 Alert [feat/x] review:none'])
+  expect(github.issues).toEqual([
+    { number: '61', title: 'Copilot: analyst [level] calls', isReady: true },
+    { number: '60', title: 'idea 60', isReady: false },
+    { number: '59', title: 'idea 59', isReady: false },
+  ])
+  expect(github.note).toBe('(gh failed: rate limited)')
+  expect(parseGithub(['-- open issues assigned to you --', '(none)']).issues).toEqual([])
+})
+
+test('a backlog that cannot be read says why instead of showing nothing', async ($, on) => {
+  const w = world(on, SHARED)
+  w.readError = 'EACCES: permission denied'
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Couldn't read the parked ideas: / }))?.text).toContain('EACCES')
+  await ui.unmount()
+})
 
 test("What's next? and Park send requests to this session's Claude", async ($, on) => {
   const acts = actions(on)
