@@ -225,7 +225,7 @@ if args[:3] == ["pr", "view", "5"]:
 elif args[:2] == ["pr", "view"]:
     sys.exit("no pull requests found for branch \\"feat\\"")
 elif args[:4] == ["api", "--hostname", "github.com", "repos/acme/widget/pulls/5"]:
-    print(json.dumps({{"number": 5, "state": "open", "merged": False, "base": {{"ref": "main"}},
+    print(json.dumps({{"number": 5, "state": "open", "merged": False, "base": {{"ref": "main", "repo": {{"default_branch": "main"}}}},
                       "head": {{"ref": "feat", "sha": "abc", "repo": {{"full_name": "acme/widget"}}}},
                       "stack": {{"base": {{"ref": "main"}}, "position": 1, "size": 2}} if stacked else None}}))
 elif args[-6:-2] == ["-f", "state=open", "-f", "base=feat"] or args[-6:-2] == ["-f", "state=closed", "-f", "base=feat"]:

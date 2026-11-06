@@ -9,7 +9,7 @@ Terms used below:
 
 - A **GitHub stack** is GitHub's own grouping of PRs: the REST PR object gets a `stack` field
   (`{"base":{"ref":"main"},"position":2,"size":3,...}`).
-- A **plain chain** is PRs whose bases chain (`feat2 -> feat1 -> main`) without being a GitHub stack.
+- **Chained PRs** are PRs whose bases chain (`feat2 -> feat1 -> main`) without being a GitHub stack.
 - **merge-async** is `PUT /repos/{o}/{r}/pulls/{n}/merge-async`, GitHub's asynchronous merge API. Its status is
   polled at `GET .../merge-async/{uuid}`.
 - To **retarget** a PR is to change its base branch.
@@ -60,7 +60,7 @@ Terms used below:
    stacked PR's base can't be edited by hand (the spike's `Cannot change the base branch because the pull request is
    part of a stack`).
 
-5. **Deleting a branch through the API closes the open PRs based on it.** On a plain chain, `gh pr merge 1 --squash
+5. **Deleting a branch through the API closes the open PRs based on it.** On chained PRs, `gh pr merge 1 --squash
    --delete-branch` (the path workers used) deleted `feat1`, and GitHub *closed* #2 instead of retargeting it:
 
    ```text
@@ -69,7 +69,7 @@ Terms used below:
    ```
 
    With the repo's "Automatically delete head branches" on, GitHub's own delete retargets them instead, both for a
-   stack (#6 moved to `main`, open) and for a plain chain (#9 moved to `main`, open, head unchanged).
+   stack (#6 moved to `main`, open) and for chained PRs (#9 moved to `main`, open, head unchanged).
 
 6. **gh api prints GitHub's error body on stdout** and its own one-line summary on stderr (`gh: ... (HTTP 403)`),
    with exit 1. `tower merge` reads GitHub's message from stdout.
@@ -85,13 +85,15 @@ Terms used below:
 - **Method, with no setting:** a merge commit for a stacked PR, for a PR with open PRs based on its branch (a plain
   chain), and for a PR whose head other PRs were merged into (an integration branch, like `integration/a-plus ->
   main`). A squash for every other PR. If the repo allows no merge commits: a squash (a rebase if squashes are off
-  too), and it says so. Checked here:
+  too), and it says so; an integration branch is never squashed: it isn't merged then. Checked here:
   - a stack's bottom PR got a merge commit;
   - a lone PR got a squash and its branch deleted;
   - `integ -> main`, after two PRs were squash-merged into `integ`, got a merge commit. The per-ticket commits
     `i1 ticket (#16)` and `i2 ticket (#17)` are on `main`, `integ` was kept, and it is an ancestor of `main`.
+- **Refused:** an upper PR of a stack, and a PR based on a chained branch whose own PR already merged (it would land
+  on that branch, not `main`): `tower merge` prints the `gh pr edit` that moves it first.
 - **Branch delete:** only when no open PR is based on the branch. For a stacked PR it waits up to 2 minutes for
-  GitHub's retarget. On a plain chain it never waits, since GitHub won't retarget there. It leaves the branch and
+  GitHub's retarget. On chained PRs it never waits, since GitHub won't retarget there. It leaves the branch and
   says how to move the PRs above (`gh pr edit 11 --base main`); a rerun then deletes it (checked). An integration
   branch is always kept. A branch that moved since the merge is kept. A repo that deletes head branches itself is
   left to do it.
@@ -110,7 +112,7 @@ each merge commit's first parent is the previous merge. CI didn't run again betw
 against its stacked base, and since every PR holds the one below it, the final tree equals the tested top of the
 stack.
 
-That fits a plain chain retargeted by GitHub's own branch delete, which keeps the PR's head (point 5). For a GitHub
+That fits chained PRs retargeted by GitHub's own branch delete, which keeps the PR's head (point 5). For a GitHub
 stack, GitHub rebases the PRs above after each merge (point 4), so their heads are new commits. Whether required
 checks then have to pass again before the next merge is **untested** (see below).
 
@@ -155,12 +157,12 @@ checks then have to pass again before the next merge is **untested** (see below)
 With a throwaway private repo `OWNER/REPO` (`gh repo create OWNER/REPO --private`) and git-spice 0.33.0
 (`mise install aqua:abhinav/git-spice@0.33.0`):
 
-1. Plain chain: open `feat1 -> main`, `feat2 -> feat1` with `gh pr create`; read `gh api repos/OWNER/REPO/pulls/N
+1. Chained PRs: open `feat1 -> main`, `feat2 -> feat1` with `gh pr create`; read `gh api repos/OWNER/REPO/pulls/N
    --jq .stack` (null); run `tower merge` from a worktree on `feat1`.
 2. Stack: `git-spice repo init`, three `git-spice branch create`, `git-spice stack submit --fill --no-draft
    --nav-comment=false`; read each PR's `.stack`; run `tower merge` on the top PR (refused), then on the bottom.
 3. Turn on `delete_branch_on_merge` (`gh api -X PATCH repos/OWNER/REPO -F delete_branch_on_merge=true`) and merge
-   the next PR, with `tower merge` and with a plain chain.
+   the next PR, with `tower merge` and with chained PRs.
 4. Merge a stack's bottom with `merge_method=merge` and compare the upper heads' SHAs and trees before and after.
 5. Integration branch: squash-merge two PRs into `integ`, then `tower merge` the `integ -> main` PR.
 6. `gh repo archive -y OWNER/REPO`.

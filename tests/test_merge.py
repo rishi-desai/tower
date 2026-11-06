@@ -46,6 +46,8 @@ class FakeGitHub:
     queued: bool = False  # the PR is already in a merge queue: GitHub answers the merge request with enqueued
     allow_merge_commit: bool = True  # the repo's setting; squash is always allowed here
     list_fails: bool = False  # listing PRs by base fails
+    poll_fails: bool = False  # reading a merge-async's status fails
+    settings_fail: bool = False  # reading the repo's settings fails
     methods: list[str] = field(default_factory=list)  # each merge's method: merge, squash or rebase
     calls: list[list[str]] = field(default_factory=list)
     branches: dict[str, str] = field(default_factory=dict)
@@ -94,14 +96,23 @@ class FakeGitHub:
         parts = endpoint.split("/")
         assert parts[:3] == ["repos", *REPO.split("/")], endpoint
         rest = parts[3:]
+        if not rest and self.settings_fail:
+            return GhResult(1, '{"message":"Server Error"}', "gh: Server Error (HTTP 502)")
         if not rest:
             settings = {"delete_branch_on_merge": self.delete_on_merge, "allow_merge_commit": self.allow_merge_commit}
             return ok({"full_name": REPO, "allow_squash_merge": True, **settings})
         if rest[0] == "pulls" and len(rest) == 1 and self.list_fails:
             return GhResult(1, '{"message":"Server Error"}', "gh: Server Error (HTTP 502)")
-        if rest[0] == "pulls" and len(rest) == 1 and fields["state"] == "closed":
-            closed = [p for p in self.pulls if p.state == "closed" and p.base == fields["base"]]
-            return ok([{"number": p.number, "merged_at": "2026-11-06T10:00:00Z" if p.merged else None} for p in closed])
+        if rest[0] == "pulls" and len(rest) == 1 and fields["state"] == "closed":  # by base, or by head (owner:branch)
+            closed = [p for p in self.pulls if p.state == "closed"]
+            if "head" in fields:
+                assert fields["head"].startswith("acme:"), fields
+                closed = [p for p in closed if p.head == fields["head"].removeprefix("acme:")]
+            else:
+                closed = [p for p in closed if p.base == fields["base"]]
+            merged_at = "2026-11-06T10:00:00Z"
+            return ok([{"number": p.number, "base": {"ref": p.base}, "merged_at": merged_at if p.merged else None}
+                       for p in closed])  # fmt: skip
         if rest[0] == "pulls" and len(rest) == 1:
             assert method == "GET" and fields["state"] == "open"
             self.list_reads += 1
@@ -147,6 +158,8 @@ class FakeGitHub:
         }
 
     def merge_async(self, pull: FakePull, method: str, fields: dict[str, str], rest: list[str]) -> GhResult:
+        if rest and self.poll_fails:
+            return GhResult(1, '{"message":"Server Error"}', "gh: Server Error (HTTP 502)")
         if rest:  # GET .../merge-async/{uuid}: the merge's status
             self.polls += 1
             if self.polls < self.merge_polls:
@@ -442,13 +455,60 @@ def test_a_repo_without_merge_commits_gets_a_squash_and_says_so() -> None:
     said = run(github)
 
     assert github.methods == ["squash"]
-    assert any("doesn't allow merge commits" in line for line in said)
+    assert any("allows no merge commits" in line for line in said)
 
 
 def test_nothing_is_merged_when_github_cant_list_the_prs_based_on_the_branch() -> None:
     github = FakeGitHub([FakePull(1, base="main", head="feat")], list_fails=True)
 
     with pytest.raises(merge.MergeError, match="nothing was merged"):
+        run(github)
+
+    assert not github.pull(1).merged
+
+
+def test_a_pr_based_on_a_chained_branch_whose_pr_merged_is_refused_until_it_is_moved() -> None:
+    """Merging it would put it on feat1, which is already merged: its commits would never reach main."""
+    github = FakeGitHub(chain())
+    run(github)  # feat1's PR: merged, feat1 kept since #2 is based on it
+
+    with pytest.raises(merge.MergeError) as raised:
+        run(github, pr=2)
+
+    assert "PR #2 is based on feat1, whose PR #1 is already merged" in str(raised.value)
+    assert "gh pr edit 2 --base main" in str(raised.value)
+    assert not github.pull(2).merged
+
+
+def test_a_pr_into_an_integration_branch_that_once_merged_into_main_is_still_merged() -> None:
+    github = FakeGitHub([*integration(), FakePull(61, base="integration/a-plus", head="fix-d")])
+    run(github, pr=60)  # integration/a-plus -> main
+
+    run(github, pr=61)
+
+    assert github.pull(61).merged and github.methods == ["merge", "squash"]
+
+
+def test_an_integration_branch_is_never_squashed_even_when_the_repo_allows_no_merge_commits() -> None:
+    github = FakeGitHub(integration(), allow_merge_commit=False)
+
+    with pytest.raises(merge.MergeError, match="allows no merge commits.*per-ticket commits"):
+        run(github, pr=60)
+
+    assert not github.pull(60).merged
+
+
+def test_a_status_that_cant_be_read_says_still_merging_not_failed() -> None:
+    github = FakeGitHub(stack(), merge_polls=3, poll_fails=True)
+
+    with pytest.raises(merge.StillMerging, match="couldn't read .*Server Error.*run tower merge 1 again"):
+        run(github)
+
+
+def test_nothing_is_merged_when_the_repos_settings_cant_be_read() -> None:
+    github = FakeGitHub([FakePull(1, base="main", head="feat")], settings_fail=True)
+
+    with pytest.raises(merge.MergeError, match="couldn't read acme/widget's merge settings.*nothing was merged"):
         run(github)
 
     assert not github.pull(1).merged

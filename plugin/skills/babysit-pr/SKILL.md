@@ -20,8 +20,9 @@ right.
 - **Merge with `tower merge`.** When the user asked you to merge, run
   `python3 -I <plugin>/scripts/run-tower.py merge <pr>` on its own, nothing
   chained before it (`<plugin>` is two folders up from this skill's directory,
-  as an absolute path). It picks the method (a merge commit for stacked and
-  integration-branch PRs, else a squash), deletes the branch when that's safe,
+  as an absolute path). It picks the method (a merge commit for stacked,
+  chained and integration-branch PRs, else a squash), deletes the branch when
+  that's safe,
   and merges PRs in a GitHub stack (bottom first, one per run), which
   `gh pr merge` can't. Exit 3 means GitHub is still merging: run it again.
 - **Wait with `--until green`** (the default here). It waits on the repo's own

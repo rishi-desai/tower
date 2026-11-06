@@ -885,6 +885,9 @@ def test_no_gh_lookup_when_both_merge_keys_agree(widget: Path) -> None:
         ('gh pr merge https://github.com/acme/widget/pull/5 -R "$X"', True),
         ("gh api -X POST repos/{owner}/{repo}/issues -f title=x", False),  # gh's placeholders: this repo
         ("gh api -X POST repos/acme/widget/issues -f title=x", False),
+        ("tower merge 5", False),
+        ("GH_REPO=acme/other tower merge 5", True),  # gh in tower merge reads GH_REPO too: the strictest
+        (f"env GH_HOST=ghe.example.com {T} merge 5", True),
     ],
 )
 def test_a_gh_command_naming_another_repo_gets_the_stricter_policy(

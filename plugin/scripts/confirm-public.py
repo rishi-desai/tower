@@ -138,8 +138,8 @@ GH_WRITE_SUBCOMMANDS = {
     "release": {"create", "edit", "delete", "upload", "delete-asset"},
     "label": {"create", "edit", "delete", "clone"},
 }
-# Not a policy key: a merge is judged by merge_to_main or merge_to_branch once its PR's base is known.
-MERGE = "merge (by the PR's base)"
+# Not a policy key: a merge is judged by merge_to_main or merge_to_branch once the branch its PR lands on is known.
+MERGE = "merge (by where the PR lands)"
 # The policy key each gh write is judged by; a group's other writes are under its "*" entry. None (release and label
 # writes, and locking a PR's conversation, which pr_approval=none never let through) asks unless every GitHub key is
 # auto.
@@ -863,7 +863,7 @@ class CommandChecker:
             return [r for arg in args if re.search(r"[\s;|&]", arg.text) for r in self.check(arg.text, depth + 1)]
         if is_language:  # code in another language: check the git/gh commands and tower merges written inside it
             if any(re.search(r"\s", arg.text) and TOWER_MERGE_CODE.search(arg.text) for arg in args):
-                self.merges.append(PendingMerge("tower merge (in interpreter code)", self.gates_for([], []), False))
+                self.merges.append(PendingMerge("tower merge (in interpreter code)", self.tower_gates(), False))
             return [
                 r for arg in args for m in EMBEDDED_COMMAND.finditer(arg.text) for r in self.check(m.group(), depth + 1)
             ]
@@ -894,7 +894,14 @@ class CommandChecker:
             and all(not word.dynamic and PR_NUMBER.fullmatch(word.text) for word in after)
         )
         selector = after[0].text if readable and after else None
-        self.merges.append(PendingMerge("tower merge", self.gates_for([], []), readable, selector))
+        self.merges.append(PendingMerge("tower merge", self.tower_gates(), readable, selector))
+
+    def tower_gates(self) -> Gates:
+        """The gates for a tower merge: those of the repo it runs in, but the strictest when the line names GH_REPO or
+        GH_HOST, which point its gh calls at another repo, as for gh itself."""
+        if self.names_gh_env and self.session_policy.has_overrides:
+            return self.strictest_reached()
+        return self.gates_for([], [])
 
     def push_mode(self, git_args: list[Word]) -> str:
         """The push key for git run with GIT_ARGS: the stricter of the session's and that of every repo the push
@@ -1010,20 +1017,20 @@ class CommandChecker:
         )
 
     def merge_reasons(self) -> list[str]:
-        """Reasons to ask for the merges found. A merge whose two keys differ is judged by its PR's base, which gh is
-        asked for only when the merge is the whole command line and its arguments could be read; otherwise, or when
-        gh can't say, it asks unless both keys are auto."""
+        """Reasons to ask for the merges found. A merge whose two keys differ is judged by the branch its PR lands on,
+        which gh is asked for only when the merge is the whole command line and its arguments could be read;
+        otherwise, or when gh can't say, it asks unless both keys are auto."""
         reasons: list[str] = []
         for merge in self.merges:
             gates = merge.gates
-            target = None
+            landing = None
             if gates.merge_to_main != gates.merge_to_branch and merge.readable and self.simple_commands == 1:
-                target = merge_target(merge, self.cwd)
-            if target is None:
+                landing = landing_key(merge, self.cwd)
+            if landing is None:
                 asking = [key for key in ("merge_to_main", "merge_to_branch") if gates.asks(key)]
                 into = "into a base gh wasn't asked about or couldn't name"
             else:
-                key, stacked = target
+                key, stacked = landing
                 asking = [key] if gates.asks(key) else []
                 branch = "the default branch" if key == "merge_to_main" else "a branch other than the default"
                 into = f"onto its stack's base, {branch}" if stacked else f"into {branch}"
@@ -1142,7 +1149,7 @@ def gh_api_merge(args: list[Word], is_whole_command: bool) -> tuple[bool, str | 
     return False, None, None
 
 
-def merge_target(merge: PendingMerge, cwd: str) -> tuple[str, bool] | None:
+def landing_key(merge: PendingMerge, cwd: str) -> tuple[str, bool] | None:
     """The key MERGE is judged by, and whether its PR is in a GitHub stack; None if gh can't say. The key is
     merge_to_main if the PR lands on its repo's default branch, else merge_to_branch. A PR lands on its base, but a
     stacked one on its stack's base: merging it merges every PR below it too. gh finds the PR the way the merge does

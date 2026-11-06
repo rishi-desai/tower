@@ -19,7 +19,14 @@ PRs whose bases chain (feat2 → feat1 → main), submitted as one stack (git-sp
 by one stay separate), which GitHub then groups into a stack of its own. GitHub merges a stacked PR only through its
 asynchronous merge API, and merging one merges every unmerged PR below it too, onto the stack's
 base (the branch the bottom PR targets). Workers merge a stack with `tower merge`, from the bottom, one PR at a time.
-_Avoid_: chain, train, dependent PRs
+_Avoid_: train, dependent PRs, chain (that is chained PRs)
+
+**Chained PRs**:
+PRs whose bases chain (feat2 → feat1 → main) without being a stack, as when each is opened on its own. GitHub moves
+the PR above a merged one onto the next base only when it deletes the merged branch itself; deleting that branch
+through the API (as `gh pr merge --delete-branch` does) closes the PR above instead. `tower merge` uses a merge commit
+for them and keeps the branch until the PR above is moved.
+_Avoid_: plain chain, stack (GitHub doesn't group them)
 
 **Adopt mode**:
 The hub's flow for a repo with work in flight that hasn't been brought under tower: one plan that gives every piece

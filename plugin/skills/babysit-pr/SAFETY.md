@@ -23,7 +23,7 @@ SHA-256 of the upstream files as reviewed:
   like `gh pr merge`.
 
 SHA-256 after patching:
-- `babysit-pr/SKILL.md` de3478331c2888bb284cf5ef37da4f4d772ee3495be471cb49458b530995066f
+- `babysit-pr/SKILL.md` 5af187ec41e1fc58b15384508c9a4ce7fd9f100f2009654138f3417129ee7cf5
 - `babysit-pr/scripts/pr-wait` 6ae4ef3f9761a5223e454d0f32a174919bd72711bc315992c5e842485009f229
 
 Re-check after any update: `shasum -a 256 plugin/skills/babysit-pr/SKILL.md plugin/skills/babysit-pr/scripts/pr-wait plugin/skills/leaving-pr-comments/SKILL.md`
