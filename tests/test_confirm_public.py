@@ -88,10 +88,16 @@ READS = [
 ]
 
 
-def run_hook(tmp_path: Path, call: object, push: str = "every", pr: str = "every") -> dict[str, object] | None:
-    """Run the hook on CALL with a tower.conf holding PUSH and PR; its decision, or None if it printed nothing."""
+def run_hook(
+    tmp_path: Path, call: object, push: str = "every", pr: str = "every", write_conf: bool = True
+) -> dict[str, object] | None:
+    """Run the hook on CALL with a tower.conf holding PUSH and PR (none at all if not WRITE_CONF).
+
+    Returns the hook's decision, or None if it printed nothing.
+    """
     conf = tmp_path / "tower.conf"
-    conf.write_text(f"push_approval={push}\npr_approval={pr}\n", encoding="utf-8")
+    if write_conf:
+        conf.write_text(f"push_approval={push}\npr_approval={pr}\n", encoding="utf-8")
     stdin = call if isinstance(call, str) else json.dumps(call)
     proc = subprocess.run(
         [sys.executable, "-I", str(HOOK)],
@@ -121,59 +127,59 @@ def bash(command: str) -> dict[str, object]:
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", ALWAYS_ASK)
 def test_github_writes_always_ask(tmp_path: Path, command: str, push: str) -> None:
+    """Comments, reviews, issue/release/label writes and gh api writes ask in every mode."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", PR_CHANGES)
 def test_pr_changes_ask_when_pr_approval_is_every(tmp_path: Path, command: str, push: str) -> None:
+    """A worker's own PR changes ask while pr_approval=every."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="every"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", PR_CHANGES)
 def test_pr_changes_pass_when_pr_approval_is_none(tmp_path: Path, command: str, push: str) -> None:
+    """pr_approval=none lets a worker open and merge its own PR without a prompt."""
     assert not asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", PUSHES)
 def test_plain_push_asks_only_when_push_approval_is_every(tmp_path: Path, command: str, push: str) -> None:
+    """A plain push asks under push_approval=every and passes under force and none."""
     assert asks(run_hook(tmp_path, bash(command), push=push)) == (push == "every")
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", FORCE)
 def test_force_push_asks_unless_push_approval_is_none(tmp_path: Path, command: str, push: str) -> None:
+    """Force pushes, deletes and +refspecs ask under every and force."""
     assert asks(run_hook(tmp_path, bash(command), push=push)) == (push != "none")
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", READS)
 def test_reads_pass(tmp_path: Path, command: str, push: str) -> None:
+    """Read-only commands print nothing, leaving the decision to Claude Code's rules."""
     assert run_hook(tmp_path, bash(command), push=push) is None
 
 
 @pytest.mark.parametrize("value", ["sometimes", ""])
 def test_unknown_push_approval_is_treated_as_every(tmp_path: Path, value: str) -> None:
+    """A push_approval value the hook doesn't know falls back to every, the safest mode."""
     assert asks(run_hook(tmp_path, bash("git push"), push=value))
 
 
 def test_unknown_pr_approval_is_treated_as_every(tmp_path: Path) -> None:
+    """A pr_approval value the hook doesn't know falls back to every."""
     assert asks(run_hook(tmp_path, bash("gh pr merge 5"), pr="whenever"))
 
 
 def test_missing_config_is_treated_as_every(tmp_path: Path) -> None:
-    proc = subprocess.run(
-        [sys.executable, "-I", str(HOOK)],
-        input=json.dumps(bash("git push")),
-        capture_output=True,
-        text=True,
-        env={"TOWER_CONF": str(tmp_path / "absent.conf"), "HOME": str(tmp_path)},
-        check=True,
-        timeout=10,
-    )
-    assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    """With no tower.conf at all, a push still asks."""
+    assert asks(run_hook(tmp_path, bash("git push"), write_conf=False))
 
 
 RULE_FILE_EDITS = [
@@ -193,6 +199,7 @@ RULE_FILE_COMMANDS = [
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize(("tool", "file_path"), RULE_FILE_EDITS)
 def test_edit_of_rule_file_asks(tmp_path: Path, tool: str, file_path: str, push: str) -> None:
+    """Edit/Write/MultiEdit of CLAUDE.local.md or ~/.claude/tower/rules/ always asks."""
     call = {"tool_name": tool, "tool_input": {"file_path": file_path}}
     assert asks(run_hook(tmp_path, call, push=push, pr="none"))
 
@@ -200,11 +207,13 @@ def test_edit_of_rule_file_asks(tmp_path: Path, tool: str, file_path: str, push:
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", RULE_FILE_COMMANDS)
 def test_command_naming_rule_file_asks(tmp_path: Path, command: str, push: str) -> None:
+    """Any Bash command naming a rule file asks, even one that only reads it."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
 @pytest.mark.parametrize("file_path", ["CLAUDE.md", "/repo/myCLAUDE.local.md", "/repo/.claude/settings.json"])
 def test_edit_of_other_files_passes(tmp_path: Path, file_path: str) -> None:
+    """Edits of files that only look like rule files pass."""
     assert run_hook(tmp_path, {"tool_name": "Edit", "tool_input": {"file_path": file_path}}) is None
 
 
@@ -218,12 +227,14 @@ def test_edit_of_other_files_passes(tmp_path: Path, file_path: str) -> None:
     ],
 )
 def test_passthrough(tmp_path: Path, call: object) -> None:
+    """Other tools, Bash calls without a command, and unparseable input pass silently."""
     assert run_hook(tmp_path, call) is None
 
 
-# Known bypasses, with push_approval and pr_approval both every: each gets no approval prompt today. T04 (#21, harden the approval hook) must
-# make them ask; xfail_strict in pyproject.toml fails the suite the moment one starts passing, so T04
-# removes the marker as it fixes each.
+# Known bypasses, with push_approval and pr_approval both every: each gets no approval prompt today.
+# T04 (#21, harden the approval hook) must make them ask. xfail_strict in pyproject.toml fails the suite
+# the moment one starts passing, so T04 removes the marker as it fixes each. raises=AssertionError keeps a
+# crashing hook from counting as an expected failure.
 BYPASSES = [
     pytest.param('git -C "/tmp/my repo" push origin x', id="git -C with a quoted path"),
     pytest.param("gh pr -R owner/repo comment 5 -b hi", id="gh -R after the subcommand"),
@@ -233,7 +244,8 @@ BYPASSES = [
 ]
 
 
-@pytest.mark.xfail(reason="known bypass, fixed by T04 (#21)")
+@pytest.mark.xfail(raises=AssertionError, reason="known bypass, fixed by T04 (#21)")
 @pytest.mark.parametrize("command", BYPASSES)
 def test_known_bypass_asks(tmp_path: Path, command: str) -> None:
+    """Each known bypass should ask; today it doesn't."""
     assert asks(run_hook(tmp_path, bash(command), push="every", pr="every"))
