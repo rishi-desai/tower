@@ -18,6 +18,9 @@ recent events stand in), then the card, then git and, when asked, the PR. An exe
 counts) is a worktree other than the main checkout whose effective state is running or needs-you, so a busy worker
 with no card counts and a worker only waiting on CI doesn't.
 
+Around the statuses, the report also carries the pairs of worktrees that changed the same files (conflicts.py), which
+the hub lists under Housekeeping.
+
 Every fact source degrades to "unknown" instead of failing: no `claude` CLI, no ledger, no `gh`. The note fields say
 which ones were missing. `tower scan` (scan.py) prints this report inside the hub's scan, which the plugin runs through
 plugin/scripts/run-tower.py under whatever `python3` it finds, so it stays 3.9-compatible, like the modules the hooks

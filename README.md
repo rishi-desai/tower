@@ -38,6 +38,7 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
 - **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR).
+- **File overlaps**: `tower state` also checks every pair of worktrees (not the main checkout) for files both changed, from git, never from cards: each branch's own commits (not on the other branch, not on the base) plus its uncommitted and untracked files. The hub and the pane list each pair under Housekeeping with the shared files, so two workers editing one file hear about it before merge time. Branches stacked on each other, or cut from the same integration branch, only overlap on files each changed itself.
 
 ## Install
 
@@ -300,6 +301,10 @@ description, or you type `/tower:<name>`.
   worktree and branch. It records the length of your prompts, never their text. `tower state` reads its last 24h
   when agent view can't be read, and `tower stats` computes metrics from it. It never blocks or fails a session:
   problems go to `~/.claude/tower/errors.log`. To look at it from this checkout: `uv run tower events tail -n 20`.
+- **Runtime variables** (`session-env.py`, a SessionStart hook): when the project has a runtime config, sets the
+  worktree's `TOWER_SLOT`, `PORT` and the rest for every Bash command in the session (through Claude Code's
+  `CLAUDE_ENV_FILE`) and tells Claude its port and seed command. Quiet for projects without one. See "Running several
+  dev servers at once".
 - **Metrics** (`uv run tower stats [--since 14d] [--repo [PATH]]`): one row per PR merged in the window, from the
   event log and GitHub (through `gh`): start → merged, your active minutes, time waiting on you, interruptions and
   the median time to resume, follow-up prompts per report, and rework (later PRs for the same ticket or branch, and
@@ -355,6 +360,41 @@ Team repos often have their own `CLAUDE.md` and `.claude/settings.json`. tower n
 - Rules stay on the machine they were made on: work-project rules never leave the work Mac.
 - The first time a project imports a file from outside the repo, Claude Code asks you to approve the import once.
 
+## Running several dev servers at once
+
+Worktrees share one machine: every worker's dev server wants the same port, and they all point at the same database.
+Declare a project's resources once, outside the repo, in `~/.claude/tower/projects/<Project>.toml` (`<Project>` is
+the project folder name the cards use: the repo's name, or its `project.<repo>=` mapping):
+
+```toml
+port_base = 3000                  # PORT = port_base + slot
+db_name = "poot_{slot}"           # DB_NAME
+seed = 'cp -R {main}/data data'   # how a new worktree gets what only the main checkout has (printed, never run)
+
+[ports]                           # more ports, each base + slot
+API_PORT = 8000
+
+[env]                             # any other variables
+API_URL = "http://localhost:{port}/api"
+```
+
+- **Runtime slot**: each worktree's stable number, 0 for the main checkout and the smallest free one (1, 2, …) for
+  every other worktree. It's kept in `~/.claude/tower/slots/<Project>.json` for as long as the worktree's folder
+  exists, so a worker's port never changes under it; removing a worktree frees its slot. Not to be confused with an
+  execution slot, which is what the WIP limit counts.
+- **In every Claude session**, the plugin's SessionStart hook (`session-env.py`) sets `TOWER_SLOT`, `PORT` and the
+  rest for all of that session's Bash commands, and tells Claude its port and the seed command. Nothing to put in the
+  kickoff.
+- **In your own terminal**: `eval "$(uv run tower env)"` from this checkout, or
+  `eval "$(python3 -I <plugin>/scripts/run-tower.py env)"` anywhere, in the worktree.
+- Placeholders: `{slot}`, `{port}` (needs `port_base`), `{main}` and `{worktree}` (paths; shell-quoted for you in
+  `seed`). The file is a small subset of TOML (whole numbers, "basic" or 'literal' strings, `#` comments, the
+  `[ports]` and `[env]` tables) because the hooks run under macOS's Python 3.9; anything else is an error naming the
+  line. Your app still has to read `PORT` and `DB_NAME` (most dev servers read `PORT` already).
+- **Poot**: `data/` exists only in the main checkout. Set `seed` to whatever copies or links it into a worktree;
+  tower prints it (`tower env`, and the session's start) and never runs it, because only you know whether a copy or a
+  shared link is safe.
+
 ## Configuration: `~/.claude/tower.conf` (one per machine)
 
 ```ini
@@ -376,6 +416,8 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `<projects_dir>/<Project>/Ledger/_backlog.md` | parked ideas, only for repos without GitHub |
 | `~/.claude/tower.conf` | per-machine settings |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
+| `~/.claude/tower/projects/<Project>.toml` | that project's runtime config: ports, database name, seed command (optional) |
+| `~/.claude/tower/slots/<Project>.json` | each worktree's runtime slot (written by tower; delete it to hand them out again) |
 | `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
 | `~/.claude/tower/events.jsonl` | the event log, this month (UTC); earlier months are `events-YYYY-MM.jsonl` beside it |
 | `~/.claude/tower/errors.log` | anything the event-log hook couldn't do (it never fails the session instead) |
@@ -389,8 +431,8 @@ tower/
   .claude-plugin/marketplace.json     this repo is its own marketplace: plugins tower and tower-pane
   plugin/
     .claude-plugin/plugin.json
-    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
-    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
+    hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log, runtime variables
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
                                       (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
@@ -432,7 +474,7 @@ which needs no login). Run `mise install` once first.
 
 - **Cards are only as fresh as the last time an agent wrote one.** The hub flags `running` cards untouched for 24h as `STALE`, and `tower state` trusts live session status over a card.
 - **Agent view's JSON format isn't documented.** If it changes, the hub prints one "skipping live sessions" line and works from cards alone.
-- **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. In Poot, `data/` exists only in the main checkout, so worktrees don't have it.
+- **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. A project's runtime config gives each worktree its own port and database name (see "Running several dev servers at once"); without one, they still clash. In Poot, `data/` exists only in the main checkout, so worktrees don't have it until you run the config's `seed` command.
 - **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). adopt checks the actual diff before calling a branch unshipped.
 - **Orca names the branch, not the hub.** `--name feat/42-x` is Orca's display name; with Orca's Branch prefix set to
   your git username the branch is `rishi-desai/feat-42-x`, and the card is named after that branch. Set the prefix to

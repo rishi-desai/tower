@@ -1,5 +1,5 @@
 {
-  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you; record each session's events in tower's event log",
+  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you; record each session's events in tower's event log; give each session its worktree's runtime variables (PORT and the rest)",
   "hooks": {
     "PreToolUse": [
       {
@@ -84,6 +84,11 @@
           {
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/session-env.py\"",
             "timeout": 10
           }
         ]

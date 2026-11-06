@@ -10,6 +10,8 @@ tower card-path [DIR]      where the worktree holding DIR (default: here) keeps 
 tower card write [--status running|done|needs-you|blocked] [--reason TEXT] [--ticket N] [--dir DIR] [--if-absent]
                            render this worktree's card from facts and the narrative sections on stdin (see card.py)
 tower rules                link this project's personal rules into this worktree; prints the rules file (see rules.py)
+tower env [--dir DIR]      the worktree's runtime slot and the variables its project config derives (PORT, ...), as
+                           `export` lines for eval (see runtime.py)
 tower stats [--since 14d] [--repo [PATH]]
                            metrics per PR merged in the window, from the event log and GitHub (see stats.py);
                            every repo in the log, or only PATH's (default: this one) with --repo
@@ -26,7 +28,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import __version__, adopt, card, events, github, hook_events, ledger, rules, scan, state, stats
+from tower import __version__, adopt, card, events, github, hook_events, ledger, rules, runtime, scan, state, stats
 from tower.gitrepo import NotARepo
 
 SINCE_SPAN = re.compile(r"(\d+)([hdw])")
@@ -78,6 +80,8 @@ def parser() -> argparse.ArgumentParser:
     card_parser.add_argument("dir", nargs="?", type=Path, default=Path("."), help="a folder in the worktree")
     add_card_parser(commands)
     commands.add_parser("rules", help="link this project's personal rules file into this worktree")
+    env_parser = commands.add_parser("env", help="this worktree's runtime slot and variables, as export lines")
+    env_parser.add_argument("--dir", type=Path, default=Path("."), help="a folder in the worktree (default: here)")
     stats_parser = commands.add_parser("stats", help="metrics per merged PR, from the event log and GitHub")
     stats_parser.add_argument(
         "--since", type=since_span, default=timedelta(days=14), help="how far back merges count (default 14d)"
@@ -139,6 +143,21 @@ def run_card_write(args: argparse.Namespace) -> int:
         print(f"tower: {warning}", file=sys.stderr)
     print(written.path)
     print(f"status: {written.status} ({written.why})")
+    return 0
+
+
+def show_env(directory: Path) -> int:
+    """Print the worktree's `export` lines. With no runtime config, print nothing and say where it looked (exit 0);
+    exit 1, saying why, outside a repo or with a bad config."""
+    try:
+        env, config = runtime.worktree_env(directory)
+    except (NotARepo, ledger.LedgerError, runtime.RuntimeConfigError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    if env is None:
+        print(f"tower: no runtime config at {config}, so nothing to export", file=sys.stderr)
+        return 0
+    sys.stdout.write(runtime.render_exports(env))
     return 0
 
 
@@ -253,6 +272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_card_write(args)
     if args.command == "rules":
         return run_or_explain(link_rules)
+    if args.command == "env":
+        return show_env(args.dir)
     if args.command == "stats":
         return stats_command(args.since, args.repo)
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable
