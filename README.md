@@ -286,7 +286,7 @@ description, or you type `/tower:<name>`.
 | `tower:adopt` | you type `/tower:adopt` | The old name for the hub's adopt mode, kept for one release. |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
 | `tower:babysit-pr` | you say "babysit / watch / monitor the PR" | Runs `pr-wait` (one line per real event: check failed, comment, review, base moved, merged) and fixes real CI failures and review findings. Drafts every public action and waits for your approval. Waits on your repo's own required checks (`--until green`). |
-| `tower:leaving-pr-comments` | any agent comment on GitHub | Starts each comment with "🤖 <model> responding on behalf of <you>", keeps it short, checks for secrets. |
+| `tower:leaving-pr-comments` | any agent comment on GitHub | Keeps each comment short and direct, checks it for secrets, previews it, and confirms GitHub posted it before resolving a thread. |
 | `tdd`, `code-review`, `grilling`, `diagnosing-bugs`, `domain-modeling`, `research`, `prototype` (Matt Pocock) | their descriptions match what you're doing | `/implement` calls `tdd` and `code-review` itself. |
 
 ### Run only when you type them (Matt Pocock, `disable-model-invocation`)
@@ -308,7 +308,7 @@ description, or you type `/tower:<name>`.
 
 ### Always on (not skills)
 
-- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
+- **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, keeping personal rules out of repos, and no AI attribution (no co-author trailers, "Generated with" lines, "on behalf of" notes or 🤖 in commits, PRs, comments, issues or branch names).
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
 - **The policy line** (`policy-context.py`, a SessionStart hook): one line added to each session's context saying
   which profile applies to its repo, what it may do without asking, and what asks you first, so a worker doesn't
