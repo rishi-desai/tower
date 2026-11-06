@@ -41,7 +41,9 @@ def test_two_worktrees_editing_the_same_file_are_flagged(repo: Fixture, capsys: 
     result = tower_state(capsys)
 
     assert result["overlaps"] == [{"worktrees": ["feat-1", "feat-2"], "files": ["src/app.py"]}]
-    assert {"label": "feat-1", "note": "changes the same file as feat-2: src/app.py"} in result["housekeeping"]
+    housekeeping = result["housekeeping"]
+    assert isinstance(housekeeping, list)
+    assert {"label": "feat-1", "note": "changes the same file as feat-2: src/app.py"} in housekeeping
 
 
 def test_worktrees_editing_different_files_are_not_flagged(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
