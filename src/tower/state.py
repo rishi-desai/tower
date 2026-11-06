@@ -716,8 +716,9 @@ GROUPS = (
 def render_text(report: Report) -> str:
     """The report as hub-scan.sh prints it: its WORKTREES, ORPHAN CARDS and GROUPS sections, one row per line.
 
-    The pane parses the WORKTREES rows (`status:` is the effective state), so keep the `field: value | ...` shape and
-    the path last. Every value from a card or a session goes through cell(), so none can contain " | ".
+    The hub reads these rows (`status:` is the effective state; the pane reads to_json() instead), so keep the
+    `field: value | ...` shape and the path last. Every value from a card or a session goes through cell(), so none can
+    contain " | ".
     """
     out = ["== WORKTREES =="]
     for facts, v in report.worktrees:

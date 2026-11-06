@@ -1,34 +1,61 @@
-/** One run of tower's hub-scan.sh, as the pane draws it. */
+/** One Claude session open in a worktree, as `tower state --json` lists it. activity: busy, waiting (on you) or idle. */
+export type StateSession = { name: string; kind: string; activity: string; waiting_for: string }
+
+/** One worktree of `tower state --json`: its effective state (status), why (reason), and the facts behind it. */
+export type StateWorktree = {
+  label: string
+  branch: string | null
+  path: string
+  is_main: boolean
+  /** needs-you, running, waiting-ci, blocked, done, ready-to-clean, no-card or main. */
+  status: string
+  reason: string
+  holds_slot: boolean
+  /** What the card itself says; null without one. */
+  card: { status: string; ticket: string; updated: string; pr: string } | null
+  /** A running card untouched for over 24h. */
+  stale: boolean
+  sessions: StateSession[]
+  unshipped_commits: number | null
+  dirty: boolean | null
+  pr: { number: number; state: string; url: string } | null
+}
+
+/**
+ * What `tower state --json` prints (src/tower/state.py's to_json): the one truth the hub, the pane and the WIP count
+ * share. The core only adds keys, never renames or removes them.
+ */
+export type TowerState = {
+  repo: string
+  main_checkout: string
+  ledger: string | null
+  base: string | null
+  wip_limit: number
+  slots: number
+  at_limit: boolean
+  sessions_source: string
+  notes: string[]
+  worktrees: StateWorktree[]
+  unshipped: Array<{ label: string; commits: number }>
+  orphan_cards: Array<{ name: string; status: string; path: string }>
+}
+
+/** One run of `tower state --json`, as the pane draws it. */
 export type Scan = {
-  /** The script exited 0. */
+  /** The command exited 0 and printed JSON. */
   ok: boolean
-  /** Its full stdout: the hub report. */
-  text: string
+  /** What it printed; null when it failed. */
+  state: TowerState | null
   /** Why it failed (stderr's last line, or a reason of ours). */
   error: string
   /** When it ran, from $.clock.now(). */
   at: number
-  /** "2 of 3" from the WIP line, or "" when absent. */
-  wip: string
-  /** One label per thing that needs the user: a needs-you card or a waiting session. */
+  /** One label per worktree that needs the user, for toasts: only new labels toast. */
   items: string[]
 }
 
-/** The GitHub section from the last full scan (the 30 s refresh skips GitHub). */
+/** The GitHub section from the last full hub-scan.sh run (only Refresh GitHub runs it). */
 export type GithubSection = { lines: string[]; at: number }
-
-/**
- * A pop-up question a worker session relayed for the pane (one file per session in
- * ~/.claude/tower/questions). The worker accepts an answer only when it carries this `id`.
- */
-export type RelayedQuestion = {
-  id: string
-  sessionId: string
-  /** The worker's folder: the pane matches it to a worktree of this repo. */
-  cwd: string
-  askedAt: number
-  questions: Array<{ question: string; header: string; multiSelect: boolean; options: Array<{ label: string; description?: string }> }>
-}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -36,9 +63,8 @@ declare module 'claude-code' {
       scan: Scan | null
       github: GithubSection | null
       park: number
-      questions: RelayedQuestion[]
-      /** The options clicked so far, per relayed question id: question text -> label. */
-      picks: Record<string, Record<string, string>>
+      /** The ledger's _backlog.md lines, read with each scan. */
+      backlog: string[]
     }
   }
 }

@@ -10,7 +10,7 @@ The user runs several worktrees at once and loses track of them. You are the one
 
 ## 1. Gather state
 
-Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints every worktree with its effective state (`status:`, what tower decided from the card, live sessions, the event log and git; `card:` is what the card itself says; `reason:` is why), the WIP count and unshipped work, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. The pane draws the same statuses from the same run, so never re-decide a worktree's status yourself. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
+Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints every worktree with its effective state (`status:`, what tower decided from the card, live sessions, the event log and git; `card:` is what the card itself says; `reason:` is why), the WIP count and unshipped work, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. The pane draws the same statuses from `tower state --json`, so never re-decide a worktree's status yourself. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
 
 Open a card file only when its status is `needs-you` or `blocked`, or the user asks about it.
 
@@ -37,7 +37,7 @@ When the user wants to start something new and the scan says `AT LIMIT`, say so 
 
 ## 4. Discuss or park an idea
 
-The hub is where new work gets discussed, not only tracked. An idea mentioned mid-flow ("oh, also the worm theme", or "park: <idea>") gets parked straight away, as before. When the user wants to talk it through ("discuss: <idea>"), discuss it.
+The hub is where new work gets discussed, not only tracked. An idea mentioned mid-flow ("oh, also the worm theme", or "park: <idea>") gets parked straight away, as before. When the user wants to talk it through ("discuss: <idea>"), discuss it. "discuss #N" (typed, or sent by the pane's `discuss #N` button on an issue that isn't `ready-for-agent`) means the same for an existing issue: read it with `gh issue view <n>` first, and end by speccing that issue (`/to-spec` on it) rather than parking a new one.
 
 You may read code here to inform the discussion, but you run in the main checkout: edit nothing and commit nothing on main. That includes GLOSSARY.md and ADRs (architecture decision records); domain decisions go in the spec, and the worker records them in its branch.
 
@@ -73,7 +73,7 @@ When asked what to work on next, choose from the scan's open issues:
 
 ## 6. Start a worktree
 
-When the user picks a ticket to start ("start #42", typed or sent by the pane's `#42` button), read it with `gh issue view <n>`, pick the worker's effort (table below), and write the kickoff prompt. Then start the worker through Orca (the worktree app) in one command. Only if Orca isn't reachable, fall back to the two-step paste.
+When the user picks a ticket to start ("start #42", typed or sent by the pane's `start #42` button), read it with `gh issue view <n>`, pick the worker's effort (table below), and write the kickoff prompt. Then start the worker through Orca (the worktree app) in one command. Only if Orca isn't reachable, fall back to the two-step paste.
 
 ### Effort
 
@@ -105,7 +105,7 @@ Two different `/code-review` skills run, so the prompt names each: Matt Pocock's
 
 ### Start it through Orca
 
-1. Check the scan first (the pane's `#N` button skips no rules). If a WORKTREES row already shows this ticket, or `orca worktree list --json` has a worktree with `linkedIssue` N, it's already started: say where and stop. At the WIP limit, follow section 3 before starting anything.
+1. Check the scan first (the pane's `start #N` button skips no rules). If a WORKTREES row already shows this ticket, or `orca worktree list --json` has a worktree with `linkedIssue` N, it's already started: say where and stop. At the WIP limit, follow section 3 before starting anything.
    Then run `orca status --json`. Orca is reachable when it exits 0 and `result.runtime.reachable` is `true`. If not (no `orca` command, an error, or `false`), use the fallback below and say why in one line.
 2. Show the command in a fenced block, with the effort line, then ask with AskUserQuestion: "Start it (Recommended)", "Change the effort", "Don't start". Run it only on a yes.
 

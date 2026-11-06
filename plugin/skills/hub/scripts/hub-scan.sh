@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hub-scan.sh — gathers the raw state of one repo so the hub never has to read transcripts.
 # Run it from anywhere inside the repo (main checkout or any worktree).
-# Usage: hub-scan.sh [--no-github]   (--no-github skips section 5, for frequent refreshes like the tower pane)
+# Usage: hub-scan.sh [--no-github]   (--no-github skips section 5, for frequent refreshes)
 #
 # Prints:
 #   1. WORKTREES     — every worktree with its effective state (tower state), the WIP count, unshipped work
@@ -13,7 +13,8 @@
 #   6. BACKLOG       — parked ideas waiting for a slot (only used when there's no GitHub)
 #
 # Sections 1, 3 and 4 come from one run of `tower state` (tower's core, src/tower/state.py), the one place a
-# worktree's status is decided, so the hub, the pane (which parses section 1) and the WIP count always agree.
+# worktree's status is decided, so the hub, the pane (which reads `tower state --json`) and the WIP count always agree.
+# The pane runs this script only for section 5.
 
 set -uo pipefail    # unset variables and pipe failures are errors; NOT -e, so one failing
                     # section (e.g. no GitHub remote) doesn't kill the rest of the report
@@ -64,7 +65,7 @@ echo
 # ---------- 2. LIVE SESSIONS ----------
 echo "== LIVE SESSIONS (agent view) =="
 # One BRANCH=PATH pair per worktree for sessions.py, labelled the way tower state labels them (a detached HEAD is
-# "(detached <short sha>)"), so the pane can match sessions to section 1's rows. `git worktree list --porcelain`
+# "(detached <short sha>)"), so each session lines up with its section 1 row. `git worktree list --porcelain`
 # prints one block per worktree: "worktree <path>", "HEAD <sha>", "branch refs/heads/<name>" or "detached", blank line.
 session_args=()
 path=""; branch=""; sha=""
@@ -149,7 +150,7 @@ else
   echo "(empty)"
 fi
 
-# Without tower state the report has no statuses: fail, so the pane shows the reason instead of "nothing needs you".
+# Without tower state the report has no statuses: fail, so the reason shows instead of "nothing needs you".
 if [ -n "$state_failed" ]; then
   echo "hub-scan: $state_failed" >&2
   exit 1

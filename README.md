@@ -94,29 +94,33 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 - In the hub: **"what needs me?"** (or `/tower:hub`). You get one screen, ordered Needs you → Blocked → Running → Waiting on CI or review → Done → Housekeeping, and one suggested next action.
 - Each "Needs you" item names the session to go to. Answer there, not in the hub.
 - Or open the live pane with `/tower` (see below): the same picture, refreshed every 30 seconds, where a click
-  jumps to the session in Orca and pop-up questions can be answered in place.
+  jumps to the session waiting on you in Orca, and 0 there brings you back.
 - In Obsidian: `Projects/<Project>/Ledger/` has one note per worktree, with `status`, `ticket`, `pr` and `updated` as properties.
 - If the hub's context gets long, `/clear` it and ask again. Everything it reads is on disk.
 
 ### The tower pane
 
 `tower-pane` is a mod: a panel inside Claude Code, beside the chat. Run `/tower` in the hub session to open it.
-It never reads transcripts either; it runs the hub's own scan.
+It never reads transcripts either: it draws `tower state --json`, the same effective state the hub reports from,
+so the two can't disagree.
 
 - **Status line:** `tower WIP 2/3 · 1 needs you` in every session of the repo, and a toast when something new needs you.
-- **Needs you:** worktrees whose effective state is needs-you (a session waiting on you, or a needs-you card
-  nothing contradicts). A card whose session is working again (you already answered) shows as running under
+- **Needs you:** worktrees whose effective state is needs-you. A session waiting on you shows **WAITING** with what
+  it needs (`input needed` for a question, `approve Bash` for an approval); a needs-you card nothing contradicts
+  shows **NEEDS YOU**. A card whose session is working again (you already answered) shows as running under
   Worktrees, with the reason.
-- **Click a worktree name** (or press 1–9 on a Needs you row): Orca switches to that worktree's Claude tab,
-  the one that printed last, and comes to the front. **card** opens the status card in Obsidian.
-- **Pop-up questions:** when a session running the pane asks you something in its pop-up, the question shows up
-  in the pane within about 3 seconds, with one button per option. Click one and the answer goes back to that
-  session, as if you'd picked it there. The first answer wins, the pane's or the pop-up's. Questions that allow
-  several answers, or a typed "Other", are answered in the session.
+- **Click a worktree name** (or press 1–9 on a Needs you row): Orca switches to the terminal that is waiting on
+  you (Orca's own agent state says which; without it, the Claude terminal that printed last, and the toast says
+  so) and comes to the front. Answer there: the pop-up has every option, typed answers included. **card** opens
+  the status card in Obsidian.
+- **Back to the hub:** in a worker's session inside Orca, a `0: back to the tower hub` line sits above the prompt.
+  Press 0 in the empty prompt, or click it, and Orca switches back to the hub's terminal. It steps aside while a
+  question is open.
 - **Approvals never go through the pane.** A push or a GitHub comment is approved only in the session doing it,
   so nothing else can approve on your behalf.
-- **Buttons:** Refresh (r), Refresh GitHub (g, which loads PRs and ready-for-agent issues; click an issue's number
-  to start it), What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
+- **Buttons:** Refresh (r), Refresh GitHub (g: PRs and every open issue, the newest ten and "+ N more";
+  `start #N` on a `ready-for-agent` issue starts it, `discuss #N` on any other asks the hub to discuss it first),
+  What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
 
 Anything that changes something (starting a ticket, parking an idea) is sent to the hub's Claude as a request,
 so the usual approval prompts still apply.
@@ -365,7 +369,6 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
 | `~/.claude/tower/events.jsonl` | the event log, this month (UTC); earlier months are `events-YYYY-MM.jsonl` beside it |
 | `~/.claude/tower/errors.log` | anything the event-log hook couldn't do (it never fails the session instead) |
-| `~/.claude/tower/questions/<session id>.json` | a pop-up question waiting for an answer from the pane; removed once answered |
 | `~/.claude/CLAUDE.md` | the tower block; your original is in `CLAUDE.md.pre-tower.bak` |
 | `~/.local/state/pr-wait/` | `pr-wait`'s lock and event memory |
 
@@ -377,13 +380,13 @@ tower/
   plugin/
     .claude-plugin/plugin.json
     hooks/hooks.json                  approval, card reminder, card resume, needs-you notification, event log
-    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for hub-scan.sh)
+    scripts/                          ledger-lib.sh (shared), confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, run-tower.py (the core's CLI, for hub-scan.sh and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
   pane/                               the tower-pane mod
-    hooks/register.tsx                the pane, status line, toasts, Orca jump, question relay
+    hooks/register.tsx                the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  its saved state, as Claude Code checks it
-    tests/                            claude plugin test pane
+    tests/                            claude plugin test pane; fixtures/ holds `tower state --json` output tests/test_state.py checks
   src/tower/                          tower's core (standard library only): the event log, effective state, the `tower` CLI
   tests/                              pytest: the approval hook's cases, the event log, effective state, the CLI
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
