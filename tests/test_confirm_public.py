@@ -669,6 +669,7 @@ POLICY_MATRIX = [
     ("reads never ask", "gh pr view 5 && git status", None, False, False, False),
 ]
 PROFILES = ["work", "personal", "sandbox"]
+UNCHECKED_IN_MATRIX = {command for case, command, *_ in POLICY_MATRIX if case.startswith("unchecked")}
 FAKE_GH = """#!{python}
 import json, os, sys
 args = sys.argv[1:]
@@ -735,11 +736,12 @@ def test_each_key_in_each_profile_chosen_by_default_profile(
 def test_each_key_in_each_profile_chosen_by_a_repo_override(
     widget: Path, profile: str, command: str, base: str | None, expected: dict[str, bool]
 ) -> None:
-    """The session's repo (acme/widget, from its origin) picks the profile over a different default_profile."""
+    """The session's repo (acme/widget, from its origin) picks the profile over a different default_profile. A
+    command that can't be checked asks even in sandbox here: it could reach a repo the policy makes stricter."""
     default = "work" if profile == "sandbox" else "sandbox"
     policy = f'default_profile = "{default}"\n\n[repos]\n"acme/*" = "personal"\n"acme/widget" = "{profile}"\n'
     decision = run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, base))
-    assert asks(decision) == expected[profile]
+    assert asks(decision) == (expected[profile] or command in UNCHECKED_IN_MATRIX)
 
 
 @pytest.mark.parametrize(
@@ -972,3 +974,112 @@ def test_the_floor_follows_a_symlink_to_tower_files(tmp_path: Path) -> None:
     (tmp_path / "link").symlink_to(tmp_path / ".claude")
     call = {"tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "link" / "tower" / "policy.toml")}}
     assert asks(run_hook(tmp_path, call, policy='default_profile = "sandbox"\n'))
+
+
+# --- Regressions from the /code-review xhigh of T09: each was a way to reach a work repo without a prompt -----
+
+FORK_POLICY = 'default_profile = "personal"\n[repos]\n"acme/*" = "work"\n'
+
+
+@pytest.fixture
+def fork(tmp_path: Path) -> Path:
+    """A session checkout of me/fork, beside a checkout of acme/secret (work) in a folder named acme."""
+    for name, url in (("fork", "git@github.com:me/fork.git"), ("acme", "git@github.com:acme/secret.git")):
+        checkout = tmp_path / name
+        checkout.mkdir()
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+        subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", url], check=True)
+    return tmp_path / "fork"
+
+
+def fork_decision(fork: Path, command: str, policy: str = FORK_POLICY) -> dict[str, object] | None:
+    """The hook's decision on COMMAND from a session in the fork checkout."""
+    env = {"PATH": f"/usr/bin{os.pathsep}/bin"}
+    return run_hook(fork.parent, {**bash(command), "cwd": str(fork)}, policy=policy, env=env)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push git@github.com:acme/secret.git HEAD:main",  # an scp-form URL (finding 1)
+        "git push github.com:acme/secret HEAD:main",
+        "cd .. && cd acme && git push origin main",  # cds taken in order (finding 2)
+        "git -C .. -C acme push origin main",
+        "git clone https://github.com/acme/secret /tmp/not-there-yet && cd /tmp/not-there-yet && git push",
+        "gh pr create -dR acme/secret --fill",  # -R inside a cluster of short flags (finding 3)
+        "git push --repo https://github.com/acme/secret.git HEAD:main",  # --repo with its value apart (finding 4)
+        "git -c alias.p=push p https://github.com/acme/secret.git main",  # an alias's push URL (finding 5)
+        "git -c url.git@github.com:acme/secret.git.insteadOf=git@github.com:me/fork.git push origin main",  # finding 6
+        "gh api https://api.github.com/repos/acme/secret/issues -f title=x",  # an API URL (finding 9)
+    ],
+)
+def test_a_push_or_write_reaching_a_work_repo_asks_from_a_personal_repo(fork: Path, command: str) -> None:
+    assert asks(fork_decision(fork, command))
+
+
+def test_a_plain_push_from_the_personal_repo_itself_passes(fork: Path) -> None:
+    assert fork_decision(fork, "git push origin main") is None
+    assert fork_decision(fork, "cd . && git push origin main") is None
+
+
+def test_an_api_endpoint_with_a_query_still_names_its_repo(fork: Path) -> None:
+    policy = 'default_profile = "sandbox"\n[repos]\n"acme/secret" = "work"\n'
+    assert asks(fork_decision(fork, "gh api 'repos/acme/secret/issues?x=1' -f title=x", policy))
+
+
+def test_in_sandbox_a_command_that_cant_be_checked_asks_if_any_repo_is_stricter(fork: Path) -> None:
+    """It could push anywhere (finding 7); with no stricter profile in the file, it passes as before."""
+    command = "git push https://github.com/acme/secret.git main; cat <<$E"
+    assert asks(fork_decision(fork, command, 'default_profile = "sandbox"\n[repos]\n"acme/*" = "work"\n'))
+    assert fork_decision(fork, command, 'default_profile = "sandbox"\n') is None
+
+
+def test_many_folders_give_the_strictest_quickly(fork: Path) -> None:
+    """A line with more distinct cd targets than the hook looks up is judged by the strictest profile (finding 8)."""
+    command = "".join(f"cd d{n}; " for n in range(2000)) + "gh pr create --fill"
+    assert asks(fork_decision(fork, command))
+
+
+@pytest.mark.parametrize(
+    ("command", "cwd_holds_tower", "expect_ask"),
+    [
+        ("printf '/p\\n3\\nsandbox\\n' | script -q /dev/null ./setup.sh --no-plugin", True, True),  # finding 10
+        ("~/Developer/personal/tower/setup.sh --projects-dir ~/v", False, True),
+        ("./setup.sh --dry-run", True, False),
+        ("./setup.sh", False, False),  # some other project's setup script
+    ],
+)
+def test_setup_sh_of_this_project_is_behind_the_floor_however_its_answers_come(
+    tmp_path: Path, command: str, cwd_holds_tower: bool, expect_ask: bool
+) -> None:
+    cwd = tmp_path / ("tower" if cwd_holds_tower else "poot")
+    cwd.mkdir()
+    decision = run_hook(tmp_path, {**bash(command), "cwd": str(cwd)}, policy='default_profile = "sandbox"\n')
+    assert asks(decision) == expect_ask
+
+
+def test_migrated_pr_approval_none_still_asks_before_locking_a_pr(tmp_path: Path) -> None:
+    """pr_approval=none never let gh pr lock/unlock through, so the migrated profile doesn't either (finding 12)."""
+    conf = "push_approval=force\npr_approval=none\n"
+    assert asks(run_hook(tmp_path, bash("gh pr lock 5"), policy="", conf=conf))
+    assert run_hook(tmp_path, bash("gh pr merge 5 --squash"), policy="", conf=conf) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 -m pytest /Users/r/tower/worktrees/feat-26-policy-profiles/tests/test_state.py",  # finding 14
+        "python3 -c 'print(\"tower and policy are words\")'",
+    ],
+)
+def test_interpreter_code_that_only_mentions_tower_and_policy_passes(tmp_path: Path, command: str) -> None:
+    assert run_hook(tmp_path, bash(command), policy='default_profile = "sandbox"\n') is None
+
+
+def test_the_prompt_names_a_stricter_profile_reached_in_another_repo(fork: Path) -> None:
+    """The label says which policy asked when it isn't the session's (finding 15)."""
+    decision = fork_decision(fork, "git push https://github.com/acme/secret.git main")
+    assert decision is not None
+    assert str(decision["permissionDecisionReason"]).startswith(
+        "Public action or rule change (tower policy: personal; it reaches another repo: personal+work) — approve? "
+    )

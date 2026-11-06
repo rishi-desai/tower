@@ -348,9 +348,9 @@ agent must ask you instead of trying another way. The prompt names the profile: 
 | `gh issue` create, edit, close, reopen, delete, transfer, … | `issue_writes` | asks | — | — |
 | `gh pr` create, edit, ready, close, reopen, update-branch (an edit with `--base` also needs `merge_to_main`) | `pr_writes` | asks | — | — |
 | Removing finished worktrees (`tower clean`, coming in T10) | `cleanup` | asks | asks | — |
-| `gh api` writes, `gh release` / `gh label` writes, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
-| Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs) | none: ask unless nothing else asks | asks | asks | — |
-| **Safety floor:** any edit to the policy file, `tower.conf`, a rule file or a `CLAUDE.local.md`; Bash commands naming a rule file, writing `tower.conf` or anything in `~/.claude/tower/` (reading with `cat`, `grep`, `tail` is fine), running `tower policy use` or `setup.sh --profile` | always | asks | asks | asks |
+| `gh api` writes, `gh release` / `gh label` writes, `gh pr lock`/`unlock`, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
+| Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs) | none: ask unless every profile a repo can get lets everything through | asks | asks | — (asks if a `[repos]` entry is stricter) |
+| **Safety floor:** any edit to the policy file, `tower.conf`, a rule file or a `CLAUDE.local.md`; Bash commands naming a rule file, writing `tower.conf` or anything in `~/.claude/tower/` (reading with `cat`, `grep`, `tail` is fine), running `tower policy use` (or code using tower's policy module) or tower's `setup.sh` (other than `--dry-run`), which rewrites `tower.conf` and sets the profile | always | asks | asks | asks |
 
 For a merge, the hook asks `gh` which branch the PR goes into (`gh pr view`, then `gh repo view` for the default
 branch), with the same PR and `-R` the merge uses, but only when the two merge keys differ and the merge is the

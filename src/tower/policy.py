@@ -207,6 +207,8 @@ class Policy:
     def for_folder(self, folder: Path) -> tuple[RepoPolicy, str | None]:
         """The policy for the checkout holding folder (every remote counts, see for_repos), and its origin's
         `owner/repo` (None without one); the built-in strictest when git can't say."""
+        if not folder.exists():  # not cloned yet, perhaps: it could become any repo
+            return self.strictest(f"{folder} doesn't exist, so which repo it holds isn't known: the strictest"), None
         try:
             origin, slugs = remote_slugs(folder)
         except RepoUnknown as error:
@@ -223,6 +225,13 @@ class Policy:
     def with_policy(self, base: RepoPolicy, other: RepoPolicy) -> RepoPolicy:
         """The stricter, key by key, of base and other (another checkout's policy, for a command that reaches it)."""
         return stricter(base, other)
+
+    def profiles_in_play(self) -> list[RepoPolicy]:
+        """The policy of every profile a repo can get from this file: default_profile's (or the strictest) and each
+        [repos] entry's, for a command that may reach any repo without saying which."""
+        if self.broken or not self.exists:
+            return [self.for_repo(None)]
+        return [self.for_repo(None), *(self.resolve(name, "a [repos] entry") for _, name in self.repos)]
 
     def matching_repos(self, slug: str) -> list[tuple[str | None, str]]:
         """The (profile, why) of the most specific [repos] patterns matching slug: several only on a tie."""
@@ -278,13 +287,15 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
     except FileNotFoundError:
         text = migrate(path, conf, problems) if migrate_conf else None
     except (OSError, UnicodeDecodeError) as error:
-        return Policy(path, True, problems=(*problems, f"can't read {display_path(path)}"), broken=error_reason(error))
+        problems.append(f"can't read {display_path(path)}")
+        return Policy(path, True, problems=tuple(problems), broken=error_reason(error), machine_wip=machine_wip)
     if text is None:
         return Policy(path, False, problems=tuple(problems), machine_wip=machine_wip)
     try:
         document = parse_toml(text)
     except TomlError as error:
-        return Policy(path, True, problems=(*problems, f"{display_path(path)}: {error}"), broken=str(error))
+        problems.append(f"{display_path(path)}: {error}")
+        return Policy(path, True, problems=tuple(problems), broken=str(error), machine_wip=machine_wip)
     return from_document(path, document, problems, machine_wip)
 
 
@@ -400,12 +411,20 @@ def slug_from_path(path: str) -> str | None:
 
 
 def slug_from_repo_arg(value: str) -> str | None:
-    """The lower-cased `owner/repo` a gh argument names: OWNER/REPO or HOST/OWNER/REPO (an -R/--repo value), or a
-    GitHub URL, whose path starts with owner/repo (https://github.com/owner/repo/pull/5)."""
-    if "://" not in value:
-        return slug_from_path(value)
-    match = SCHEME_URL.fullmatch(value.strip())
-    return slug_from_path("/".join(match.group("path").split("/")[:2])) if match else None
+    """The lower-cased `owner/repo` a command names: OWNER/REPO or HOST/OWNER/REPO (gh's -R), a git URL in scp form
+    ([user@]host:owner/repo.git), or a URL whose path starts with owner/repo (a PR, a clone URL) or with
+    repos/owner/repo (GitHub's API). A query or fragment is ignored."""
+    value = value.strip()
+    if "://" in value:
+        match = SCHEME_URL.fullmatch(value)
+        if match is None:
+            return None
+        parts = [part for part in re.split(r"[?#]", match.group("path"), maxsplit=1)[0].split("/") if part]
+        parts = parts[1:] if parts[:1] == ["repos"] else parts
+        return slug_from_path("/".join(parts[:2]))
+    if SCP_URL.fullmatch(value):
+        return slug_from_url(value)
+    return slug_from_path(value)
 
 
 def remote_slugs(folder: Path) -> tuple[str | None, list[str]]:
@@ -671,7 +690,11 @@ def use(profile: str, slug: str | None = None) -> str:
     try:
         text = current.path.read_text(encoding="utf-8")
     except FileNotFoundError:  # never set up, or migration couldn't write it
-        text = migration_text(ledger.read_conf(ledger.conf_path()), date.today()) or FILE_HEADER + REPOS_EXAMPLE
+        try:
+            conf = ledger.read_conf(ledger.conf_path())
+        except (ledger.LedgerError, UnicodeDecodeError) as error:
+            raise PolicyError(f"can't read {display_path(ledger.conf_path())} to migrate it ({error})") from error
+        text = migration_text(conf, date.today()) or FILE_HEADER + REPOS_EXAMPLE
     except (OSError, UnicodeDecodeError) as error:
         raise PolicyError(f"can't read {display_path(current.path)} ({error_reason(error)})") from error
     edited = set_repo(text, slug, profile) if slug else set_default(text, profile)

@@ -546,3 +546,30 @@ def test_every_remote_of_a_checkout_counts_toward_its_policy(home: Path, tmp_pat
 
     assert (gates(repo_policy), slug) == (WORK, "me/scratch")
     assert policy.remote_slugs(checkout) == ("me/scratch", ["me/scratch", "acme/real"])
+
+
+def test_a_broken_file_still_uses_tower_confs_wip_limit(home: Path) -> None:
+    write_conf(home, "wip_limit=6\n")
+    write_policy(home, "default_profile = [\n")
+
+    assert policy.load().for_repo(None).wip_limit == 6
+
+
+def test_use_with_an_unreadable_tower_conf_to_migrate_is_an_error_not_a_crash(home: Path) -> None:
+    (home.parent / "tower.conf").write_bytes(b"push_approval=\xff\n")
+
+    with pytest.raises(policy.PolicyError, match="to migrate it"):
+        policy.use("personal")
+
+
+@pytest.mark.parametrize(
+    ("value", "slug"),
+    [
+        ("git@github.com:acme/secret.git", "acme/secret"),
+        ("github.com:acme/secret", "acme/secret"),
+        ("https://api.github.com/repos/acme/secret/issues", "acme/secret"),
+        ("https://github.com/acme/secret/pull/5?tab=files", "acme/secret"),
+    ],
+)
+def test_git_and_api_urls_name_their_repo(value: str, slug: str) -> None:
+    assert policy.slug_from_repo_arg(value) == slug

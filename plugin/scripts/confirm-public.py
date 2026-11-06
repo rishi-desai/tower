@@ -11,14 +11,14 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
                    +refspecs; none -> no push asks
   comments         gh pr comment, gh pr review, gh issue comment
   issue_writes     gh issue create, edit, close, reopen, delete, lock, pin, transfer, develop, ...
-  pr_writes        gh pr create, edit, ready, close, reopen, update-branch, lock, unlock (an edit that changes
+  pr_writes        gh pr create, edit, ready, close, reopen, update-branch (an edit that changes
                    the base, -B/--base, also needs merge_to_main: it can retarget an armed auto-merge at main)
   merge_to_main /  gh pr merge, by the PR's base: the repo's default branch, or any other. The hook asks gh
   merge_to_branch  (`gh pr view`, `gh repo view`) only when the two keys differ, and only when the merge is the
                    whole command line (one simple command, nothing before it); otherwise, or if gh can't say,
                    it asks unless both keys are auto.
 The rest ask unless every GitHub key above is auto (as in the sandbox profile), since no one key covers
-them: gh release and gh label writes, `gh api` calls that write (GraphQL mutations or queries read from a
+them: gh release and gh label writes, gh pr lock/unlock, `gh api` calls that write (GraphQL mutations or queries read from a
 file, REST with a write method or with fields, since gh defaults to POST when fields are given), and a gh
 subcommand taken from a variable.
 
@@ -34,8 +34,8 @@ built-in strictest profile (work: everything asks) applies.
 Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf or a file
 under ~/.claude/tower/ (the rules, the policy file, the event log), by its path or one a symlink resolves
 to, always asks. So does any Bash command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/),
-running `tower policy use` (however tower is run, tower's policy module imported in python/node code
-included) or tower's setup.sh with --profile. A Bash command naming tower.conf, a policy.toml or another
+running `tower policy use` (however tower is run, tower's policy module used in python/node code
+included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile. A Bash command naming tower.conf, a policy.toml or another
 file in ~/.claude/tower asks unless it only reads it with a program like cat, grep or tail, and so does one
 writing to a path under .claude that comes from a variable or $'...' quoting. Rule files are standing
 instructions loaded into every session, and tower.conf and the policy file set the approvals above, so a
@@ -134,10 +134,11 @@ GH_WRITE_SUBCOMMANDS = {
 }
 # Not a policy key: a merge is judged by merge_to_main or merge_to_branch once its PR's base is known.
 MERGE = "merge (by the PR's base)"
-# The policy key each gh write is judged by; a group's other writes are under its "*" entry. release and label
-# writes have no key: they ask unless every GitHub key is auto.
-GH_KEYS = {
-    "pr": {"comment": "comments", "review": "comments", "merge": MERGE, "*": "pr_writes"},
+# The policy key each gh write is judged by; a group's other writes are under its "*" entry. None (release and label
+# writes, and locking a PR's conversation, which pr_approval=none never let through) asks unless every GitHub key is
+# auto.
+GH_KEYS: dict[str, dict[str, str | None]] = {
+    "pr": {"comment": "comments", "review": "comments", "merge": MERGE, "lock": None, "unlock": None, "*": "pr_writes"},
     "issue": {"comment": "comments", "*": "issue_writes"},
 }
 GITHUB_KEYS = ("comments", "issue_writes", "pr_writes", "merge_to_main", "merge_to_branch")
@@ -162,14 +163,18 @@ GH_MERGE_SWITCHES = {
     "help": "h",
 }
 # A gh api REST endpoint under one repo: repos/OWNER/REPO/...
-REPOS_ENDPOINT = re.compile(r"/?repos/([^/\s]+/[^/\s]+)")
+REPOS_ENDPOINT = re.compile(r"/?repos/([^/\s?#]+/[^/\s?#]+)")
 # A line naming these points gh or git at a repo other than the one the hook judges by.
 GH_ENV_MENTION = re.compile(r"\bGH_(?:REPO|HOST)\b")
 GIT_ENV_MENTION = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b")
 # A git URL: scheme://host/path, or [user@]host:path where the host has an @ before it or a dot in it (not HEAD:main).
-GIT_URL = re.compile(r"[A-Za-z][\w+.-]*://[^\s=]+|[^\s=@/:]+@[^\s=/:]+:[^\s=]+|[^\s=@/:]+\.[^\s=@/:]+:[^\s=/][^\s=]*")
-# git push's options that take the next word as their value.
-GIT_PUSH_OPTIONS_WITH_VALUE = {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
+GIT_URL = re.compile(r"[A-Za-z][\w+-]*://\S+|[^\s@/:]+@[^\s/:]+:\S+|[^\s@/:]+\.[^\s@/:]+:[^\s/]\S*")
+# git push's options that take the next word as their value (--repo is read for its value instead).
+GIT_PUSH_OPTIONS_WITH_VALUE = {"-o", "--push-option", "--receive-pack", "--exec"}
+# Distinct folders (cd targets, git -C) whose repo the hook looks up for one command line; past it, the strictest. Each
+# lookup is one `git remote -v` (a few ms, at most GIT_TIMEOUT_SECONDS) and costs FOLDER_COST of the work budget.
+MAX_FOLDERS = 16
+FOLDER_COST = 20_000
 GH_LOOKUP_TIMEOUT = 5  # seconds for each of a merge's two read-only gh calls
 WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 # git's global options that take the next word as their value (git.c, handle_options).
@@ -305,16 +310,22 @@ class SessionPolicy:
     loaded: Policy | None = None
     session: RepoPolicy | None = None
     cwd: str = "."
+    reach_open: bool = False  # every profile a repo can get lets every push and GitHub write through
     folder_cache: dict[str, RepoPolicy] = field(default_factory=dict)  # each folder's policy, looked up once
+
+    @property
+    def has_overrides(self) -> bool:
+        """Whether the policy file has [repos] entries, so which repo an action reaches can change what asks."""
+        return self.loaded is not None and bool(self.loaded.repos)
 
     def judge(self, names: list[Word], folders: list[Word]) -> Gates:
         """The gates for an action reaching the repos NAMES names (-R values, URLs) and the checkouts holding FOLDERS
         (relative to the session's folder), besides the session's: the stricter of all, key by key; the strictest
         if one comes from a variable or command output."""
-        if any(word.dynamic for word in [*names, *folders]):
+        if not self.has_overrides or (not names and not folders):
+            return self.gates  # without [repos] every repo gets the same profile, so which one doesn't matter
+        if self.loaded is None or self.session is None or any(word.dynamic for word in [*names, *folders]):
             return STRICTEST_GATES
-        if (not names and not folders) or self.loaded is None or self.session is None:
-            return self.gates
         combined = self.loaded.with_repos(self.session, [name.text for name in names])
         for folder in folders:
             path = os.path.normpath(os.path.join(self.cwd, os.path.expanduser(folder.text)))
@@ -333,7 +344,8 @@ def load_policy(cwd: str) -> SessionPolicy:
         return SessionPolicy(STRICTEST_GATES, f"tower's core couldn't be loaded ({type(err).__name__}), so work")
     loaded = policy.load()
     session = loaded.for_folder(Path(cwd))[0] if loaded.repos else loaded.for_repo(None)  # git only when it matters
-    return SessionPolicy(gates_of(session), session.why, session.problems, loaded, session, cwd)
+    reach_open = all(gates_of(found).all_open for found in loaded.profiles_in_play())
+    return SessionPolicy(gates_of(session), session.why, session.problems, loaded, session, cwd, reach_open)
 
 
 # --- Splitting a command line into simple commands ---------------------------------------------------
@@ -742,7 +754,9 @@ class CommandChecker:
         self.simple_commands = 0  # in the whole command line, nested code included
         self.merges: list[PendingMerge] = []
         self.incomplete = False  # some part couldn't be checked (split, seen into, or checked in time)
-        self.folders: list[Word] = []  # every folder the line cds or pushds into, nested code included
+        self.folders: list[Word] = []  # every folder the line cds or pushds into, nested code included (absolute)
+        self.cd_folder = cwd  # where the line's cds, taken in order, end up
+        self.reached: set[str] = set()  # stricter profiles of other repos the line reaches, for the prompt
         self.names_gh_env = False  # the line names GH_REPO or GH_HOST, which point gh at another repo
         self.names_git_env = False  # the line names GIT_DIR or GIT_WORK_TREE, which point git at another repo
 
@@ -753,10 +767,11 @@ class CommandChecker:
             raise TooComplex
 
     def unchecked(self, reason: str) -> list[str]:
-        """REASON, for a part that couldn't be checked: it could be any push or GitHub write, so it asks unless the
-        policy lets them all through. Either way the command counts as incomplete for the safety floor."""
+        """REASON, for a part that couldn't be checked: it could be any push or GitHub write, to any repo, so it asks
+        unless every profile a repo can get lets them all through. Either way the command counts as incomplete for
+        the safety floor."""
         self.incomplete = True
-        return [] if self.session_policy.gates.all_open else [reason]
+        return [] if self.session_policy.reach_open else [reason]
 
     def reasons(self, command_line: str) -> list[str]:
         """Reasons to ask for the whole COMMAND_LINE, merges included. Raises TooComplex."""
@@ -777,14 +792,26 @@ class CommandChecker:
         except RecursionError:  # $( ) or ( ) nested hundreds deep
             return self.unchecked("nests $( ) or ( ) too deeply to check")
         self.simple_commands += len(commands)
-        self.folders += [folder for command in commands for folder in changed_folders(command.words)]
+        for command in commands:
+            self.note_cd(command.words)
         reasons: list[str] = []
         for command in commands:
-            found = protected_reasons(command)
+            found = protected_reasons(command, self.cwd)
             for index in range(len(command.words)):
                 found += self.check_invocation(command, index, depth)
             reasons += [reason for reason in found if reason not in reasons]
         return reasons
+
+    def note_cd(self, words: list[Word]) -> None:
+        """Record the folder a simple command cds or pushds into, from the session's folder and from the line's last
+        cd (one of them is where it really goes); `cd -` and a folder from a variable are marked dynamic."""
+        for target in changed_folders(words):
+            if target.dynamic:
+                self.folders.append(target)
+                continue
+            path = os.path.expanduser(target.text)
+            self.folders += [Word(os.path.join(self.cwd, path)), Word(os.path.join(self.cd_folder, path))]
+            self.cd_folder = os.path.join(self.cd_folder, path)
 
     def check_invocation(self, command: SimpleCommand, index: int, depth: int) -> list[str]:
         """Reasons to ask if word INDEX of COMMAND runs something we check (git, gh, a shell, eval, env -S,
@@ -825,10 +852,36 @@ class CommandChecker:
     def push_mode(self, git_args: list[Word]) -> str:
         """The push key for git run with GIT_ARGS: the stricter of the session's and that of every repo the push
         reaches (a URL it pushes to, the folders git and the line point at)."""
-        if self.names_git_env:
-            return STRICTEST_GATES.push
+        if self.names_git_env and self.session_policy.has_overrides:
+            return self.strictest_reached().push
         named, folders = git_repos(git_args)
-        return self.session_policy.judge(named, self.folders + folders).push
+        return self.gates_for(named, folders).push
+
+    def strictest_reached(self) -> Gates:
+        """The strictest gates, for a repo that can't be told (noted for the prompt)."""
+        self.reached.add(STRICTEST_GATES.profile)
+        return STRICTEST_GATES
+
+    def gates_for(self, names: list[Word], git_folders: list[Word]) -> Gates:
+        """The gates for an action reaching the repos NAMES names and the folders git is pointed at (GIT_FOLDERS,
+        -C first), besides every folder the line cds into; remembers a stricter profile reached, for the prompt.
+        Each folder counts both from the session's folder and from the line's last cd, since which applies depends
+        on subshells; past MAX_FOLDERS distinct folders, it's the strictest rather than run git that often."""
+        folders = list(self.folders)
+        for base in {self.cwd, self.cd_folder}:
+            joined = base
+            for folder in git_folders:
+                joined = os.path.join(joined, os.path.expanduser(folder.text))
+            if git_folders:
+                folders.append(Word(joined, any(folder.dynamic for folder in git_folders)))
+        if len({folder.text for folder in folders}) > MAX_FOLDERS and self.session_policy.has_overrides:
+            return self.strictest_reached()
+        else:
+            self.spend(len(folders) * FOLDER_COST)
+            gates = self.session_policy.judge(names, folders)
+        if gates.profile != self.session_policy.gates.profile:
+            self.reached.add(gates.profile)
+        return gates
 
     def check_shell(self, args: list[Word], command: SimpleCommand, is_program: bool, depth: int) -> list[str]:
         """Reasons to ask for a shell run with ARGS: its -c code or heredoc is checked like any command line.
@@ -862,20 +915,27 @@ class CommandChecker:
         if not indexes:
             return None
         flags = [arg for position, arg in enumerate(args) if position not in indexes[:2]]
-        named = gh_named_repos(args[: indexes[0]] + args[indexes[0] + 1 :])  # gh api's endpoint too
-        gates = STRICTEST_GATES if self.names_gh_env else self.session_policy.judge(named, self.folders)
+        without_group = args[: indexes[0]] + args[indexes[0] + 1 :]  # gh api's endpoint stays in
+
+        def gates() -> Gates:
+            """The gates for this gh command: the session's and those of every repo it names. Only for a write, since
+            finding them may run git."""
+            if self.names_gh_env and self.session_policy.has_overrides:
+                return self.strictest_reached()
+            return self.gates_for(gh_named_repos(without_group), [])
+
         group = args[indexes[0]]
         if group.dynamic:
-            return None if gates.github_open else GH_DYNAMIC_REASON
+            return None if gates().github_open else GH_DYNAMIC_REASON
         if group.text == "api":
-            reason = check_gh_api(args[: indexes[0]] + args[indexes[0] + 1 :])
-            return None if gates.github_open else reason
+            reason = check_gh_api(without_group)
+            return None if reason is None or gates().github_open else reason
         writes = GH_WRITE_SUBCOMMANDS.get(group.text, set())
         if not writes or len(indexes) < 2:
             return None
         subcommand = args[indexes[1]]
         if subcommand.dynamic:
-            return None if gates.github_open else GH_DYNAMIC_REASON
+            return None if gates().github_open else GH_DYNAMIC_REASON
         name = GH_ALIASES.get(group.text, {}).get(subcommand.text, subcommand.text)
         if name not in writes:
             return None
@@ -883,14 +943,15 @@ class CommandChecker:
         key = group_keys.get(name, group_keys.get("*"))
         action = f"gh {group.text} {name}"
         if key == MERGE:
-            self.merges.append(parse_merge(flags, gates, is_whole_command))
+            self.merges.append(parse_merge(flags, gates(), is_whole_command))
             return None
-        if key is None:  # release and label writes
-            return None if gates.github_open else f"{action} changes something on GitHub that no one key covers"
+        if key is None:  # release and label writes, PR lock/unlock
+            return None if gates().github_open else f"{action} changes something on GitHub that no one key covers"
         keys = [key]
         if (group.text, name) == ("pr", "edit") and changes_base(flags):
             keys.append("merge_to_main")
-        asking = [k for k in keys if gates.asks(k)]
+        judged = gates()
+        asking = [k for k in keys if judged.asks(k)]
         return (
             f"{action} posts or changes something on GitHub ({', '.join(k + '=ask' for k in asking)})"
             if asking
@@ -947,12 +1008,17 @@ def gh_repo_flags(words: list[Word]) -> list[Word]:
     found: list[Word] = []
     for index, word in enumerate(words):
         following = words[index + 1] if index + 1 < len(words) else None
-        if word.text in ("-R", "--repo") and following is not None:
+        text = word.text
+        if text == "--repo" and following is not None:
             found.append(following)
-        elif word.text.startswith("--repo="):
-            found.append(Word(word.text.split("=", 1)[1], word.dynamic))
-        elif word.text.startswith("-R") and len(word.text) > 2:
-            found.append(Word(word.text[2:].removeprefix("="), word.dynamic))
+        elif text.startswith("--repo="):
+            found.append(Word(text.split("=", 1)[1], word.dynamic))
+        elif text.startswith("-") and not text.startswith("--") and "R" in text:  # -R, -Rvalue, or clustered: -dR
+            attached = text[text.index("R") + 1 :].removeprefix("=")
+            if attached:
+                found.append(Word(attached, word.dynamic))
+            elif following is not None:
+                found.append(following)
     return found
 
 
@@ -1157,8 +1223,10 @@ def check_git(args: list[Word], mode: Callable[[], str]) -> str | None:
 
 
 def git_repos(args: list[Word]) -> tuple[list[Word], list[Word]]:
-    """The repos git run with ARGS reaches besides the session's checkout: (repo URLs: in -c remote.*/url.*
-    settings, and a push's repository when that is a URL or a variable; folders: -C, --git-dir, --work-tree)."""
+    """The repos a git push run with ARGS (git's own arguments, subcommand included) reaches besides the session's
+    checkout: (repo URLs: from -c remote.*.url/pushurl and url.*.insteadOf settings, and the push's repository when
+    that is a URL or a variable; folders: -C, --git-dir, --work-tree, in order). Only called for a push, or for a
+    subcommand that may be one (an alias, a variable), so the words after the subcommand are read as push's."""
     named: list[Word] = []
     folders: list[Word] = []
     index = 0
@@ -1169,23 +1237,36 @@ def git_repos(args: list[Word]) -> tuple[list[Word], list[Word]]:
             folders.append(value)
         elif text.startswith(("--git-dir=", "--work-tree=")):
             folders.append(Word(text.split("=", 1)[1], args[index].dynamic))
-        elif text == "-c" and value is not None and value.text.lower().startswith(("remote.", "url.")):
-            named += [Word(url, value.dynamic) for url in GIT_URL.findall(value.text)]
+        elif text == "-c" and value is not None:
+            named += config_repos(value)
         index += 2 if text in GIT_OPTIONS_WITH_VALUE else 1
-    if index < len(args) and args[index].text == "push":
-        named += push_destination(args[index + 1 :])
-    return named, folders
+    return named + push_destination(args[index + 1 :]), folders
+
+
+def config_repos(setting: Word) -> list[Word]:
+    """The repo URLs a `git -c` SETTING (key=value) points git at: remote.<name>.url or .pushurl's value, and both
+    sides of url.<base>.insteadOf / pushInsteadOf; none for any other setting."""
+    key, _, value = setting.text.partition("=")
+    lowered = key.lower()
+    if lowered.startswith("remote.") and lowered.endswith((".url", ".pushurl")):
+        return [Word(value, setting.dynamic)]
+    for suffix in (".insteadof", ".pushinsteadof"):
+        if lowered.startswith("url.") and lowered.endswith(suffix):
+            return [Word(key[len("url.") : -len(suffix)], setting.dynamic), Word(value, setting.dynamic)]
+    return []
 
 
 def push_destination(args: list[Word]) -> list[Word]:
-    """A git push's repository (its first argument that isn't an option, or --repo's value) when it is a URL or
-    comes from a variable: then it may be another repo than any remote's. A remote's name gives nothing, since every
-    remote already counts."""
+    """A git push's repository (its first argument that isn't an option, or --repo's value, with = or after it) when
+    it is a URL or comes from a variable: then it may be another repo than any remote's. A remote's name gives
+    nothing, since every remote already counts."""
     index = 0
     while index < len(args):
         text = args[index].text
         if text.startswith("--repo="):
             return push_destination([Word(text.split("=", 1)[1], args[index].dynamic)])
+        if text == "--repo":
+            return push_destination(args[index + 1 : index + 2])
         if text in GIT_PUSH_OPTIONS_WITH_VALUE:
             index += 2
         elif text.startswith("-") and text != "-":
@@ -1352,11 +1433,15 @@ READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":"}
 RULE_FILE_REASON = "the command touches a personal rule file (CLAUDE.local.md or ~/.claude/tower/rules)"
 TOWER_FILE_REASON = "the command may change tower.conf, the policy file (which sets these approvals) or tower's files"
 POLICY_COMMAND_REASON = (
-    "the command may change tower's policy (tower policy use, its policy module, or setup.sh --profile), "
+    "the command may change tower's policy (tower policy use, its policy module, or tower's setup.sh), "
     "which only you do"
 )
 # Bash text that may run `tower policy use` or setup.sh --profile, for a command that couldn't be checked fully.
-POLICY_COMMAND_MENTION = re.compile(r"tower.*\bpolicy\b|setup\.sh.*--profile", re.IGNORECASE | re.DOTALL)
+POLICY_COMMAND_MENTION = re.compile(r"tower.*\bpolicy\b|setup\.sh", re.IGNORECASE | re.DOTALL)
+# Interpreter code that uses tower's policy module, or runs `tower policy use` (not a path that merely holds both words).
+POLICY_CODE = re.compile(
+    r"from\s+tower(?:\.\w+)*\s+import\b[^\n;]*\bpolicy\b|\btower\.policy\b|\bimport\s+tower\b|\btower\s+policy\s+use\b"
+)
 
 
 def check_protected_edit(file_path: str) -> str | None:
@@ -1368,13 +1453,13 @@ def check_protected_edit(file_path: str) -> str | None:
     return None
 
 
-def protected_reasons(command: SimpleCommand) -> list[str]:
+def protected_reasons(command: SimpleCommand, cwd: str) -> list[str]:
     """Reasons to ask because COMMAND names a rule file or one of tower's files, judged on its words and redirect
     targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf, a
     policy.toml and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any
     other program naming them, asks, and so does a write to a path under .claude whose text is only known at run
-    time ($HOME, $'...')."""
-    if changes_policy(command.words):
+    time ($HOME, $'...'). CWD is the session's folder (see changes_policy)."""
+    if changes_policy(command.words, cwd):
         return [POLICY_COMMAND_REASON]
     words = [os.path.normpath(word.text) for word in command.words if word.text]
     targets = [(redirect.writes, os.path.normpath(redirect.target.text)) for redirect in command.redirects]
@@ -1394,21 +1479,21 @@ def protected_reasons(command: SimpleCommand) -> list[str]:
     return [] if reads_only else [TOWER_FILE_REASON]  # only assignments (their $( ) are checked alone), or a read
 
 
-def changes_policy(words: list[Word]) -> bool:
-    """Whether a simple command's WORDS run `tower policy use` (a word naming tower, then `policy`, then `use` or a
-    word from a variable: `uv run tower ...`, `python3 -m tower ...` and run-tower.py all count), give python, node
-    or another interpreter code that names tower and its policy (`from tower import policy; policy.use(...)`), or run
-    tower's setup.sh with --profile."""
+def changes_policy(words: list[Word], cwd: str) -> bool:
+    """Whether a simple command's WORDS may change tower's policy: run `tower policy use` (a word naming tower, then
+    `policy`, then `use` or a word from a variable: `uv run tower ...`, `python3 -m tower ...` and run-tower.py all
+    count), give python, node or another interpreter code that uses tower's policy module or runs `tower policy use`,
+    or run tower's setup.sh (named with a path holding "tower", or from a session folder that does) for anything but
+    --dry-run or --help, since it rewrites tower.conf and can set the profile from its prompt."""
     texts = [word.text for word in words]
     for index, text in enumerate(texts):
         rest = words[index + 1 :]
         if LANGUAGE_RUNNER.fullmatch(program_name(words[index])) and any(
-            "tower" in later.lower() and "policy" in later.lower() for later in texts[index + 1 :]
+            POLICY_CODE.search(later) for later in texts[index + 1 :]
         ):
             return True
-        if os.path.basename(text).lower() == "setup.sh" and any(
-            w.text.startswith("--profile") or w.dynamic for w in rest
-        ):
+        is_tower_setup = os.path.basename(text).lower() == "setup.sh" and "tower" in (text + cwd).lower()
+        if is_tower_setup and not any(word.text in ("--dry-run", "-h", "--help") for word in rest):
             return True
         if "tower" in text.lower() and "policy" in texts[index + 1 :]:
             after_policy = rest[[w.text for w in rest].index("policy") + 1 :]
@@ -1471,7 +1556,9 @@ def decide(call: object) -> tuple[list[str], str] | None:
         return None
     problems = session_policy.problems
     note = f"; its file has {len(problems)} problem(s), see `tower policy`" if problems else ""
-    return reasons, f"Public action or rule change (tower policy: {session_policy.gates.profile}{note}) — approve? "
+    reached = f"; it reaches another repo: {', '.join(sorted(checker.reached))}" if checker.reached else ""
+    label = f"tower policy: {session_policy.gates.profile}{reached}{note}"
+    return reasons, f"Public action or rule change ({label}) — approve? "
 
 
 def main() -> int:
