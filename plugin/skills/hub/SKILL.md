@@ -1,6 +1,6 @@
 ---
 name: hub
-description: Control tower for parallel work in one repo. Use when the user asks what's going on, what needs them, what to work on next, wants to discuss or park an idea, or wants to start a new worktree. Reads status cards, worktrees, live session states, PRs and issues — never other sessions' transcripts.
+description: Control tower for parallel work in one repo, or across every repo on this machine. Use when the user asks what's going on, what needs them (here or across everything), what to work on next, wants to discuss or park an idea, wants to start a new worktree, or wants to bring a repo with work already in flight under tower (adopt it). Reads status cards, worktrees, live session states, PRs and issues — never other sessions' transcripts.
 effort: medium
 ---
 
@@ -10,9 +10,11 @@ The user runs several worktrees at once and loses track of them. You are the one
 
 ## 1. Gather state
 
-Run `scripts/hub-scan.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints every worktree with its effective state (`status:`, what tower decided from the card, live sessions, the event log and git; `card:` is what the card itself says; `reason:` is why), the WIP count and unshipped work, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. The pane draws the same statuses from `tower state --json`, so never re-decide a worktree's status yourself. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
+Run `python3 -I <plugin>/scripts/run-tower.py scan` from inside the repo, `<plugin>` being two folders up from this skill's base directory (use its absolute path). It prints every worktree with its effective state (`status:`, what tower decided from the card, live sessions, the event log and git; `card:` is what the card itself says; `reason:` is why), the WIP count and unshipped work, the Claude sessions open in each worktree right now, orphaned cards, a GROUPS section that sorts all of that into the report order below, GitHub PRs and issues, and the parked-ideas backlog. The pane draws the same statuses from `tower state --json`, so never re-decide a worktree's status yourself. Use only this output plus card files you choose to open; do not open other sessions or read their transcripts.
 
 Open a card file only when its status is `needs-you` or `blocked`, or the user asks about it.
+
+**Adopt mode.** The `ADOPT:` line after `PR approval:` says whether the repo has been brought under tower yet. If it says `yes` (most worktrees, at least two, have no card, or the main checkout has uncommitted work or other interactive sessions), don't list every problem in a report: give only the scan's NEEDS YOU and BLOCKED groups (section 2's first two; a waiting worker can't wait for adopt), then follow [ADOPT.md](ADOPT.md) (scan, one plan, approved steps one at a time) instead of the rest of section 2. Follow it too when the user asks to adopt the repo, whatever the line says. If they asked for something else (a ticket to start, an idea to park), say in one line that the repo isn't set up yet and offer adopt mode first; do what they asked if they decline. If they say the reasons are on purpose (a local config change kept on main, a second session they keep there), give the usual report from then on in this conversation, with the `ADOPT:` reasons as one Housekeeping line.
 
 ## 2. Report
 
@@ -26,6 +28,12 @@ Always in this order, skipping empty groups. The scan's GROUPS section has alrea
 6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged, or every commit on main, with nothing uncommitted: suggest removing the worktree, never do it), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, any worktree where several interactive sessions share one checkout (rule: one main session per worktree), and overlaps: two worktrees changing the same files (`changes the same file(s) as <other>: <files>`, from git, not cards). For an overlap, name both worktrees and what each is for, and suggest who goes first: usually the one closer to merging, while the other waits or rebases after it. Never tell a worker to stop on your own.
 
 End with **one** suggested next action, not a list.
+
+### Across every repo
+
+When the user asks about everything rather than this repo ("what needs me across everything?", "all repos", "anything else going on?"), run `python3 -I <plugin>/scripts/run-tower.py state --all` (`<plugin>` as in section 1). It covers every repo on this machine with events in tower's event log, the one you run in, and any with a Ledger folder in the vault, so work and personal stay apart: each machine has its own. It prints an ALL REPOS summary (one row per repo, most urgent first), then, in the same order, each repo's own WORKTREES, ORPHAN CARDS and GROUPS sections under `== REPO: <name> | <main checkout> ==`, or a `== CARDS ONLY: <name> ==` project's cards (a Ledger folder with no checkout tower could read, so its rows are only what the cards claim, ranked by those claims).
+
+Report one group per repo, in the order printed, skipping repos with nothing to report beyond Housekeeping. Inside each, use the same groups as above from that repo's GROUPS section, skipping empty ones. A cards-only project gets one line in its place, with its card count and any card that says needs-you, marked as only the card's claim. There is no GITHUB or BACKLOG section here: say so if the user asks about PRs or issues, and offer to scan that repo. End with **one** next action across every repo, not one per repo.
 
 Define any acronym or project term the first time it appears. Name every session, branch, and ticket with a few words on what it is: "rolly-polly-86 (the session building the UI)", not "rolly-polly-86". When you tell the user to act in a session, say what tells it apart from the others in that worktree. Needs you and Blocked get as much text as they need; Running, Done, and Housekeeping stay one line each so the report stays easy to scan.
 
@@ -120,7 +128,7 @@ Two different `/code-review` skills run, so the prompt names each: Matt Pocock's
    - `--no-parent`: the worktree is top-level work, not a child of the main checkout. `--issue <N>` links the ticket in Orca; leave it out for the ticketless starts in section 4, the setup and wayfinder worktrees.
    - `--model` is required: Orca refuses `--effort` without it (`--effort requires --model.`). Use `model` from `~/.claude/settings.json`, or `opus` when it isn't set, in single quotes (`opus[1m]` is a glob pattern to zsh); if Orca rejects that id, show the error and ask before retrying with `opus`. `--effort` on the command line applies to this worker session only, unlike `/effort <level>`.
    - `--surface terminal` runs the Claude Code CLI in an Orca terminal, which LIVE SESSIONS and tower's card hooks need; Orca's chat surface may not be either. A prompt starting with `/implement` runs as the skill, as if typed.
-3. On success, run `hub-scan.sh --no-github`: the new worktree should be listed, with its session under LIVE SESSIONS. Tell the user its real branch and where it is. If the project has a runtime config (`~/.claude/tower/projects/<Project>.toml`), the worker's session gets its own `PORT` and the rest from tower's SessionStart hook, with no kickoff change; `python3 -I <plugin>/scripts/run-tower.py env --dir '<new worktree path>'` prints them (`<plugin>` as in step 4), so tell the user its port.
+3. On success, run the scan with `--no-github`: the new worktree should be listed, with its session under LIVE SESSIONS. Tell the user its real branch and where it is. If the project has a runtime config (`~/.claude/tower/projects/<Project>.toml`), the worker's session gets its own `PORT` and the rest from tower's SessionStart hook, with no kickoff change; `python3 -I <plugin>/scripts/run-tower.py env --dir '<new worktree path>'` prints them (`<plugin>` as in step 4), so tell the user its port.
 4. Give it a starter card, so the scan lists it under Running instead of Housekeeping until the worker writes its own. tower's core writes the card (it fills status, ticket, branch, PR and time from facts), and `--if-absent` makes it create the card only if there isn't one. `<plugin>` is two folders up from this skill's base directory (use its absolute path); use `--ticket none` for the setup and wayfinder worktrees:
    ```
    python3 -I <plugin>/scripts/run-tower.py card write --dir '<new worktree path>' --ticket <N> --if-absent <<'EOF'
@@ -156,13 +164,12 @@ Never write `/effort <level>` for the user to paste: a level typed after `/effor
 
 ## Gotchas
 
-- If most worktrees have no card, or the main checkout has several sessions or uncommitted changes, the repo hasn't been adopted yet: suggest running the `tower:adopt` skill instead of listing every problem.
 - The main checkout is labelled `main checkout (no card expected)`. Don't flag it for having no card.
 - You run in the main checkout yourself, so LIVE SESSIONS counts you there. Only flag main if there are other interactive sessions besides you.
 - If the scan exits non-zero saying `tower state failed`, WORKTREES, ORPHAN CARDS and GROUPS have no statuses: show the error as it is, and don't report "nothing needs you" from the empty groups.
 - LIVE SESSIONS only covers this machine, and its format isn't a documented contract. If it prints a "skipping" line, the WORKTREES section's `NOTE:` lines say what tower used instead (the event log's last 24h, or cards alone): report from GROUPS as usual and mention it once.
-- The scan's statuses never use PR state (hub-scan.sh doesn't pass `--pr`), so the pane's 30-second refresh and your report always agree. Don't re-decide a status from the GITHUB section; if an open PR looks merged or a Done worktree looks finished, say so as a Housekeeping suggestion.
+- The scan's statuses never use PR state (`tower scan` doesn't pass `--pr`), so the pane's 30-second refresh and your report always agree. Don't re-decide a status from the GITHUB section; if an open PR looks merged or a Done worktree looks finished, say so as a Housekeeping suggestion.
 - If context is getting long, tell the user to `/clear` and run the hub again — all state is on disk, nothing is lost.
 - Never delete worktrees, branches or cards on your own; suggest it and wait for a yes.
 - Creating a parked-idea issue is a public GitHub write, so it triggers an approval prompt here too. That's expected.
-- When Orca keeps worktrees inside the repo (its workspace folder set to `./worktrees`), main shows `worktrees/` as untracked. That isn't uncommitted work and isn't a reason to suggest adopt; suggest adding `worktrees/` to main's `.git/info/exclude` (local only), never to the repo's `.gitignore`.
+- When Orca keeps worktrees inside the repo (its workspace folder set to `./worktrees`), main shows `worktrees/` as untracked. That isn't uncommitted work, and the `ADOPT:` line doesn't count it; suggest adding `worktrees/` to main's `.git/info/exclude` (local only), never to the repo's `.gitignore`.

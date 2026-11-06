@@ -86,7 +86,8 @@ class Pr:
 class WorktreeFacts:
     """Everything known about one worktree. sessions_known is False when neither live sessions nor recent events
     could be read, so "no sessions" means "don't know". unshipped_commits, dirty and pr are None when unknown;
-    dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow)."""
+    dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow).
+    card_unreadable is True when a card file exists but couldn't be read: card is None, but not because there's none."""
 
     label: str
     branch: str | None
@@ -98,6 +99,7 @@ class WorktreeFacts:
     unshipped_commits: int | None
     dirty: bool | None
     pr: Pr | None
+    card_unreadable: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,10 +224,17 @@ class Report:
         return sum(1 for _, v in self.worktrees if v.holds_slot)
 
 
-def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> Report:
+def gather(
+    repo_dir: Path,
+    with_pr: bool = False,
+    now: float | None = None,
+    agents_read: tuple[list[object] | None, str] | None = None,
+) -> Report:
     """Gather every fact about repo_dir's worktrees and decide each one's effective state.
 
-    Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR.
+    Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR. agents_read
+    is sessions.read_agents()'s result (the list, or None and why) when the caller already has it (`tower state --all` reads it once for every repo);
+    None reads it here.
     """
     now = time.time() if now is None else now
     worktrees = list_worktrees(repo_dir)
@@ -243,8 +252,8 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         notes.append(ledger_note)
 
     paths = [os.path.realpath(w.path) for w in worktrees]
-    agents, live_note = sessions.read_agents()
-    live = None if agents is None else live_sessions(agents, paths)
+    listed, live_note = sessions.read_agents() if agents_read is None else agents_read
+    live = None if listed is None else live_sessions(listed, paths)
     sessions_source = "live"
     if live is None:
         notes.append(live_note)
@@ -274,11 +283,14 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
     for index, wt in enumerate(worktrees):
         is_main = index == 0
         card = None
+        card_unreadable = False
         pr = prs.get(wt.branch) if wt.branch else None
         if ledger_folder is not None:
             card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
+            notes_before = len(notes)
             card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
+            card_unreadable = len(notes) > notes_before  # card_or_note notes only a card it couldn't read
         facts = WorktreeFacts(
             label=wt.label,
             branch=wt.branch,
@@ -293,6 +305,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
             # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise.
             dirty=is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None,
             pr=pr,
+            card_unreadable=card_unreadable,
         )
         rows.append((facts, decide(facts)))
 
@@ -308,7 +321,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         orphan_cards=orphan_cards(ledger_folder, seen_cards, notes) if ledger_folder is not None else [],
         sessions_source=sessions_source,
         notes=notes,
-        agents=agents,
+        agents=listed,
         overlaps=overlaps,
     )
 
@@ -673,7 +686,7 @@ def group_row(facts: WorktreeFacts, v: Verdict) -> str:
 
 
 def housekeeping(report: Report) -> list[str]:
-    """The Housekeeping rows of hub-scan.sh's GROUPS section, one per cleanup item."""
+    """The Housekeeping rows of the GROUPS section, one per cleanup item."""
     return [f"- {cell(label)} | {cell(note)}" for label, note in cleanup(report)]
 
 

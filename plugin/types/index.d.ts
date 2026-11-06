@@ -58,7 +58,7 @@ export type Scan = {
   at: number
 }
 
-/** The GitHub section from the last full hub-scan.sh run (only Refresh GitHub runs it). */
+/** The GitHub section from the last full `tower scan` run (only Refresh GitHub runs it). */
 export type GithubSection = { lines: string[]; at: number }
 
 declare module 'claude-code' {

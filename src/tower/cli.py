@@ -2,8 +2,9 @@
 
 tower --version            print tower's version
 tower events tail [-n N]   print the last N events (default 10) of this month's log, as JSON lines
-tower state [--repo PATH] [--json] [--pr]
-                           each worktree's effective state (see state.py), as text or JSON
+tower state [--repo PATH | --all] [--json] [--pr]
+                           each worktree's effective state (see state.py), as text or JSON; with --all, every repo
+                           in the event log, this one, and any with a Ledger folder in the vault (see multirepo.py)
 tower scan [--no-github]   the hub's view of this repo: state, live sessions, GitHub, backlog (see scan.py)
 tower adopt-scan           facts for bringing an in-flight repo under tower (see adopt.py)
 tower card-path [DIR]      where the worktree holding DIR (default: here) keeps its status card (see ledger.py)
@@ -28,7 +29,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import __version__, adopt, card, events, github, hook_events, ledger, rules, runtime, scan, state, stats
+from tower import __version__, adopt, card, events, github, hook_events, ledger, multirepo, rules, runtime, scan, state, stats
 from tower.gitrepo import NotARepo
 
 SINCE_SPAN = re.compile(r"(\d+)([hdw])")
@@ -70,7 +71,11 @@ def parser() -> argparse.ArgumentParser:
     tail = events_commands.add_parser("tail", help="print the last events of this month's log as JSON lines")
     tail.add_argument("-n", type=non_negative_int, default=10, help="how many events (default 10)")
     state_parser = commands.add_parser("state", help="each worktree's effective state: one truth for hub, pane and WIP")
-    state_parser.add_argument("--repo", type=Path, default=Path("."), help="any folder in the repo (default: here)")
+    repo_scope = state_parser.add_mutually_exclusive_group()
+    repo_scope.add_argument("--repo", type=Path, default=Path("."), help="any folder in the repo (default: here)")
+    repo_scope.add_argument(
+        "--all", action="store_true", help="every repo in the event log or with a Ledger folder in the vault"
+    )
     state_parser.add_argument("--json", action="store_true", help="print JSON instead of the hub's text sections")
     state_parser.add_argument("--pr", action="store_true", help="also ask GitHub (gh) for each branch's PR")
     scan_parser = commands.add_parser("scan", help="the hub's view of this repo: state, sessions, GitHub, backlog")
@@ -186,6 +191,16 @@ def show_state(repo: Path, as_json: bool, with_pr: bool) -> int:
     return 0
 
 
+def show_all_states(as_json: bool, with_pr: bool) -> int:
+    """Print every known repo's effective state; never fails for one bad repo (see multirepo.gather_all)."""
+    report = multirepo.gather_all(Path("."), with_pr=with_pr)
+    if as_json:
+        print(json.dumps(multirepo.to_json(report), indent=2))
+    else:
+        sys.stdout.write(multirepo.render_text(report))
+    return 0
+
+
 def stats_command(since: timedelta, repo_path: str | None) -> int:
     """Print the metrics table for PRs merged in the last since, for repo_path's repo or every repo in the log.
     Exit code: 2 if repo_path isn't in a git repo, 1 if gh failed for some repo, else 0. A repo whose folder is gone,
@@ -261,7 +276,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "events" and args.events_command == "tail":
         return events_tail(args.n)
     if args.command == "state":
-        return show_state(args.repo, args.json, args.pr)
+        return show_all_states(args.json, args.pr) if args.all else show_state(args.repo, args.json, args.pr)
     if args.command == "scan":
         return run_or_explain(lambda: sys.stdout.write(scan.hub_scan(Path("."), github=not args.no_github)))
     if args.command == "adopt-scan":

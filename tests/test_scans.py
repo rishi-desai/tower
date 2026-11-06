@@ -3,12 +3,14 @@
 Each runs on a real throwaway repo (conftest.py's `repo`) with the cases the bash scripts were checked on: a dirty main
 checkout, worktrees nested in the main checkout's worktrees/ folder, a merged worktree, a detached HEAD, a "/" in a
 branch name, and a parked branch. The expected facts are the bash version's on the same repos, except where a test says
-it's the #4 fix. `tower scan`'s whole report is also checked byte for byte in test_state.py, through hub-scan.sh.
+it's the #4 fix. `tower scan`'s GROUPS are also checked against the pane's fixture in test_state.py, through the
+plugin's run-tower.py.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -19,7 +21,13 @@ from conftest import Fixture, git, interactive
 from tower import cli
 
 ROOT = Path(__file__).resolve().parent.parent
-SKILLS = ROOT / "plugin" / "skills"
+PLUGIN = ROOT / "plugin"
+RUN_TOWER = PLUGIN / "scripts" / "run-tower.py"
+
+
+def run_plugin(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one tower command the way the skills do: `python3 -I <plugin>/scripts/run-tower.py ...`."""
+    return subprocess.run(["python3", "-I", str(RUN_TOWER), *args], capture_output=True, text=True, check=False)
 
 
 def run(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, str]:
@@ -296,15 +304,79 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
     assert "- parked/x | 1 commit(s) not on main | PR: gh failed: HTTP 502 | last: " in out
 
 
-def test_adopt_scan_wrapper_runs_the_core(repo: Fixture) -> None:
-    proc = subprocess.run(
-        ["bash", str(SKILLS / "adopt" / "scripts" / "adopt-scan.sh")], capture_output=True, text=True, check=False
-    )
+def test_the_plugin_runs_adopt_scan(repo: Fixture) -> None:
+    proc = run_plugin("adopt-scan")
     assert proc.returncode == 0  # the bash version exited 1 whenever it found a parked branch
     assert proc.stdout.startswith("== CONFIG ==\nrepo: repo | ")
 
 
 # ---------- tower scan ----------
+
+
+def adopt_line(capsys: pytest.CaptureFixture[str]) -> str:
+    """The ADOPT: line of `tower scan --no-github`."""
+    code, out, _ = run(capsys, "scan", "--no-github")
+    assert code == 0
+    return next(line for line in out.splitlines() if line.startswith("ADOPT: "))
+
+
+def test_scan_says_an_adopted_repo_needs_no_adopting(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    repo.add_worktree("feat-1")
+    repo.write_card("feat-1", "running")
+    repo.add_worktree("feat-2")  # one worktree with no card isn't a reason: Housekeeping lists it
+    repo.write_card("feat-3", "running")
+    repo.add_worktree("feat-3")
+    repo.sessions(interactive("hub", repo.main, "idle"))
+
+    assert adopt_line(capsys) == "ADOPT: no"
+
+
+def test_one_worktree_without_a_card_isnt_a_reason_to_adopt(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """A worktree just made by hand, before its first card: 1 of 1 is most, but Housekeeping's "no card" covers it."""
+    repo.add_worktree("feat-1")
+
+    assert adopt_line(capsys) == "ADOPT: no"
+
+
+def test_an_unreadable_card_isnt_a_missing_one(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """A card the vault won't hand over (permissions, an iCloud file not downloaded) is unknown, not "no card"."""
+    for branch in ("feat-1", "feat-2"):
+        repo.add_worktree(branch)
+        repo.write_card(branch, "running").chmod(0)
+
+    assert adopt_line(capsys) == "ADOPT: no"
+
+
+def test_scan_says_adopt_when_most_worktrees_have_no_card(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    repo.add_worktree("feat-1")
+    repo.add_worktree("feat-2")
+    repo.add_worktree("feat-3")
+    repo.write_card("feat-3", "running")
+
+    assert adopt_line(capsys) == "ADOPT: yes — 2 of 3 worktrees have no card"
+
+
+def test_scan_says_adopt_when_the_main_checkout_has_uncommitted_work_or_shared_sessions(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo.main / "notes.txt").write_text("work in progress\n", encoding="utf-8")
+    repo.sessions(interactive("hub", repo.main, "idle"), interactive("other", repo.main, "busy"))
+
+    assert adopt_line(capsys) == (
+        "ADOPT: yes — the main checkout has 1 uncommitted change;"
+        " 2 interactive sessions share the main checkout (one is the hub)"
+    )
+
+
+def test_scan_doesnt_count_a_folder_of_worktrees_as_work_on_main(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Orca's ./worktrees folder shows as untracked in the main checkout; it isn't a reason to adopt (#4)."""
+    (repo.main / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
+    repo.add_worktree("feat-1")
+    repo.write_card("feat-1", "running")
+
+    assert adopt_line(capsys) == "ADOPT: no"
 
 
 def test_scan_lists_all_issues_on_your_own_repo(
@@ -368,31 +440,27 @@ def test_scan_without_a_ledger_fails_instead_of_reporting_nothing_needs_you(
     repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / "tower.conf").write_text("wip_limit=3\n", encoding="utf-8")
-    proc = subprocess.run(
-        ["bash", str(SKILLS / "hub" / "scripts" / "hub-scan.sh"), "--no-github"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = run_plugin("scan", "--no-github")
     assert (proc.returncode, proc.stdout) == (1, "")
     assert proc.stderr == f"tower: no projects_dir in {tmp_path / 'tower.conf'} (run setup.sh on this machine)\n"
 
 
-# ---------- the wrappers ----------
+# ---------- the plugin's entry points ----------
 
 
-def test_the_card_path_and_rules_wrappers_run_the_core(repo: Fixture, home: Path) -> None:
-    card = subprocess.run(
-        ["bash", str(SKILLS / "status-card" / "scripts" / "card-path.sh")], capture_output=True, text=True, check=True
-    )
-    rules = subprocess.run(
-        ["bash", str(SKILLS / "project-rules" / "scripts" / "project-rules.sh")],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert card.stdout == f"{repo.ledger / 'main.md'}\n"
-    assert rules.stdout == f"{home / '.claude' / 'tower' / 'rules' / 'repo.md'}\n"
+def test_the_plugin_runs_card_path_and_rules(repo: Fixture, home: Path) -> None:
+    assert run_plugin("card-path").stdout == f"{repo.ledger / 'main.md'}\n"
+    assert run_plugin("rules").stdout == f"{home / '.claude' / 'tower' / 'rules' / 'repo.md'}\n"
+
+
+def test_every_script_a_skill_names_exists() -> None:
+    """The skills call `<plugin>/scripts/...` and their own `scripts/...`; a deleted wrapper must not stay named."""
+    for skill in sorted((PLUGIN / "skills").glob("*/*.md")):
+        text = skill.read_text(encoding="utf-8")
+        for name in re.findall(r"<plugin>/scripts/([\w.-]+)", text):
+            assert (PLUGIN / "scripts" / name).is_file(), f"{skill} names <plugin>/scripts/{name}"
+        for name in re.findall(r"(?<![\w>/])scripts/([\w.-]+)", text):
+            assert (skill.parent / "scripts" / name).is_file(), f"{skill} names scripts/{name}"
 
 
 def test_adopt_scan_says_unknown_not_clean_when_git_status_fails(

@@ -6,7 +6,7 @@ which session owns what, what needs you, and how the pieces fit together.
 Each agent works one ticket in its own git worktree and leaves a short **status card** in your Obsidian vault.
 One **hub** session reads only those cards plus git, GitHub, and Claude Code's live session list, and tells you
 on one screen what needs you and what to do next. Nothing it uses is committed to any repo, so it is safe on a
-shared work repo. Already have a messy repo? **adopt** brings it under tower without losing a change.
+shared work repo. Already have a messy repo? The hub's **adopt mode** brings it under tower without losing a change.
 
 tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small per-machine `setup.sh`.
 
@@ -26,19 +26,19 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
  worktree B ──┼─ a card when it stops ─────────────┼─> Vault/Projects/<Project>/Ledger/fix__51-y.md
  worktree C ──┘                                    └─> ...
                                                           │
- main checkout: /tower:hub ── hub-scan.sh ── tower state ──┤ cards
+ main checkout: /tower:hub ── tower scan ── tower state ───┤ cards
                                                            ├ git worktree list, commits not on main
                                                            ├ claude agents --json  (live: busy / idle / waiting)
                                                            ├ the event log (stands in when agent view can't be read)
-                                    hub-scan.sh also reads └ gh: your PRs, open issues
+                                     tower scan also reads └ gh: your PRs, open issues
                      └─> one screen: Needs you → Blocked → Running → Waiting on CI → Done → Housekeeping → ONE next action
 ```
 
 - **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. The worker writes only the prose; tower's core (`tower card write`) fills the top block (YAML frontmatter: `status`, `ticket`, `updated`, `branch`, `pr`, `base`, and `reason` on `needs-you` and `blocked`) from git and GitHub, so Obsidian shows the fields as properties and a card can't say `done` without a PR.
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
-- **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR).
-- **File overlaps**: `tower state` also checks every pair of worktrees (not the main checkout) for files both changed, from git, never from cards: each branch's own commits (not on the other branch, not on the base) plus its uncommitted and untracked files. The hub and the pane list each pair under Housekeeping with the shared files, so two workers editing one file hear about it before merge time. Branches stacked on each other, or cut from the same integration branch, only overlap on files each changed itself.
+- **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR, `--all` for every repo on this machine: each one in the event log, this one, and any with a Ledger folder in the vault).
+- **File overlaps**: `tower state` also checks every pair of worktrees (not the main checkout) for files both changed, from git, never from cards: each branch's own commits (not on the other branch, not on the base; a file only while it still differs from the base, so a squash-merged worktree stops counting) plus its uncommitted and untracked files. The hub and the pane list each pair under Housekeeping with the shared files, so two workers editing one file hear about it before merge time. Branches stacked on each other, or cut from the same integration branch, only overlap on files each changed itself.
 
 ## Install
 
@@ -90,7 +90,7 @@ If the plugin is already installed (for example from a restored `settings.json`)
 ### First time in a repo
 
 1. Open one Claude Code session in the repo's **main checkout** (in Orca: the main worktree). This is your **hub**. Use it only to check status and start work, never to write code.
-2. If the repo already has work in flight (several sessions in one checkout, worktrees with no cards, uncommitted changes in main), type `/tower:adopt` and follow its plan. See [Adopting an existing repo](#adopting-an-existing-repo). Otherwise type `/tower:hub`.
+2. Type `/tower:hub`. If the repo already has work in flight (most worktrees with no card, uncommitted changes in main, several sessions in it), the hub says so and switches to its adopt mode: follow its plan. See [Adopting an existing repo](#adopting-an-existing-repo).
 3. If the project's vault folder isn't named like the repo folder, add `project.<repo>=<Folder>` to `~/.claude/tower.conf` (e.g. `project.poot=Poot`).
 
 ### Starting a ticket
@@ -215,7 +215,7 @@ Set it back to `every` to review PRs again.
 | "no projects_dir … run setup.sh" | run `setup.sh` on this machine |
 | `STALE` on a card | go to that session and ask it to update its card, or check whether it has quietly died |
 | "skipping live sessions" | fine; the hub falls back to cards only |
-| a worktree with `NO CARD` | ask that session to "write your status card", or run adopt |
+| a worktree with `NO CARD` | ask that session to "write your status card", or ask the hub to adopt the repo |
 | no approval prompt before a comment or push | check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
 
 ## Daily loop
@@ -242,8 +242,7 @@ approach, which is what grilling and the spec are for.
 
 | Where | Effort | Why |
 |---|---|---|
-| `status-card`, `project-rules`, `hub` | medium | in-the-loop, quick work |
-| `adopt` | high | must not lose a change, but you approve each step, so it shouldn't assume more |
+| `status-card`, `project-rules`, `hub` (adopt mode included) | medium | in-the-loop, quick work; in adopt mode you approve each step, so it shouldn't assume more |
 | `babysit-pr` | high | verifying bot findings and fixing CI in existing code, often while you're away |
 | worker: feature slice from a clear ticket | medium | "most regular software engineering work" |
 | worker: bug fix in existing code, or runs while you're away | high | "verification is important or there are edge cases" |
@@ -257,16 +256,16 @@ approach, which is what grilling and the spec are for.
 
 ## Adopting an existing repo
 
-`/tower:adopt` (run from the main checkout) is for a repo where work is already in flight and you've lost track.
+The hub's adopt mode is for a repo where work is already in flight and you've lost track. `/tower:hub` (run from the main checkout) switches to it by itself when `tower scan`'s `ADOPT:` line says `yes`: more than half the worktrees (and at least two) have no card, the main checkout has uncommitted changes (a folder that only holds worktrees doesn't count), or more than one interactive session is open in it (the hub is one). Ask the hub to adopt the repo to run it anyway. `/tower:adopt` still works for one release and does the same.
 
-1. **Scan (read-only).** `adopt-scan.sh` (`tower adopt-scan`) lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
+1. **Scan (read-only).** `tower adopt-scan` lists, per worktree: card or not, uncommitted files, commits ahead/behind `origin/<default>`, last commit, PR, ticket guess; the live sessions in each worktree; and branches with unmerged work but no worktree (with their PR state). An untracked folder holding only worktrees (Orca's `./worktrees`) isn't counted as uncommitted; a note says how to exclude it instead.
 2. **One plan, which you approve.** In order:
    - a **paste-in prompt for every live session**: it writes its own first card and, if it's in the main checkout, lists exactly which uncommitted files are its work;
    - **untangling the main checkout**: each session's files move to their own branch + worktree (`git stash push -- <its files>` → `git stash pop` in the new worktree; never `reset`, `checkout .`, or `clean`);
    - **draft cards** from git facts for worktrees with no live session, marked `needs-you` until you confirm;
    - **WIP**: what to park first (merged or untouched longest), and cleanup suggestions;
    - **tickets** for work with no issue (creating one asks you).
-3. **Steps run one at a time**, only the ones you approve. Nothing is deleted. It ends by running the hub.
+3. **Steps run one at a time**, only the ones you approve. Nothing is deleted. It ends with the hub's usual report.
 
 ## Skills
 
@@ -278,8 +277,8 @@ description, or you type `/tower:<name>`.
 | Skill | Fires when | What it does |
 |---|---|---|
 | `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Pipes the card's sections (Done, Why it matters, Needs you, Verify, Words used) into `tower card write`, which picks the status from the branch's PR (none → running, open → waiting-ci, merged → done; the agent may ask for needs-you or blocked with a reason, or done while its PR waits on your merge, never without a PR) and overwrites the card in the vault. The card is the short version for the hub; the final chat message is the full version for you. |
-| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Suggests `adopt` when the repo clearly hasn't been adopted. |
-| `tower:adopt` | you want to start tower on a messy, in-flight repo | See [above](#adopting-an-existing-repo). |
+| `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `tower scan` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Switches to adopt mode when the repo hasn't been brought under tower yet ([above](#adopting-an-existing-repo)). |
+| `tower:adopt` | you type `/tower:adopt` | The old name for the hub's adopt mode, kept for one release. |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
 | `tower:babysit-pr` | you say "babysit / watch / monitor the PR" | Runs `pr-wait` (one line per real event: check failed, comment, review, base moved, merged) and fixes real CI failures and review findings. Drafts every public action and waits for your approval. Waits on your repo's own required checks (`--until green`). |
 | `tower:leaving-pr-comments` | any agent comment on GitHub | Starts each comment with "🤖 <model> responding on behalf of <you>", keeps it short, checks for secrets. |
@@ -463,11 +462,10 @@ tower/
     hooks/register.tsx                the pane mod: the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  the pane's saved state, as Claude Code checks it
     tests/                            claude plugin test plugin; fixtures/ holds `tower state --json` output tests/test_state.py checks
-    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, run-tower.py (the core's CLI, for the skills' scripts and the pane)
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, run-tower.py (the core's CLI, for the skills and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
-    skills/                           hub/ status-card/ adopt/ project-rules/ babysit-pr/ leaving-pr-comments/
-                                      (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
-                                      `card-path` and `rules`, kept for one release)
+    skills/                           hub/ (ADOPT.md: its adopt mode) status-card/ project-rules/ babysit-pr/
+                                      leaving-pr-comments/ adopt/ (an alias for the hub's adopt mode, for one release)
   src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
   tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI, setup.sh's install
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
@@ -502,7 +500,7 @@ which needs no login). Run `mise install` once first.
 - **Cards are only as fresh as the last time an agent wrote one.** The hub flags `running` cards untouched for 24h as `STALE`, and `tower state` trusts live session status over a card.
 - **Agent view's JSON format isn't documented.** If it changes, the hub prints one "skipping live sessions" line and works from cards alone.
 - **Worktrees share runtime state:** ports, databases, environment variables, and git-ignored folders. A project's runtime config gives each worktree its own port and database name (see "Running several dev servers at once"); without one, they still clash. In Poot, `data/` exists only in the main checkout, so worktrees don't have it until you run the config's `seed` command.
-- **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). adopt checks the actual diff before calling a branch unshipped.
+- **"Commits not on main" isn't proof work is missing from main** (squash merges, cherry-picks). Adopt mode checks the actual diff before calling a branch unshipped.
 - **Orca names the branch, not the hub.** `--name feat/42-x` is Orca's display name; with Orca's Branch prefix set to
   your git username the branch is `rishi-desai/feat-42-x`, and the card is named after that branch. Set the prefix to
   none in Orca's settings if you want the two to match.
