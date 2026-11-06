@@ -18,31 +18,33 @@ Pushes:       depends on push_approval in ~/.claude/tower.conf
                 none            -> pushes never ask
               An unknown value is treated as `every`, the safest choice.
 
-Rule files:   any Edit/Write/MultiEdit of a CLAUDE.local.md, a file under ~/.claude/tower/rules/, a
-              tower.conf or ~/.claude/tower/policy.toml, and any Bash command naming those paths, always
-              asks. Rule files are standing instructions loaded into every session and tower.conf sets the
-              approvals above, so a prompt injection must not be able to change them silently.
+Rule files:   any Edit/Write/MultiEdit of a CLAUDE.local.md, a file under ~/.claude/tower/ (the rules,
+              and later T09's policy file) or a tower.conf, and any Bash command naming those paths,
+              always asks. Rule files are standing instructions loaded into every session and tower.conf
+              sets the approvals above, so a prompt injection must not be able to change them silently.
 
-How a command is read: it is split into simple commands roughly the way bash splits it: on && || ; |
-& and newlines and around ( ), respecting quotes, escapes, comments and heredocs. Commands inside $( ),
-backticks and <( ) are checked too, and so is the code given to `bash -c` (or sh, zsh, ...), to eval,
-or to a shell through a heredoc. In each simple command, every word that is git or gh (by any path)
-starts an invocation to check, so wrappers like env, command, xargs, nohup, sudo and timeout need no
-special case. git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and
-gh's command words are found the way gh itself finds them, so -R/--repo can come anywhere.
+How a command is read: it is split into simple commands roughly the way bash or zsh splits it: on
+&& || ; | & and newlines and around ( ), respecting quotes, escapes, comments, heredocs, case
+statements and arithmetic. Commands inside $( ), backticks and <( ) are checked too, and so is the code
+given to `bash -c` (or sh, zsh, ...), `env -S`, eval, or a shell through a heredoc. In each simple
+command, every word naming git or gh (by any path, in any letter case) starts an invocation to check,
+so wrappers like env, command, xargs, nohup, sudo and timeout need no special case. git's global
+options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and gh's command words are found
+the way gh itself finds them, so -R/--repo can come anywhere.
 
-When unsure, we ask: a command that can't be split (an unclosed quote, $( or backtick), commands piped
-into a shell, a git or gh subcommand or gh api method taken from a variable or command output, input
-that isn't a well-formed tool call, and any crash in this hook.
+When unsure, we ask: a command that can't be split (an unclosed quote, $( or backtick), a shell fed
+commands from a pipe or <( ), a git or gh subcommand or gh api method taken from a variable or command
+output, JSON that isn't a well-formed tool call, a command too big to check quickly, and any crash in
+this hook. (Input that isn't JSON at all passes, leaving the call to Claude Code's own rules.)
 
 Limits: this sees only the command text. These are not caught:
   - scripts and programs: `bash script.sh`, `python x.py`, `make`, or anything that calls the GitHub
     API itself (such as curl with a token);
   - commands built at run time: a variable or command output used as the program or as eval/-c code
     (`$GIT push`, `eval "$(...)"`, `bash -c "$CMD"`), or xargs input that supplies the subcommand;
-  - aliases and functions: git aliases (`git p` for push), `gh alias`, and shell functions;
-  - disguised names: globs, brace expansion and $'...' escapes in a program name or rule-file path, or
-    a rule-file path built from variables;
+  - aliases and functions: git aliases (`git p` for push), `gh alias set`, and shell functions;
+  - disguised names: globs, brace expansion, $'...' escapes or zsh glob qualifiers in a program name,
+    and a protected path reached through cd and a relative path, a glob or a variable;
   - under push_approval=force, a variable holding a force refspec (`git push origin "$REF"`, REF=+main).
 """
 
@@ -126,15 +128,23 @@ GH_API_SHORT_FLAGS = {
 }
 # Shells whose -c code, or a heredoc fed to them, is checked like the command line itself.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish"}
-INVOKERS = {"git", "gh", "eval"} | SHELLS  # the words that start an invocation we check
+# The programs that start an invocation we check: env for its -S string, source/. for a <( ) they run.
+INVOKERS = {"git", "gh", "eval", "env", "source", "."} | SHELLS
 # Commands that run the rest of their words as a command. Only used to tell `... | sudo bash` (a shell
 # reading the pipe) from `... | grep bash` (bash is just an argument).
-PREFIX_COMMANDS = {"env", "command", "builtin", "exec", "nohup", "sudo", "time"}
+WRAPPERS = {"env", "command", "builtin", "exec", "nohup", "sudo", "doas", "time", "timeout", "nice", "stdbuf", "xargs"}
+# env's options that take the next word as their value (GNU and BSD env).
+ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "-P"}
+# gh's built-in aliases for write subcommands (the ALIASES line of `gh <group> <subcommand> --help`).
+GH_ALIASES = {"pr": {"new": "create"}, "issue": {"new": "create"}, "release": {"new": "create"}}
+# git push's long options that force or delete; git also accepts any unambiguous prefix (--del).
+GIT_PUSH_FORCE_OPTIONS = ("force", "force-with-lease", "force-if-includes", "mirror", "delete", "prune")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 MAX_NESTING = 8  # shells inside shells (bash -c "bash -c '...'") before we stop and ask
 WORK_BUDGET = 2_000_000  # characters split plus words examined per tool call: well under a second of work
 
-GH_DYNAMIC = "gh with a subcommand from a variable or command output can't be checked"
+GH_DYNAMIC_REASON = "gh with a subcommand from a variable or command output can't be checked"
+HIDDEN_CODE_REASON = "feeds a shell commands from a pipe or <( ), where they can't be checked"
 
 
 def conf_mode(key: str, allowed: set[str]) -> str:
@@ -184,32 +194,28 @@ class SimpleCommand:
     piped: bool = False  # it reads the output of the command before it in a pipeline
 
 
+@dataclass
+class PendingHeredoc:
+    """A heredoc whose body starts on the line after its << operator."""
+
+    command: SimpleCommand
+    delimiter: str
+    strip_tabs: bool  # <<- strips leading tabs from each body line
+    expanded: bool  # the delimiter is unquoted, so bash runs the $( ) and backticks in the body
+
+
 REDIRECT = re.compile(r"&>>|&>|\d*(?:<<<|<<-|<<|<>|<&|>>|>&|>\||<|>)")
 OPERATORS = (";;&", ";;", ";&", "&&", "||", "|&", ";", "&", "|")
 WORD_END = set(" \t\r\n;&|()<>")
 VARIABLE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])")
+# Words after which the next word still starts a command (`if x; then case ...`).
+RESERVED_WORDS = {"!", "{", "if", "then", "else", "elif", "while", "until", "do", "time"}
 
 
 def split_commands(text: str) -> list[SimpleCommand]:
     """Split shell TEXT into simple commands, including those inside $( ), backticks and <( ). Raises Unparseable."""
     splitter = CommandSplitter(text)
     splitter.split()
-    return splitter.commands
-
-
-def expansion_commands(text: str) -> list[SimpleCommand]:
-    """The commands inside the $( ) and backticks of TEXT, such as an unquoted heredoc's body, which bash expands."""
-    splitter = CommandSplitter(text)
-    while splitter.pos < len(text):
-        char = splitter.peek()
-        if char == "\\":
-            splitter.pos += 2
-        elif char == "$":
-            splitter.read_dollar(quoted=True)
-        elif char == "`":
-            splitter.read_backtick()
-        else:
-            splitter.pos += 1
     return splitter.commands
 
 
@@ -220,8 +226,8 @@ class CommandSplitter:
         self.src = src
         self.pos = 0
         self.commands: list[SimpleCommand] = []
-        # Heredocs whose bodies start after the current line: (command, delimiter, strip tabs, body is expanded).
-        self.heredocs: list[tuple[SimpleCommand, str, bool, bool]] = []
+        self.heredocs: list[PendingHeredoc] = []  # started on the current line; their bodies come after it
+        self.arithmetic = 0  # (( )), $(( )) being read: << there is a shift, not a heredoc
 
     def peek(self, offset: int = 0) -> str:
         """The character OFFSET places ahead, or "" past the end."""
@@ -231,11 +237,12 @@ class CommandSplitter:
     def split(self, closer: str = "") -> None:
         """Read commands up to CLOSER (")" ends a $( or <( ), or to the end of the input if CLOSER is ""."""
         command = SimpleCommand()
-        depth = 0  # subshells "(" opened in this call and not yet closed
+        parens: list[bool] = []  # "(" opened in this call and not yet closed; True if it starts an arithmetic ((
+        cases = 0  # case statements open in this call: the ")" after each pattern closes nothing
         while True:
             char = self.peek()
             if not char:
-                if closer or depth:
+                if closer or parens:
                     raise Unparseable("an unclosed ( or $(")
                 self.finish(command)
                 return
@@ -251,15 +258,18 @@ class CommandSplitter:
                 end = self.src.find("\n", self.pos)
                 self.pos = end if end >= 0 else len(self.src)
             elif char == "(":
+                arithmetic = self.peek(1) == "("
+                parens.append(arithmetic)
+                self.arithmetic += 1 if arithmetic else 0
                 self.pos += 1
-                depth += 1
                 command = self.finish(command, keep_pipe=True)
             elif char == ")":
                 self.pos += 1
                 command = self.finish(command)
-                if depth == 0 and closer:
+                if parens:
+                    self.arithmetic -= 1 if parens.pop() else 0
+                elif closer and not cases:
                     return
-                depth = max(depth - 1, 0)
             elif char in "<>" and self.peek(1) == "(":
                 command.words.append(self.read_process_substitution())
             elif redirect := REDIRECT.match(self.src, self.pos):
@@ -270,7 +280,13 @@ class CommandSplitter:
                 command = self.finish(command)
                 command.piped = operator in ("|", "|&")
             else:
-                command.words.append(self.read_word())
+                word = self.read_word()
+                if not command.words or command.words[-1].text in RESERVED_WORDS:
+                    if word.text == "case":
+                        cases += 1
+                    elif word.text == "esac" and cases:
+                        cases -= 1
+                command.words.append(word)
 
     def finish(self, command: SimpleCommand, keep_pipe: bool = False) -> SimpleCommand:
         """Record COMMAND if it has words and return a fresh one, still reading COMMAND's pipe if KEEP_PIPE."""
@@ -292,11 +308,7 @@ class CommandSplitter:
                     parts.append(self.peek(1) or "\\")
                 self.pos += 2
             elif char == "'":
-                end = self.src.find("'", self.pos + 1)
-                if end < 0:
-                    raise Unparseable("an unclosed '")
-                parts.append(self.src[self.pos + 1 : end])
-                self.pos = end + 1
+                parts.append(self.read_single_quoted())
             elif char == '"':
                 self.pos += 1
                 text, starts_dynamic = self.read_double_quoted()
@@ -313,6 +325,15 @@ class CommandSplitter:
                 parts.append(char)
                 self.pos += 1
             has_text = has_text or bool(parts and parts[-1])
+
+    def read_single_quoted(self) -> str:
+        """Read a '...' string from its opening quote; returns the text between the quotes."""
+        end = self.src.find("'", self.pos + 1)
+        if end < 0:
+            raise Unparseable("an unclosed '")
+        text = self.src[self.pos + 1 : end]
+        self.pos = end + 1
+        return text
 
     def read_double_quoted(self) -> tuple[str, bool]:
         """Read the rest of a "..." string; returns its text and whether it starts with an expansion."""
@@ -349,11 +370,14 @@ class CommandSplitter:
         start = self.pos
         after = self.peek(1)
         if after == "(":
+            arithmetic = 1 if self.peek(2) == "(" else 0  # $(( is arithmetic
             self.pos += 2
+            self.arithmetic += arithmetic
             self.split(closer=")")
-        elif after == "{":
+            self.arithmetic -= arithmetic
+        elif after in ("{", "["):  # ${...}, or $[...] (old-style arithmetic)
             self.pos += 2
-            self.read_braced(quoted)
+            self.read_braced(quoted, after)
         elif after == "'" and not quoted:
             self.read_ansi_c()
         elif after == '"' and not quoted:
@@ -367,20 +391,19 @@ class CommandSplitter:
             return "$", False
         return self.src[start : self.pos], True
 
-    def read_braced(self, quoted: bool) -> None:
-        """Skip the rest of a ${...} expansion (QUOTED: inside "..."), splitting out any commands inside it."""
+    def read_braced(self, quoted: bool, opener: str) -> None:
+        """Skip the rest of a ${...} or $[...] (OPENER is { or [; QUOTED: inside "..."), splitting out any commands
+        inside it."""
+        closer = {"{": "}", "[": "]"}[opener]
         depth = 1
         while depth:
             char = self.peek()
             if not char:
-                raise Unparseable("an unclosed ${")
+                raise Unparseable(f"an unclosed ${opener}")
             if char == "\\":
                 self.pos += 2
             elif char == "'" and not quoted:
-                end = self.src.find("'", self.pos + 1)
-                if end < 0:
-                    raise Unparseable("an unclosed '")
-                self.pos = end + 1
+                self.read_single_quoted()
             elif char == '"':
                 self.pos += 1
                 self.read_double_quoted()
@@ -389,7 +412,7 @@ class CommandSplitter:
             elif char == "`":
                 self.read_backtick()
             else:
-                depth += {"{": 1, "}": -1}.get(char, 0)
+                depth += {opener: 1, closer: -1}.get(char, 0)
                 self.pos += 1
 
     def read_ansi_c(self) -> None:
@@ -442,15 +465,15 @@ class CommandSplitter:
             raise Unparseable(f"a {operator} with nothing after it")
         start = self.pos
         target = self.read_word()
-        if operator in ("<<", "<<-"):
+        if operator in ("<<", "<<-") and not self.arithmetic:
             quoted = any(char in self.src[start : self.pos] for char in "'\"\\")
-            self.heredocs.append((command, target.text, operator == "<<-", not quoted))
+            self.heredocs.append(PendingHeredoc(command, target.text, operator == "<<-", not quoted))
         elif operator == "<<<":
             command.stdin_text = target.text
 
     def read_heredoc_bodies(self) -> None:
         """Read the bodies of the heredocs started on the line that just ended, in order."""
-        for command, delimiter, strip_tabs, expanded in self.heredocs:
+        for heredoc in self.heredocs:
             lines: list[str] = []
             while self.pos < len(self.src):
                 end = self.src.find("\n", self.pos)
@@ -458,15 +481,30 @@ class CommandSplitter:
                     end = len(self.src)
                 line = self.src[self.pos : end]
                 self.pos = end + 1
-                if strip_tabs:
+                if heredoc.strip_tabs:
                     line = line.lstrip("\t")
-                if line == delimiter:
+                if line == heredoc.delimiter:
                     break
                 lines.append(line)
-            command.stdin_text = "\n".join(lines)
-            if expanded:  # an unquoted delimiter: bash runs the $( ) and backticks in the body
-                self.commands.extend(expansion_commands(command.stdin_text))
+            heredoc.command.stdin_text = "\n".join(lines)
+            if heredoc.expanded:
+                body = CommandSplitter(heredoc.command.stdin_text)
+                body.split_expansions()
+                self.commands.extend(body.commands)
         self.heredocs = []
+
+    def split_expansions(self) -> None:
+        """Split out only the commands in the $( ) and backticks of the text, as bash does for a heredoc body."""
+        while self.pos < len(self.src):
+            char = self.peek()
+            if char == "\\":
+                self.pos += 2
+            elif char == "$":
+                self.read_dollar(quoted=True)
+            elif char == "`":
+                self.read_backtick()
+            else:
+                self.pos += 1
 
 
 # --- Judging the commands -------------------------------------------------------------------------
@@ -483,10 +521,10 @@ class CommandChecker:
     timeout lets the command through unchecked; a huge or crafted command raises TooComplex instead.
     """
 
-    def __init__(self, push: str, pr_approval: str, budget: int = WORK_BUDGET) -> None:
+    def __init__(self, push: str, pr_approval: str) -> None:
         self.push = push
         self.pr_approval = pr_approval
-        self.budget = budget
+        self.budget = WORK_BUDGET
 
     def spend(self, units: int) -> None:
         """Use UNITS of the work budget; raise TooComplex once it is gone."""
@@ -503,6 +541,8 @@ class CommandChecker:
             commands = split_commands(command_line)
         except Unparseable as err:
             return [f"has {err}, so it can't be split into commands to check"]
+        except RecursionError:  # $( ) or ( ) nested hundreds deep
+            return ["nests $( ) or ( ) too deeply to check"]
         reasons: list[str] = []
         for command in commands:
             for index in range(len(command.words)):
@@ -512,54 +552,98 @@ class CommandChecker:
         return reasons
 
     def check_invocation(self, command: SimpleCommand, index: int, depth: int) -> list[str]:
-        """Reasons to ask if word INDEX of COMMAND is git, gh, eval or a shell, run with the words after it.
+        """Reasons to ask if word INDEX of COMMAND is one of INVOKERS (git, gh, a shell, eval, env -S, source),
+        run with the words after it.
 
         Looking at every word, not just the first, covers wrappers like env, xargs, sudo and timeout.
         """
-        word = command.words[index]
-        name = "" if word.dynamic else os.path.basename(word.text)
+        name = program_name(command.words[index])
         if name not in INVOKERS:
             return []
         self.spend(len(command.words) - index)
         args = command.words[index + 1 :]
         if name == "eval":
             return self.check(" ".join(arg.text for arg in args), depth + 1)
+        if name == "env":
+            code = env_split_string(args)
+            return self.check(code, depth + 1) if code is not None else []
+        if name in ("source", "."):
+            return [HIDDEN_CODE_REASON] if args and is_process_substitution(args[0]) else []
         if name in SHELLS:
-            return self.check_shell(args, command, index == program_index(command.words), depth)
+            return self.check_shell(args, command, runs_as_program(command.words, index), depth)
         reason = check_git(args, self.push) if name == "git" else check_gh(args, self.pr_approval)
         return [reason] if reason else []
 
     def check_shell(self, args: list[Word], command: SimpleCommand, is_program: bool, depth: int) -> list[str]:
         """Reasons to ask for a shell run with ARGS: its -c code or heredoc is checked like any command line.
 
-        Commands piped into it can't be seen, so that asks when the shell is COMMAND's program. A script
-        file it runs isn't checked (see Limits).
+        Code it gets from a pipe (when it is COMMAND's program) or a <( ) can't be seen, so that asks. A
+        script file it runs isn't checked (see Limits).
         """
-        code, reads_stdin = shell_input(args)
-        if code is not None:
-            return self.check(code, depth + 1)
-        if not reads_stdin:
+        shell = parse_shell_args(args)
+        if shell.code is not None:
+            return self.check(shell.code, depth + 1)
+        if shell.script is not None and is_process_substitution(shell.script):
+            return [HIDDEN_CODE_REASON]
+        if not shell.from_stdin:
             return []
         if command.stdin_text is not None:
             return self.check(command.stdin_text, depth + 1)
         if command.piped and is_program:
-            return ["pipes commands into a shell, where they can't be checked"]
+            return [HIDDEN_CODE_REASON]
         return []
 
 
-def program_index(words: list[Word]) -> int:
-    """Index of the program a simple command runs: past VAR=value assignments and prefix commands like sudo."""
+def program_name(word: Word) -> str:
+    """The program WORD names, lower-cased since macOS finds GIT as git: its last path part, without zsh's "="
+    prefix (=git is git's path); "" if that part comes from a variable or command output."""
+    name = os.path.basename(word.text).lstrip("=").lower()
+    return "" if "$" in name or "`" in name else name
+
+
+def runs_as_program(words: list[Word], index: int) -> bool:
+    """Whether word INDEX is the program its command runs, not an argument (bash in `grep bash`): the first word
+    after VAR=value assignments, or any word when that first word is a wrapper like sudo, env or timeout."""
+    first = 0
+    while first < index and ASSIGNMENT.match(words[first].text):
+        first += 1
+    return index == first or program_name(words[first]) in WRAPPERS
+
+
+def is_process_substitution(word: Word) -> bool:
+    """Whether WORD is a <( ) or >( ): a file name bash makes up for a command's output."""
+    return word.dynamic and word.text.startswith(("<(", ">("))
+
+
+def env_split_string(args: list[Word]) -> str | None:
+    """The command `env` runs from -S/--split-string (env -S 'git push'), or None if it has none."""
     index = 0
-    while index < len(words):
-        text = words[index].text
-        if not (ASSIGNMENT.match(text) or text in PREFIX_COMMANDS or (index and text.startswith("-"))):
-            break
-        index += 1
-    return index
+    while index < len(args):
+        text = args[index].text
+        following = args[index + 1].text if index + 1 < len(args) else None
+        if text.startswith("--split-string="):
+            return text.split("=", 1)[1]
+        if text == "--split-string":
+            return following
+        if text.startswith("-") and not text.startswith("--") and "S" in text:
+            return text[text.index("S") + 1 :] or following
+        if not text.startswith("-") and not ASSIGNMENT.match(text):
+            return None  # the command env runs starts here
+        index += 2 if text in ENV_OPTIONS_WITH_VALUE else 1
+    return None
 
 
-def shell_input(args: list[Word]) -> tuple[str | None, bool]:
-    """What a shell run with ARGS executes: its -c code (or None), and whether it reads commands from stdin."""
+@dataclass
+class ShellArgs:
+    """What a shell's arguments say it runs."""
+
+    code: str | None = None  # the code given with -c
+    script: Word | None = None  # the script file it runs
+    from_stdin: bool = False  # it reads commands from standard input
+
+
+def parse_shell_args(args: list[Word]) -> ShellArgs:
+    """What a shell run with ARGS executes: -c code, a script file, or commands from standard input."""
     index = 0
     runs_code = from_stdin = False
     while index < len(args):
@@ -573,7 +657,7 @@ def shell_input(args: list[Word]) -> tuple[str | None, bool]:
             runs_code = True
             index += 1
         elif text.startswith("--command="):
-            return text.split("=", 1)[1], False
+            return ShellArgs(code=text.split("=", 1)[1])
         elif text.startswith("--"):
             index += 1
         elif len(text) > 1 and text[0] in "-+":
@@ -582,10 +666,12 @@ def shell_input(args: list[Word]) -> tuple[str | None, bool]:
             index += 2 if ("o" in text or "O" in text) else 1  # -o/-O take an option name
         else:
             break
-    operand = args[index].text if index < len(args) else None
+    operand = args[index] if index < len(args) else None
     if runs_code:
-        return operand, False
-    return None, from_stdin or operand in (None, "-")
+        return ShellArgs(code=operand.text if operand else None)
+    if operand is None or operand.text == "-":
+        return ShellArgs(from_stdin=True)
+    return ShellArgs(script=operand, from_stdin=from_stdin)
 
 
 def check_git(args: list[Word], mode: str) -> str | None:
@@ -621,10 +707,11 @@ def check_push(args: list[Word], mode: str, action: str) -> str | None:
 
 
 def is_force_push_arg(arg: str) -> bool:
-    """Whether a git push argument forces or deletes: --force*, --mirror, --delete, --prune, f or d among
-    short options (-f, -fu), or a refspec starting with + (force) or : (delete)."""
+    """Whether a git push argument forces or deletes: --force*, --mirror, --delete, --prune or a prefix of one,
+    f or d among short options (-f, -fu), or a refspec starting with + (force) or : (delete)."""
     if arg.startswith("--"):
-        return arg.startswith(("--force", "--mirror", "--delete", "--prune"))
+        name = arg[2:].split("=", 1)[0]
+        return bool(name) and any(option.startswith(name) for option in GIT_PUSH_FORCE_OPTIONS)
     if arg.startswith("-"):
         return "f" in arg or "d" in arg
     return arg.startswith(("+", ":"))
@@ -637,7 +724,7 @@ def check_gh(args: list[Word], pr_approval: str) -> str | None:
         return None
     group = args[indexes[0]]
     if group.dynamic:
-        return GH_DYNAMIC
+        return GH_DYNAMIC_REASON
     if group.text == "api":
         return check_gh_api(args[: indexes[0]] + args[indexes[0] + 1 :])
     writes = GH_WRITE_SUBCOMMANDS.get(group.text, set())
@@ -645,12 +732,13 @@ def check_gh(args: list[Word], pr_approval: str) -> str | None:
         return None
     subcommand = args[indexes[1]]
     if subcommand.dynamic:
-        return GH_DYNAMIC
-    if subcommand.text not in writes:
+        return GH_DYNAMIC_REASON
+    name = GH_ALIASES.get(group.text, {}).get(subcommand.text, subcommand.text)
+    if name not in writes:
         return None
-    if pr_approval == "none" and group.text == "pr" and subcommand.text in PR_SELF_SERVE:
+    if pr_approval == "none" and group.text == "pr" and name in PR_SELF_SERVE:
         return None
-    return f"gh {group.text} {subcommand.text} posts or changes something on GitHub"
+    return f"gh {group.text} {name} posts or changes something on GitHub"
 
 
 def gh_command_indexes(args: list[Word]) -> list[int]:
@@ -680,31 +768,38 @@ def gh_command_indexes(args: list[Word]) -> list[int]:
 def check_gh_api(args: list[Word]) -> str | None:
     """Reason to ask for `gh api` with ARGS (everything but the word `api`): a GraphQL mutation or a query
     we can't read, or a REST call with a write method, or with fields or --input and no method."""
-    method, fields, has_input, endpoint = parse_gh_api(args)
-    if endpoint is not None and endpoint.text == "graphql" and not endpoint.dynamic:
+    call = parse_gh_api(args)
+    if call.endpoint is not None and call.endpoint.text == "graphql" and not call.endpoint.dynamic:
         if any("mutation" in arg.text for arg in args):
             return "gh api graphql mutation changes something on GitHub"
-        reads_file = has_input or any(
-            key == "query" and value.startswith("@") for key, _, value in (f.text.partition("=") for f in fields)
+        reads_file = call.has_input or any(
+            key == "query" and value.startswith("@") for key, _, value in (f.text.partition("=") for f in call.fields)
         )
         return "gh api graphql reads its query from a file, so it can't be checked" if reads_file else None
-    if method is not None:
-        if method.dynamic:
+    if call.method is not None:
+        if call.method.dynamic:
             return "gh api with a method from a variable or command output can't be checked"
-        verb = method.text.upper()
+        verb = call.method.text.upper()
         return f"gh api {verb} changes something on GitHub" if verb in WRITE_METHODS else None
-    if fields or has_input:
+    if call.fields or call.has_input:
         return "gh api with fields defaults to POST, which changes something on GitHub"
     return None
 
 
-def parse_gh_api(args: list[Word]) -> tuple[Word | None, list[Word], bool, Word | None]:
+@dataclass
+class GhApiCall:
+    """What a `gh api` command's arguments ask for."""
+
+    endpoint: Word | None = None
+    method: Word | None = None  # the last -X/--method given
+    fields: list[Word] = field(default_factory=list)  # -f/-F/--field/--raw-field values
+    has_input: bool = False  # --input: the request body comes from a file
+
+
+def parse_gh_api(args: list[Word]) -> GhApiCall:
     """Parse gh api's ARGS the way its flag library (pflag) does: values attached (-XPOST, -X=POST,
-    --method=POST) or separate, short switches clustered (-iXPOST). Returns the method (the last one
-    given), the -f/-F field values, whether --input was given, and the endpoint."""
-    method: Word | None = None
-    fields: list[Word] = []
-    has_input = False
+    --method=POST) or separate, short switches clustered (-iXPOST)."""
+    call = GhApiCall()
     positionals: list[Word] = []
     index = 0
     while index < len(args):
@@ -729,7 +824,7 @@ def parse_gh_api(args: list[Word]) -> tuple[Word | None, list[Word], bool, Word 
         index += 1
         if name is None:
             continue
-        if value is not None:
+        if value is not None:  # attached to its flag, so judge it by its own first character
             word = Word(value, dynamic=value.startswith(("$", "`")))
         elif index < len(args):
             word = args[index]
@@ -737,26 +832,27 @@ def parse_gh_api(args: list[Word]) -> tuple[Word | None, list[Word], bool, Word 
         else:
             word = Word("")
         if name == "method":
-            method = word
+            call.method = word
         elif name in ("field", "raw-field"):
-            fields.append(word)
+            call.fields.append(word)
         elif name == "input":
-            has_input = True
-    return method, fields, has_input, positionals[0] if positionals else None
+            call.has_input = True
+    call.endpoint = positionals[0] if positionals else None
+    return call
 
 
 # --- Rule files and the hook itself ---------------------------------------------------------------
 
-RULE_PATH = re.compile(
-    r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/rules/|(?:^|/)tower\.conf$|/\.claude/tower/policy\.toml$"
-)
-RULE_MENTION = re.compile(r"CLAUDE\.local\.md|\.claude/tower/rules|tower\.conf|\.claude/tower/policy\.toml")
+# Rule files and tower's settings: CLAUDE.local.md, anything under ~/.claude/tower/ (the rules, and later the
+# policy file), and tower.conf. Case-insensitive, since macOS's disk is: TOWER.conf is tower.conf.
+PROTECTED_PATH = re.compile(r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/|(?:^|/)tower\.conf$", re.IGNORECASE)
+PROTECTED_MENTION = re.compile(r"CLAUDE\.local\.md|\.claude/tower|tower\.conf", re.IGNORECASE)
 
 
-def check_rule_edit(file_path: str) -> str | None:
-    """Reason to ask for an edit tool call that targets a personal rule file or tower's approval settings."""
-    if RULE_PATH.search(os.path.expanduser(file_path)):
-        return f"edits a personal rule file or tower's approval settings ({file_path})"
+def check_protected_edit(file_path: str) -> str | None:
+    """Reason to ask for an edit tool call that targets a personal rule file or tower's settings."""
+    if PROTECTED_PATH.search(os.path.expanduser(file_path)):
+        return f"edits a personal rule file or tower's settings ({file_path})"
     return None
 
 
@@ -790,8 +886,8 @@ def decide(call: object) -> tuple[list[str], str] | None:
         file_path = tool_input.get("file_path") or ""
         if not isinstance(file_path, str):
             return unreadable
-        reason = check_rule_edit(file_path)
-        return ([reason], "Rule change — approve? ") if reason else None
+        reason = check_protected_edit(file_path)
+        return ([reason], "Rule or settings change — approve? ") if reason else None
     command = tool_input.get("command") or ""
     if not isinstance(command, str):
         return unreadable
@@ -799,8 +895,8 @@ def decide(call: object) -> tuple[list[str], str] | None:
         reasons = CommandChecker(push_mode(), pr_mode()).check(command)
     except TooComplex:
         reasons = ["is too long or complex to check in time"]
-    if RULE_MENTION.search(command):
-        reasons.append("the command touches a personal rule file or tower's approval settings")
+    if PROTECTED_MENTION.search(command):
+        reasons.append("the command touches a personal rule file or tower's settings")
     return (reasons, "Public action or rule change — approve? ") if reasons else None
 
 

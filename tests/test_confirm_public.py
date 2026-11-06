@@ -92,6 +92,18 @@ ALWAYS_ASK = [
     "cat > notes.md <<'EOF'\nIt's done\nEOF\ngh pr comment 5 --body-file notes.md\n# that's all",
     "echo a#b; gh pr comment 5 -b hi",
     "cat <<EOF\n$(gh pr comment 5 -b hi)\nEOF",
+    # << is a shift in arithmetic, not a heredoc, so the next line still runs; a case pattern's ) closes nothing
+    "echo $(( 1 << 2 ))\ngh pr comment 5 -b hi",
+    "(( n = 1 << 4 ))\ngh pr comment 5 -b hi",
+    "echo $[1<<2]\ngh pr comment 5 -b hi",
+    'echo "$(case a in a) gh pr comment 5 -b hi;; esac)"',
+    # env -S, gh's built-in aliases, and program names macOS and zsh resolve to gh
+    "env -S 'gh pr comment 5 -b hi'",
+    "gh issue new -t x -b y",
+    "gh release new v1",
+    "GH pr comment 5 -b hi",
+    '"$HOME/bin/gh" pr comment 5 -b hi',
+    "=gh pr comment 5 -b hi",
 ]
 PR_CHANGES = [
     "gh pr create --fill",
@@ -106,6 +118,7 @@ PR_CHANGES = [
     "gh -R owner/repo pr merge 3 --squash",
     "bash -c 'gh pr merge 5 --squash'",
     "env FOO=1 gh pr create --fill",
+    "gh pr new --fill",
 ]
 PUSHES = [
     "git push",
@@ -144,6 +157,9 @@ PUSHES = [
     # a subcommand from a variable could be push
     "git $sub origin x",
     "for c in fetch push; do git $c; done",
+    "x=$(( 1 << 2 ))\ngit push",
+    "GIT push",
+    "env -S 'git push origin x'",
 ]
 FORCE = [
     "git push --force origin x",
@@ -159,6 +175,10 @@ FORCE = [
     "git push --prune origin 'refs/heads/*:refs/heads/*'",
     "bash -c 'git push --force-with-lease'",
     "env FOO=1 git push origin :old",
+    # git accepts any unambiguous prefix of a long option
+    "git push origin --del old",
+    "git push --mir",
+    "git push --forc",
 ]
 READS = [
     "gh pr view 5",
@@ -198,6 +218,8 @@ READS = [
     "bash -c 'git status'",
     "env FOO=1 git status",
     "ps aux | grep bash",
+    "echo $(( 1 << 2 ))",
+    'echo "$(case a in a) echo hi;; esac)"',
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -210,6 +232,9 @@ UNCHECKABLE = [
     "gh pr $action 5",
     "gh $group comment 5",
     'gh api -X "$METHOD" repos/a/b/issues',
+    "echo 'git push' | timeout 30 bash",
+    "bash <(echo 'git push')",
+    "source <(echo 'git push')",
 ]
 
 
@@ -294,8 +319,8 @@ def test_reads_pass(tmp_path: Path, command: str, push: str) -> None:
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", UNCHECKABLE)
 def test_commands_that_cant_be_checked_ask(tmp_path: Path, command: str, push: str) -> None:
-    """Commands the hook can't split, or can't see into (piped into a shell, a gh subcommand or method from a
-    variable), ask in every mode."""
+    """Commands the hook can't split, or can't see into (a shell fed from a pipe or <( ), a gh subcommand or
+    method from a variable), ask in every mode."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
@@ -323,6 +348,8 @@ RULE_FILE_EDITS = [
     ("Write", "~/.claude/tower.conf"),
     ("Edit", "/Users/someone/.claude/tower.conf"),
     ("Write", "~/.claude/tower/policy.toml"),
+    ("Write", "~/.claude/TOWER.conf"),
+    ("Edit", "/repo/worktrees/x/claude.LOCAL.md"),
 ]
 RULE_FILE_COMMANDS = [
     "echo 'use pytest' >> CLAUDE.local.md",
@@ -333,13 +360,14 @@ RULE_FILE_COMMANDS = [
     "sed -i '' s/every/none/ ~/.claude/tower.conf",
     'cp /tmp/x "$HOME/.claude/tower.conf"',
     "echo x | tee ~/.claude/tower/policy.toml",
+    "cd ~/.claude/tower/rules && echo x >> Poot.md",
 ]
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize(("tool", "file_path"), RULE_FILE_EDITS)
 def test_edit_of_rule_file_asks(tmp_path: Path, tool: str, file_path: str, push: str) -> None:
-    """Edit/Write/MultiEdit of CLAUDE.local.md, ~/.claude/tower/rules/, tower.conf or the policy file always asks."""
+    """Edit/Write/MultiEdit of CLAUDE.local.md, anything under ~/.claude/tower/, or tower.conf always asks."""
     call = {"tool_name": tool, "tool_input": {"file_path": file_path}}
     assert asks(run_hook(tmp_path, call, push=push, pr="none"))
 
@@ -347,7 +375,7 @@ def test_edit_of_rule_file_asks(tmp_path: Path, tool: str, file_path: str, push:
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", RULE_FILE_COMMANDS)
 def test_command_naming_rule_file_asks(tmp_path: Path, command: str, push: str) -> None:
-    """Any Bash command naming a rule file, tower.conf or the policy file asks, even one that only reads it."""
+    """Any Bash command naming a rule file, ~/.claude/tower or tower.conf asks, even one that only reads it."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
