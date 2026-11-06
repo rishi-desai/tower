@@ -16,7 +16,8 @@
 #   2. creates ~/.claude/tower/rules/     personal per-project rules (protected by Claude Code)
 #   3. adds CLAUDE.local.md to your global git ignore, so personal rules are never committed
 #   4. refreshes the marked block in ~/.claude/CLAUDE.md (original backed up once)
-#   5. adds the tower marketplace and installs the plugins (tower, and the optional tower-pane) with `claude plugin`
+#   5. adds the tower marketplace and installs the tower plugin (skills, hooks and the pane) with `claude plugin`;
+#      an older install's separate tower-pane plugin is uninstalled, since tower now carries the pane
 
 set -euo pipefail
 
@@ -35,7 +36,7 @@ while [ $# -gt 0 ]; do
     --pr-approval)   pr_approval="${2:?--pr-approval needs every or none}"; shift ;;
     --plugin-source) plugin_source="${2:?--plugin-source needs a GitHub repo or path}"; shift ;;
     --no-plugin)     plugin=0 ;;
-    -h|--help)       sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,20p' "$0"; exit 0 ;;
     *)               echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -173,23 +174,27 @@ fi
 if [ "$plugin" -eq 0 ]; then
   echo "5. Plugin: skipped (--no-plugin)"
 else
-  echo "5. Plugins: marketplace 'tower' from $plugin_source, plugins tower@tower and tower-pane@tower"
+  echo "5. Plugin: marketplace 'tower' from $plugin_source, plugin tower@tower (skills, hooks and the pane)"
   if claude plugin marketplace list 2>/dev/null | grep -qw tower; then
     echo "  marketplace already added (update with: claude plugin marketplace update tower)"
   else
     run claude plugin marketplace add "$plugin_source"
   fi
-  if claude plugin list 2>/dev/null | grep -q 'tower@tower'; then
-    echo "  plugin already installed (update with: claude plugin update tower@tower)"
-  else
-    run claude plugin install tower@tower
-  fi
-  # The pane is a mod (a hooks module). It's optional: an organization's policy may refuse mods, and
-  # tower works without it, so a failed install is reported and setup goes on.
+  # Before 0.11.0 the pane was a second plugin. tower carries it now, and both copies would register /tower,
+  # so the old one goes and tower is updated to the version that has the pane; a failure is reported, not hidden.
+  old_pane=0
   if claude plugin list 2>/dev/null | grep -q 'tower-pane@tower'; then
-    echo "  pane already installed (update with: claude plugin update tower-pane@tower)"
-  elif ! run claude plugin install tower-pane@tower; then
-    echo "  pane not installed (tower works without it; retry with: claude plugin install tower-pane@tower)" >&2
+    old_pane=1
+    run claude plugin uninstall tower-pane@tower ||
+      echo "  couldn't uninstall the old tower-pane plugin; run: claude plugin uninstall tower-pane@tower" >&2
+  fi
+  if ! claude plugin list 2>/dev/null | grep -q 'tower@tower'; then
+    run claude plugin install tower@tower
+  elif [ "$old_pane" -eq 1 ]; then
+    run claude plugin marketplace update tower
+    run claude plugin update tower@tower
+  else
+    echo "  plugin already installed (update with: claude plugin marketplace update tower && claude plugin update tower@tower)"
   fi
 fi
 
