@@ -8,104 +8,18 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import stat
 import subprocess
 import time
-from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from conftest import Fixture, git, interactive
 
-from tower import cli, events
+from tower import cli, events, ledger
 
 ROOT = Path(__file__).resolve().parent.parent
 HUB_SCAN = ROOT / "plugin" / "skills" / "hub" / "scripts" / "hub-scan.sh"
 PANE_TEST = ROOT / "pane" / "tests" / "tower-pane.test.tsx"
-
-
-def git(cwd: Path, *args: str) -> str:
-    """Run one git command in cwd with a throwaway identity; its stdout. Fails the test if git fails."""
-    proc = subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return proc.stdout
-
-
-@dataclass
-class Fixture:
-    """A repo named `repo` with a main checkout, its ledger, and where the fake `claude` reads its sessions from."""
-
-    main: Path
-    ledger: Path
-    agents_json: Path
-    tower_dir: Path
-
-    def add_worktree(self, branch: str, commits: int = 1) -> Path:
-        """A new worktree on a new branch under worktrees/, with commits not on main."""
-        path = self.main / "worktrees" / branch.replace("/", "-")
-        git(self.main, "worktree", "add", "-q", "-b", branch, str(path))
-        for i in range(commits):
-            git(path, "commit", "-q", "--allow-empty", "-m", f"{branch} {i}")
-        return path
-
-    def write_card(self, branch: str, status: str, ticket: str = "#42", age_hours: float = 0) -> Path:
-        """The status card for branch, in the format the status-card skill writes."""
-        card = self.ledger / f"{branch.replace('/', '__')}.md"
-        card.write_text(
-            f'---\nstatus: {status}\nticket: "{ticket}"\nupdated: 2026-11-06T09:00\nbranch: {branch}\npr: none\n---\n\n'
-            "## Done\n- something\n",
-            encoding="utf-8",
-        )
-        if age_hours:
-            then = time.time() - age_hours * 3600
-            os.utime(card, (then, then))
-        return card
-
-    def sessions(self, *sessions: dict[str, object]) -> None:
-        """What `claude agents --json` prints from now on."""
-        self.agents_json.write_text(json.dumps(list(sessions)), encoding="utf-8")
-
-
-def interactive(name: str, cwd: Path, status: str, **extra: object) -> dict[str, object]:
-    """One interactive session as `claude agents --json` lists it."""
-    return {"id": name, "name": name, "kind": "interactive", "cwd": str(cwd), "status": status, **extra}
-
-
-@pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Fixture]:
-    """A repo with only its main checkout, an empty ledger, wip_limit=3, and no sessions; cwd is the main checkout."""
-    main = tmp_path / "code" / "repo"
-    main.mkdir(parents=True)
-    git(main, "init", "-q", "-b", "main")
-    git(main, "commit", "-q", "--allow-empty", "-m", "start")
-    (main / ".git" / "info" / "exclude").write_text("worktrees/\n", encoding="utf-8")
-
-    vault = tmp_path / "vault"
-    ledger = vault / "repo" / "Ledger"
-    ledger.mkdir(parents=True)
-    conf = tmp_path / "tower.conf"
-    conf.write_text(f"projects_dir={vault}\nwip_limit=3\n", encoding="utf-8")
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    agents_json = tmp_path / "agents.json"
-    agents_json.write_text("[]", encoding="utf-8")
-    fake_claude = bin_dir / "claude"
-    fake_claude.write_text(f'#!/bin/sh\n[ "$1 $2" = "agents --json" ] && exec cat "{agents_json}"\nexit 2\n')
-    fake_claude.chmod(fake_claude.stat().st_mode | stat.S_IEXEC)
-
-    tower_dir = tmp_path / "tower"
-    monkeypatch.setenv("TOWER_CONF", str(conf))
-    monkeypatch.setenv("TOWER_DIR", str(tower_dir))
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.chdir(main)
-    yield Fixture(main=main, ledger=ledger, agents_json=agents_json, tower_dir=tower_dir)
 
 
 def tower_state(capsys: pytest.CaptureFixture[str], *args: str) -> dict[str, object]:
@@ -283,7 +197,7 @@ def test_without_a_ledger_it_still_reports_sessions(
 
     assert result["ledger"] is None
     assert result["notes"] == [
-        f"no projects_dir in {tmp_path / 'tower.conf'}, so no cards were read (run setup.sh on this machine)"
+        f"no projects_dir in {tmp_path / 'tower.conf'} (run setup.sh on this machine), so no cards were read"
     ]
     assert (result["slots"], result["wip_limit"]) == (1, 4)
 
@@ -293,15 +207,14 @@ def test_outside_a_repo_it_says_so_and_exits_1(tmp_path: Path, capsys: pytest.Ca
     assert f"tower: not a git repo: {tmp_path}" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("branch", ["feat-1", "feat/42-x", "a/b/c"])
-def test_card_names_match_ledger_lib(repo: Fixture, branch: str) -> None:
-    """The core and ledger-lib.sh (which writes the cards) must name a card the same way."""
-    from tower import state
-
-    lib = ROOT / "plugin" / "scripts" / "ledger-lib.sh"
-    script = f'source "{lib}"; ledger_card_name "$1"'
-    bash = subprocess.run(["bash", "-c", script, "_", branch], capture_output=True, text=True, check=True).stdout
-    assert state.card_name(branch, "", repo.main) == bash.strip()
+@pytest.mark.parametrize(
+    ("branch", "card"), [("feat-1", "feat-1.md"), ("feat/42-x", "feat__42-x.md"), ("a/b/c", "a__b__c.md")]
+)
+def test_a_slash_in_a_branch_becomes_a_double_underscore_in_its_card_name(
+    repo: Fixture, branch: str, card: str
+) -> None:
+    """The names cards have always had (ledger-lib.sh's, before the core): a "/" would make a subfolder."""
+    assert ledger.card_name(branch, "", repo.main) == card
 
 
 def test_a_detached_worktree_finds_its_card(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
@@ -391,28 +304,3 @@ def test_an_empty_project_mapping_falls_back_to_the_repo_name(
     conf = tmp_path / "tower.conf"
     conf.write_text(conf.read_text(encoding="utf-8") + "project.repo=\n", encoding="utf-8")
     assert tower_state(capsys)["ledger"] == str(repo.ledger)
-
-
-def test_the_agents_snapshot_is_saved_for_the_live_sessions_section(
-    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    repo.sessions(interactive("hub-1", repo.main, "idle"))
-    saved = tmp_path / "agents-snapshot.json"
-    tower_state(capsys, "--save-agents", str(saved))
-    assert json.loads(saved.read_text(encoding="utf-8"))[0]["name"] == "hub-1"
-
-
-def test_hub_scan_fails_with_the_reason_when_tower_state_cant_run(repo: Fixture, tmp_path: Path) -> None:
-    """Without statuses the report would read "nothing needs you": the scan says why and exits 1 instead."""
-    real_python = shutil.which("python3")
-    fake = tmp_path / "bin" / "python3"
-    fake.write_text(
-        f'#!/bin/sh\ncase "$2" in *run-tower.py) echo "boom" >&2; exit 1 ;; esac\nexec "{real_python}" "$@"\n'
-    )
-    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-
-    proc = subprocess.run(["bash", str(HUB_SCAN), "--no-github"], check=False, capture_output=True, text=True)
-
-    assert proc.returncode == 1
-    assert "hub-scan: tower state failed: boom" in proc.stderr
-    assert "== GROUPS ==\n(tower state failed: boom)" in proc.stdout
