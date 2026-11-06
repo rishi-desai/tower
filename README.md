@@ -17,7 +17,7 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
 1. **One ticket = one branch = one worktree = one main session.** Subagents inside a worktree are fine; two sessions editing the same worktree are not.
 2. **WIP limit** (work in progress): at most N execution slots in use (3 personal, 4 work, set per machine). A worktree holds a slot when its session is busy or waiting on you, or its card says `running` or `needs-you`; one only waiting on CI or review doesn't. New ideas get parked as tickets, not started.
 3. **The hub never reads transcripts.** All state is on disk, so the hub is disposable: `/clear` it and run it again any time.
-4. **Nothing public without your OK.** Comments, PR changes, pushes, and edits to your standing rules stop for your approval.
+4. **Nothing public without your OK, unless your policy says so.** Comments, PR changes, merges and pushes stop for your approval as this machine's profile (`work`, `personal`, `sandbox`) says; edits to your standing rules and to the policy itself always do.
 
 ## How it works
 
@@ -46,10 +46,11 @@ On each Mac (after Claude Code, `gh`, and git are set up):
 ```bash
 gh repo clone rishi-desai/tower ~/Developer/personal/tower
 ~/Developer/personal/tower/setup.sh --dry-run     # shows every change; changes nothing
-~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, push and PR approval
+~/Developer/personal/tower/setup.sh               # asks: projects folder, WIP limit, this machine's profile
 ```
 
-`setup.sh` writes `~/.claude/tower.conf`, creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
+`setup.sh` writes `~/.claude/tower.conf` and the default profile in `~/.claude/tower/policy.toml` (see
+[Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
 global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the two plugins:
 
 ```bash
@@ -104,7 +105,8 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 It never reads transcripts either: it draws `tower state --json`, the same effective state the hub reports from,
 so the two can't disagree.
 
-- **Status line:** `tower WIP 2/3 · 1 needs you` in every session of the repo, and a toast when something new needs you.
+- **Status line:** `tower · work · 2/3 · 1 needs you` (the repo's profile, then the WIP count) in every session of
+  the repo, and a toast when something new needs you.
 - **Needs you:** worktrees whose effective state is needs-you. A session waiting on you shows **WAITING** with what
   it needs (`input needed` for a question, `approve Bash` for an approval); a needs-you card nothing contradicts
   shows **NEEDS YOU**. A card whose session is working again (you already answered) shows as running under
@@ -129,9 +131,10 @@ so the usual approval prompts still apply.
 ### When an agent wants to post, push, or change a rule
 
 The agent shows you the exact text in its chat, puts the draft in its card, and Claude Code shows an approval
-prompt in **that** session. Approve or decline there; the hub also lists it under "Needs you". To stop being
-asked about pushes, set `push_approval=force` (force pushes only) or `none` in `~/.claude/tower.conf`. To let
-workers open and merge their own PRs on this machine, set `pr_approval=none` (see Shipping).
+prompt in **that** session. Approve or decline there; the hub also lists it under "Needs you". What asks is this
+repo's profile: to be asked less, switch it in your own terminal (`tower policy use personal`, or `--repo` for this
+repo only), or change one key in `~/.claude/tower/policy.toml` (see
+[Policy profiles](#policy-profiles-claudetowerpolicytoml)).
 
 ### When you think of something else mid-flow
 
@@ -166,10 +169,11 @@ worktree, never on main.
 3. It babysits the PR (the kickoff says so; otherwise say **"babysit the PR"**). It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
 4. When checks are green, its card says `done` with the PR number. You merge.
 
-With `pr_approval=none` in `~/.claude/tower.conf` (per machine; e.g. personal Mac on, work laptop off), steps 2–4
-collapse: once `/code-review` passes, the worker opens the PR and squash-merges it itself after the checks pass,
-with no prompts and no babysitting. The hub's kickoff line says so. Comments, reviews and issue changes still ask.
-Set it back to `every` to review PRs again.
+When the repo's policy lets the merge through without asking (`merge_to_main = "auto"`, or `merge_to_branch` for a
+PR into a stack or integration branch), steps 2–4 collapse: once `/code-review` passes, the worker opens the PR and
+squash-merges it itself after the checks pass, with no prompts and no babysitting. The hub's kickoff line says so.
+Under `personal`, PRs into branches merge themselves and PRs into `main` wait for you; under `work` you approve every
+PR change.
 
 ### Finishing up
 
@@ -197,7 +201,8 @@ Set it back to `every` to review PRs again.
 | `STALE` on a card | go to that session and ask it to update its card, or check whether it has quietly died |
 | "skipping live sessions" | fine; the hub falls back to cards only |
 | a worktree with `NO CARD` | ask that session to "write your status card", or run adopt |
-| no approval prompt before a comment or push | check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
+| no approval prompt before a comment or push | run `tower policy`: the profile may let it through. Otherwise check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
+| prompts for everything, `tower policy: work` | `tower policy` says why: no policy file, or a problem in it (each listed with its line) |
 
 ## Daily loop
 
@@ -209,7 +214,7 @@ Set it back to `every` to review PRs again.
 | 4. Build it | new worktree, new session | "start #42": the hub runs `orca worktree create … --effort <level> --prompt <the /implement #42 … kickoff>` | hub picks: medium / high / xhigh |
 | 5. Check status | hub | `/tower:hub` | — |
 | 6. Verify | the worktree's session | the kickoff has it run `mattpocock-skills:code-review`, then `/code-review high` (`xhigh` if it touches security) | high / xhigh |
-| 7. Ship | same session | open the PR (asks you), then "babysit the PR"; with `pr_approval=none` the worker merges it itself | — |
+| 7. Ship | same session | open the PR (asks you unless the policy says auto), then "babysit the PR"; when the policy lets the merge through, the worker merges it itself | — |
 | 8. Stop for the day | each session | `/handoff` | — |
 | Weekly | any | `/retro` to improve skills, checks, and gotchas from real failures | — |
 
@@ -287,6 +292,9 @@ description, or you type `/tower:<name>`.
 
 - **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, and keeping personal rules out of repos.
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
+- **The policy line** (`policy-context.py`, a SessionStart hook): one line added to each session's context saying
+  which profile applies to its repo, what it may do without asking, and what asks you first, so a worker doesn't
+  stop to ask about what the policy allows. It comes back after `/clear`, `/resume` and compaction.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
   answer a session, by typing or in its pop-up, a card that says `needs-you` is switched to `running` (only the
@@ -308,23 +316,30 @@ description, or you type `/tower:<name>`.
 ## Approvals: public actions and rule changes
 
 The plugin's hook runs before every Bash, Edit, Write, and MultiEdit call. When the call would post or change
-something on GitHub, or change your standing rules, Claude Code shows you an approval prompt, even if your
-allow list (`Bash(git *)`) would normally let it through. Decline, and the agent must ask you instead of trying
-another way.
+something on GitHub, push, or change your standing rules, and this repo's policy says that asks, Claude Code shows
+you an approval prompt, even if your allow list (`Bash(git *)`) would normally let it through. Decline, and the
+agent must ask you instead of trying another way. The prompt names the profile: `Public action or rule change
+(tower policy: work) — approve?`.
 
-| Always asks | Depends on `push_approval` |
-|---|---|
-| `gh pr` comment, review; `gh issue` comment, create, edit, close, reopen, … | `every` (default): every `git push` |
-| `gh release` / `gh label` writes | `force`: only force pushes, `+refspec`, branch deletes |
-| `gh api` writes: GraphQL mutations, `-X POST/PATCH/PUT/DELETE`, or fields without `-X GET` (gh defaults to POST) | `none`: pushes never ask |
-| Any edit to a `CLAUDE.local.md`, `tower.conf` or anything under `~/.claude/tower/`; Bash commands naming a rule file, or naming `tower.conf` or the event log other than to read them (`cat`, `grep`, `tail`) | |
-| Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs), a git/gh subcommand from a variable | |
+| Action | Policy key | work | personal | sandbox |
+|---|---|---|---|---|
+| `git push` | `push` | every push | force pushes, deletes, `+refspec` | never |
+| `gh pr merge` into the repo's default branch | `merge_to_main` | asks | asks | — |
+| `gh pr merge` into any other branch (a stack, an integration branch) | `merge_to_branch` | asks | — | — |
+| `gh pr` / `gh issue` comment, `gh pr review` | `comments` | asks | asks | — |
+| `gh issue` create, edit, close, reopen, delete, transfer, … | `issue_writes` | asks | — | — |
+| `gh pr` create, edit, ready, close, reopen, update-branch (an edit with `--base` also needs `merge_to_main`) | `pr_writes` | asks | — | — |
+| Removing finished worktrees (`tower clean`, coming in T10) | `cleanup` | asks | asks | — |
+| `gh api` writes, `gh release` / `gh label` writes, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
+| Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs) | none: ask unless nothing else asks | asks | asks | — |
+| **Safety floor:** any edit to the policy file, `tower.conf`, a rule file or a `CLAUDE.local.md`; Bash commands naming a rule file, writing `tower.conf` or anything in `~/.claude/tower/` (reading with `cat`, `grep`, `tail` is fine), running `tower policy use` or `setup.sh --profile` | always | asks | asks | asks |
 
-`gh pr` create, edit, ready, merge, close, reopen and update-branch depend on `pr_approval`: `every` (default)
-asks, `none` lets a worker open and merge its own PR. Missing or unknown values count as `every`.
-
-Change either mode by editing `push_approval=` or `pr_approval=` in `~/.claude/tower.conf` (takes effect on the
-next command) or by re-running `setup.sh`. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs, GraphQL queries) never ask.
+For a merge, the hook asks `gh` which branch the PR goes into (`gh pr view`, then `gh repo view` for the default
+branch), with the same PR and `-R` the merge uses, but only when the two merge keys differ and the merge is the
+whole command (`gh pr merge 5 --squash --delete-branch`, nothing chained before it). Otherwise, or when `gh` can't
+say, it asks unless both keys are `auto`. A `gh` command naming another repo (`-R owner/repo`, or a PR URL) gets the
+stricter of that repo's policy and this one's, key by key. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs,
+GraphQL queries) never ask.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
@@ -336,8 +351,56 @@ Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-split
 
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
 script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
-`$CMD push`), git/gh aliases, or deliberately disguised names. The full list is in `confirm-public.py`'s docstring.
+`$CMD push`), git/gh aliases, or deliberately disguised names. A plain push straight to `main` is judged by `push`,
+not `merge_to_main` (GitHub branch protection refuses it, T03), and a command that `cd`s into another repo is
+judged by this repo's policy. The full list is in `confirm-public.py`'s docstring.
 `pr-wait` itself only reads.
+
+## Policy profiles: `~/.claude/tower/policy.toml`
+
+Every gate above is a key of a **profile**, and the policy file says which profile each repo gets. Built in:
+
+- **`work`**: everything asks. The strictest, used whenever nothing else applies or something can't be read.
+- **`personal`**: only force pushes, merges into `main`, comments and cleanup ask. Plain pushes, merges into other
+  branches, PR changes and issue writes go through.
+- **`sandbox`**: nothing asks (a throwaway VM or repo), except the safety floor.
+
+```toml
+default_profile = "personal"          # this machine's profile
+
+[profiles.personal]                   # change some keys of a built-in profile...
+wip_limit = 4
+
+[profiles.client]                     # ...or define your own; keys it leaves out are the strictest value
+push = "force"
+issue_writes = "auto"
+
+[repos]                               # per-repo overrides: "owner/repo" (from the repo's origin) or a glob on it
+"accenture/*" = "work"
+"rishi-desai/scratch" = "sandbox"
+```
+
+Keys: `push` (`every` | `force` | `none`), `merge_to_main`, `merge_to_branch`, `comments`, `issue_writes`,
+`pr_writes`, `cleanup` (each `ask` | `auto`), and `wip_limit` (a whole number; without one, `tower.conf`'s
+`wip_limit` applies, else 3).
+
+Which profile a repo gets: the `[repos]` pattern matching its `owner/repo` (an exact name beats a glob; the glob with
+more literal characters beats the others; a tie takes the stricter value of each key), else `default_profile`, else
+`work`. An unknown profile name gives `work`, an invalid value the strictest value of its key, and a file that can't
+be read gives `work` everywhere; `tower policy` lists each problem with its line (and `tower doctor`, T20, will too).
+The file is read with a small reader for the part of TOML it needs (the hooks run on macOS's Python 3.9, which has no
+TOML library): tables, quoted keys, strings, whole numbers and comments; arrays, inline tables and dotted keys are
+reported, not read.
+
+- **`tower policy`** shows the profile for the repo you're in, why it applies, every key, and the problems.
+- **`tower policy use <profile> [--repo]`** switches this machine's default (or, with `--repo`, this repo's line in
+  `[repos]`), changing only that one line. Run it in your own terminal: the hook asks before an agent runs it, and
+  before an agent edits the file in any way, in every profile.
+- **Moving from `tower.conf`**: `push_approval` and `pr_approval` used to live in `tower.conf`. The first time tower
+  runs without a policy file, it writes one with a `migrated` profile that does exactly what they did (or `work`, if
+  both were `every`), and from then on they're ignored. `setup.sh` does the same before it rewrites `tower.conf`.
+
+From this checkout, before the plugin is updated: `uv run tower policy`.
 
 ## Security model
 
@@ -358,14 +421,13 @@ Team repos often have their own `CLAUDE.md` and `.claude/settings.json`. tower n
 
 ```ini
 projects_dir=/Users/rishi/Library/Mobile Documents/com~apple~CloudDocs/Vault/Projects
-wip_limit=3
-push_approval=every
-pr_approval=every          # none: workers open and merge their own PRs on this machine
+wip_limit=3                # unless the repo's profile sets its own
 project.poot=Poot          # optional: repo folder name -> project folder name
 ```
 
 Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.sh`, which keeps your
-`project.*` lines.
+`project.*` lines. Approvals moved to the policy file (above); `push_approval` and `pr_approval` here are migrated
+once and then ignored.
 
 ## Where everything lives
 
@@ -374,6 +436,7 @@ Plain `key=value`, read as data (never executed). Edit by hand or re-run `setup.
 | `<projects_dir>/<Project>/Ledger/<branch>.md` | status cards (`/` in branch names becomes `__`; detached HEAD → `detached-<sha>`) |
 | `<projects_dir>/<Project>/Ledger/_backlog.md` | parked ideas, only for repos without GitHub |
 | `~/.claude/tower.conf` | per-machine settings |
+| `~/.claude/tower/policy.toml` | which approvals ask, per profile and per repo |
 | `~/.claude/tower/rules/<Project>.md` | your personal rules for that project |
 | `~/.claude/plugins/cache/tower/…` | the installed plugins (skills, scripts, hooks; the pane) |
 | `~/.claude/tower/events.jsonl` | the event log, this month (UTC); earlier months are `events-YYYY-MM.jsonl` beside it |
@@ -422,7 +485,7 @@ which needs no login). Run `mise install` once first.
 
 ## Using it on the work laptop
 
-- Run `setup.sh` there and point `projects_dir` at the work vault (`~/Vault` → OneDrive). Work notes stay in company storage.
+- Run `setup.sh --profile work` there and point `projects_dir` at the work vault (`~/Vault` → OneDrive). Work notes stay in company storage.
 - On a team repo the hub lists only issues assigned to you, and nothing is written into the repo.
 - `babysit-pr` waits on the repo's required checks. Every comment or push stops for your approval, and comments are labelled as AI-written.
 - The repo is on your personal GitHub account: `gh auth switch` to it for `marketplace add` / updates.
