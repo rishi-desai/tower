@@ -58,15 +58,17 @@ claude plugin install tower@tower          # skills, approval hook, card hooks, 
 # or, in one step inside Claude Code 2.1.275+:  /plugin install tower --marketplace rishi-desai/tower
 ```
 
-The pane is a mod (a hooks module) inside the same plugin. If an organization's policy refuses mods, Claude Code
-refuses that module alone: the skills and the approval and card hooks still load.
+The pane is a mod (a hooks module) inside the same plugin. Claude Code admits or refuses each hooks module on its
+own (`plugin.register` in its mod docs), so a policy that refuses mods should cost only the pane, with the skills and
+the approval and card hooks still loading; that case hasn't been tried under a real policy.
 
 ### Upgrading from two plugins (tower 0.10.0 and earlier)
 
-Before 0.11.0 the pane was a second plugin, `tower-pane@tower`. It's no longer in the marketplace, and an
-installed copy stays installed and would register a second `/tower` pane beside the one tower now carries.
-Re-running `setup.sh` does the upgrade for you: it uninstalls `tower-pane@tower`, updates the marketplace and
-updates `tower@tower`. By hand:
+Before 0.11.0 the pane was a second plugin, `tower-pane@tower`. It's no longer in the marketplace: once the
+marketplace is updated, an installed copy stays in `claude plugin list` as `✘ failed to load` (`Plugin tower-pane
+not found in marketplace tower`) and `claude plugin update` can't move it. Re-running `setup.sh` does the upgrade
+when it finds `tower-pane@tower`: it uninstalls it, updates the marketplace and updates `tower@tower`. An install
+that never had the pane updates the usual way (see "Updating and uninstalling"). By hand:
 
 ```bash
 claude plugin uninstall tower-pane@tower
@@ -115,7 +117,8 @@ If the hub says `AT LIMIT`, finish or pause something first, or park the new tic
 
 ### The tower pane
 
-The pane is a mod inside the tower plugin: a panel inside Claude Code, beside the chat. Run `/tower` in the hub session to open it.
+The pane is a mod inside the tower plugin: a panel inside Claude Code, beside the chat. Run `/tower` in the hub
+session to open it.
 It never reads transcripts either: it draws `tower state --json`, the same effective state the hub reports from,
 so the two can't disagree.
 
@@ -415,7 +418,7 @@ tower/
                                       (their .sh scripts are one-line wrappers around `tower scan`, `adopt-scan`,
                                       `card-path` and `rules`, kept for one release)
   src/tower/                          tower's core (standard library only): the event log, effective state, the scans, the `tower` CLI
-  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI
+  tests/                              pytest: the approval hook's cases, the event log, effective state, the scans, the CLI, setup.sh's install
   GLOSSARY.md  docs/adr/              tower's terms, and the decisions behind its design
   mise.toml  pyproject.toml  uv.lock  tool versions and the `ci` task; ruff, mypy and pytest settings
   .github/workflows/ci.yml            calls rishi-desai/ci's shared workflow, which runs `mise run ci`

@@ -5,8 +5,8 @@ import type { GithubSection, Scan, StateSession, StateWorktree, Status, TowerSta
 
 // The pane mod: tower's hub report as a live pane beside the chat, a status-line summary, a toast when something new
 // needs the user, and in each worker a "0: back to the hub" band. Read-only by design: it only ever runs tower's own
-// `tower state --json` (through this plugin's run-tower.py) and hub-scan.sh (for GitHub only), `claude plugin
-// list --json`, `orca terminal list/switch` and `orca worktree ps` (which only change the tab Orca shows), and reads
+// `tower state --json` (through this plugin's run-tower.py) and hub-scan.sh (for GitHub only), `orca terminal
+// list/switch` and `orca worktree ps` (which only change the tab Orca shows), and reads
 // the ledger's backlog file. These commands don't go through the Bash tool, so tower's approval hook never sees them;
 // nothing here may write anything.
 

@@ -180,8 +180,9 @@ else
   else
     run claude plugin marketplace add "$plugin_source"
   fi
-  # Before 0.11.0 the pane was a second plugin. tower carries it now, and both copies would register /tower,
-  # so the old one goes and tower is updated to the version that has the pane; a failure is reported, not hidden.
+  # Before 0.11.0 the pane was a second plugin. tower carries it now and the marketplace no longer lists it, so the
+  # old one is left failing to load: uninstall it and update tower to the version that has the pane. A failure is
+  # reported, not hidden.
   old_pane=0
   if claude plugin list 2>/dev/null | grep -q 'tower-pane@tower'; then
     old_pane=1
