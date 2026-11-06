@@ -7,9 +7,10 @@ SessionStart hook can append `export` lines to the file named by $CLAUDE_ENV_FIL
 every later Bash command in the session. This hook writes `tower env`'s lines there (src/tower/runtime.py), then tells
 Claude in one line which slot and port it has and, in a worktree, the seed command for what only the main checkout has.
 
-Stays quiet (exit 0, no output) when there's nothing to do: not a git repo, or a project with no runtime config. A
-bad config is told to Claude (so it can tell the user) and nothing is set. A core that won't import is said on stderr
-(Claude Code's debug log). Always exit 0: a session's start never fails over runtime variables.
+Stays quiet (exit 0, no output) when there's nothing to do: not a git repo, a project with no runtime config, or a
+tower.conf it can't read (said on stderr, Claude Code's debug log). A bad runtime config is told to Claude (so it can
+tell the user) and nothing is set. A core that won't import is said on stderr. Always exit 0: a session's start never
+fails over runtime variables.
 """
 
 from __future__ import annotations
@@ -41,7 +42,12 @@ def main() -> int:
         env, config = runtime.worktree_env(Path(event.get("cwd") or os.getcwd()))
     except NotARepo:
         return 0
-    except (ledger.LedgerError, runtime.RuntimeConfigError) as error:
+    except ledger.LedgerError as error:
+        # tower.conf can't be read, so the project (and whether it has a runtime config) is unknown: every repo would
+        # get this, so it stays in the debug log. The hub's scan reports an unreadable tower.conf.
+        print(f"tower: session-env: {error}", file=sys.stderr)
+        return 0
+    except runtime.RuntimeConfigError as error:
         tell(f"tower: couldn't set this worktree's runtime variables: {error}. Dev servers may clash on ports with "
              "other worktrees; tell the user.", event)  # fmt: skip
         return 0

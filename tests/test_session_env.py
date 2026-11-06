@@ -106,3 +106,15 @@ def test_without_claude_env_file_claude_is_told_to_export_them_itself(repo: Fixt
     told = context(run_hook(repo.add_worktree("feat-1"), None))
 
     assert "export TOWER_SLOT=1 PORT=3001" in told
+
+
+def test_an_unreadable_tower_conf_stays_out_of_claudes_context(repo: Fixture, tmp_path: Path) -> None:
+    conf = Path(os.environ["TOWER_CONF"])
+    conf.chmod(0)
+    try:
+        proc = run_hook(repo.add_worktree("feat-1"), tmp_path / "session.env")
+    finally:
+        conf.chmod(0o644)
+
+    assert proc.stdout == ""
+    assert "session-env" in proc.stderr

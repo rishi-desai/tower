@@ -10,6 +10,8 @@ base would flag every pair of branches cut from the same integration branch (its
 every branch stacked on another (the lower branch's commits are in both). Counted this way, a stacked branch overlaps
 its parent only on files it changes itself, and a squash-merged branch never overlaps work that started after the
 merge. Renames count as a delete plus an add, so a file renamed in one worktree and edited in the other is flagged.
+Known limits: a merge commit's own changes (conflict resolutions) aren't counted, since listing a merge's files would
+list everything the merged branch brought in; and a file changed and later changed back still counts.
 
 Runs under whatever `python3` the plugin's scripts find (3.9 on a stock Mac), like the rest of the core.
 """

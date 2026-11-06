@@ -411,7 +411,14 @@ API_URL = "http://localhost:{port}/api"
   line. Your app still has to read `PORT` and `DB_NAME` (most dev servers read `PORT` already).
 - **Poot**: `data/` exists only in the main checkout. Set `seed` to whatever copies or links it into a worktree;
   tower prints it (`tower env`, and the session's start) and never runs it, because only you know whether a copy or a
-  shared link is safe.
+  shared link is safe. A starting point for `~/.claude/tower/projects/Poot.toml` (a copy, so a worker can't change
+  main's data; adjust the names to what Poot's dev server reads):
+
+  ```toml
+  port_base = 3000
+  db_name = "poot_{slot}"
+  seed = 'test -e data || cp -R {main}/data data'
+  ```
 
 ## Configuration: `~/.claude/tower.conf` (one per machine)
 
