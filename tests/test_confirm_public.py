@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -631,3 +632,232 @@ def test_random_commands_never_crash_or_hang() -> None:
     """Checking never crashes or hangs on random shell syntax (3,000 seeded strings). A crash would only make
     the hook ask, but a hang runs past Claude Code's hook timeout, which lets the command through."""
     subprocess.run([sys.executable, "-I", "-c", FUZZ_SCRIPT, str(HOOK)], check=True, timeout=60)
+
+
+# --- The policy matrix: every key the hook enforces, in each built-in profile, chosen two ways ------------
+
+# Whether each action asks in work, personal and sandbox, written out from the issue (#26) rather than read from
+# the code: work asks for everything; personal asks for force pushes, merges into the default branch (and edits
+# that can retarget a PR there) and comments; sandbox asks for nothing. Writes no single key covers (gh api,
+# releases, labels) and commands that can't be checked ask unless nothing else does.
+POLICY_MATRIX = [
+    # (id, command, base gh reports for a merge or None, asks in work, personal, sandbox)
+    ("push: plain", "git push origin feat", None, True, False, False),
+    ("push: force", "git push --force origin feat", None, True, True, False),
+    ("push: delete", "git push origin --delete old", None, True, True, False),
+    ("comments: PR comment", "gh pr comment 5 -b hi", None, True, True, False),
+    ("comments: review", "gh pr review 5 --approve", None, True, True, False),
+    ("comments: issue comment", "gh issue comment 3 -b hi", None, True, True, False),
+    ("issue_writes: create", "gh issue create -t x -b y", None, True, False, False),
+    ("issue_writes: close", "gh issue close 3", None, True, False, False),
+    ("pr_writes: create", "gh pr create --fill", None, True, False, False),
+    ("pr_writes: ready", "gh pr ready 5", None, True, False, False),
+    ("pr_writes + merge_to_main: edit --base", "gh pr edit 5 --base main", None, True, True, False),
+    ("merge_to_main", "gh pr merge 5 --squash --delete-branch", "main", True, True, False),
+    ("merge_to_branch", "gh pr merge 5 --squash --delete-branch", "integration/a-plus", True, False, False),
+    ("merge_to_branch: current branch's PR", "gh pr merge -sd", "stack/base", True, False, False),
+    ("merge: gh can't say", "gh pr merge 5 --squash", "", True, True, False),
+    ("merge: not the whole command", "gh pr checks 5 && gh pr merge 5 --squash", "feat-base", True, True, False),
+    ("merge: an unknown flag", "gh pr merge 5 --squash --frobnicate", "feat-base", True, True, False),
+    ("merge: PR from a variable", 'gh pr merge "$PR" --squash', "feat-base", True, True, False),
+    ("no key: gh api write", "gh api -X POST repos/acme/widget/issues -f title=x", None, True, True, False),
+    ("no key: release", "gh release create v1.0.0", None, True, True, False),
+    ("no key: label", "gh label create triage", None, True, True, False),
+    ("no key: gh subcommand from a variable", "gh pr $action 5", None, True, True, False),
+    ("unchecked: a shell reading a pipe", "echo 'git push' | bash", None, True, True, False),
+    ("unchecked: an unclosed quote", "git push 'origin", None, True, True, False),
+    ("reads never ask", "gh pr view 5 && git status", None, False, False, False),
+]
+PROFILES = ["work", "personal", "sandbox"]
+FAKE_GH = """#!{python}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_GH_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[:2] == ["pr", "view"] and os.environ.get("FAKE_GH_BASE"):
+    print(os.environ["FAKE_GH_BASE"] + " https://github.com/acme/widget/pull/5")
+elif args[:2] == ["repo", "view"]:
+    print("main")
+else:
+    sys.exit(1)
+"""
+
+
+@pytest.fixture
+def widget(tmp_path: Path) -> Path:
+    """A checkout of acme/widget (its origin), with a fake gh on PATH that logs its arguments; returns its path."""
+    checkout = tmp_path / "widget"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", "git@github.com:Acme/Widget.git"], check=True
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
+    gh.chmod(0o755)
+    return checkout
+
+
+def in_widget(widget: Path, command: str) -> dict[str, object]:
+    """A Bash tool call from a session working in the widget checkout."""
+    return {**bash(command), "cwd": str(widget)}
+
+
+def widget_env(widget: Path, base: str | None) -> dict[str, str]:
+    """The hook's environment for the widget fixture: the fake gh first on PATH, reporting BASE for a PR."""
+    return {
+        "PATH": f"{widget.parent / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        "FAKE_GH_LOG": str(widget.parent / "gh.log"),
+        "FAKE_GH_BASE": base or "",
+    }
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize(
+    ("command", "base", "expected"),
+    [pytest.param(command, base, dict(zip(PROFILES, row)), id=case) for case, command, base, *row in POLICY_MATRIX],
+)
+def test_each_key_in_each_profile_chosen_by_default_profile(
+    widget: Path, profile: str, command: str, base: str | None, expected: dict[str, bool]
+) -> None:
+    policy = f'default_profile = "{profile}"\n'
+    decision = run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, base))
+    assert asks(decision) == expected[profile]
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize(
+    ("command", "base", "expected"),
+    [pytest.param(command, base, dict(zip(PROFILES, row)), id=case) for case, command, base, *row in POLICY_MATRIX],
+)
+def test_each_key_in_each_profile_chosen_by_a_repo_override(
+    widget: Path, profile: str, command: str, base: str | None, expected: dict[str, bool]
+) -> None:
+    """The session's repo (acme/widget, from its origin) picks the profile over a different default_profile."""
+    default = "work" if profile == "sandbox" else "sandbox"
+    policy = f'default_profile = "{default}"\n\n[repos]\n"acme/*" = "personal"\n"acme/widget" = "{profile}"\n'
+    decision = run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, base))
+    assert asks(decision) == expected[profile]
+
+
+@pytest.mark.parametrize(
+    ("table", "command", "expect_ask"),
+    [
+        ('[profiles.personal]\ncomments = "auto"', "gh pr comment 5 -b hi", False),
+        ('[profiles.personal]\nissue_writes = "ask"', "gh issue create -t x", True),
+        ('[profiles.personal]\npush = "none"', "git push --force", False),
+        ('[profiles.personal]\npush = "every"', "git push", True),
+        ('[profiles.personal]\nmerge_to_main = "auto"', "gh pr merge 5 --squash", False),
+        ('[profiles.personal]\nmerge_to_branch = "ask"', "gh pr merge 5 --squash", True),
+        ('[profiles.personal]\npr_writes = "ask"', "gh pr create --fill", True),
+        ('[profiles.personal]\npush = "sometimes"', "git push", True),  # invalid: the strictest
+    ],
+)
+def test_a_profile_table_changes_what_its_keys_let_through(
+    widget: Path, table: str, command: str, expect_ask: bool
+) -> None:
+    policy = f'default_profile = "personal"\n\n{table}\n'
+    decision = run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, "main"))
+    assert asks(decision) == expect_ask
+
+
+def test_a_merge_asks_gh_about_the_same_pr_and_repo_it_merges(widget: Path) -> None:
+    policy = 'default_profile = "personal"\n'
+    command = "gh pr merge 7 -R acme/widget --squash"
+    assert not asks(run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, "dev")))
+
+    calls = [json.loads(line) for line in (widget.parent / "gh.log").read_text(encoding="utf-8").splitlines()]
+    assert calls[0][:2] == ["pr", "view"] and calls[0][-3:] == ["--repo=acme/widget", "--", "7"]
+    assert calls[1][:3] == ["repo", "view", "https://github.com/acme/widget"]
+
+
+def test_no_gh_lookup_when_both_merge_keys_agree(widget: Path) -> None:
+    for profile in ("work", "sandbox"):
+        run_hook(widget.parent, in_widget(widget, "gh pr merge 5"), policy=f'default_profile = "{profile}"\n',
+                 env=widget_env(widget, "main"))  # fmt: skip
+    assert not (widget.parent / "gh.log").exists()
+
+
+@pytest.mark.parametrize(
+    ("command", "expect_ask"),
+    [
+        ("gh pr comment 5 -b hi", False),  # the session's repo: sandbox
+        ("gh pr comment 5 -b hi -R acme/widget", False),
+        ("gh -R acme/other pr comment 5 -b hi", True),  # another repo: the stricter of sandbox and work
+        ("gh pr comment 5 -b hi --repo=github.com/acme/other", True),
+        ('gh pr comment 5 -b hi -R "$REPO"', True),  # a repo from a variable: the strictest
+        ("gh pr merge https://github.com/acme/other/pull/5 --squash", True),
+    ],
+)
+def test_a_gh_command_naming_another_repo_gets_the_stricter_policy(
+    widget: Path, command: str, expect_ask: bool
+) -> None:
+    policy = 'default_profile = "work"\n[repos]\n"acme/widget" = "sandbox"\n'
+    decision = run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, "dev"))
+    assert asks(decision) == expect_ask
+
+
+# The safety floor: in every profile, sandbox included, an agent can't change tower's policy, tower.conf or rule
+# files without a prompt.
+FLOOR_EDITS = [
+    ("Edit", "~/.claude/tower/policy.toml"),
+    ("Write", "/Users/someone/.claude/tower/policy.toml"),
+    ("Write", "~/.claude/tower.conf"),
+    ("MultiEdit", "~/.claude/tower/rules/Poot.md"),
+    ("Write", "/repo/worktrees/x/CLAUDE.local.md"),
+]
+FLOOR_COMMANDS = [
+    "echo 'default_profile = \"sandbox\"' > ~/.claude/tower/policy.toml",
+    "sed -i '' s/work/sandbox/ ~/.claude/tower/policy.toml",
+    "rm ~/.claude/tower/policy.toml",
+    "echo push_approval=none >> ~/.claude/tower.conf",
+    "echo 'use pytest' >> CLAUDE.local.md",
+    "tower policy use sandbox",
+    "uv run tower policy use sandbox --repo",
+    "python3 -m tower policy use sandbox",
+    "python3 -I ~/.claude/plugins/cache/tower/tower/0.10.0/scripts/run-tower.py policy use sandbox",
+    "tower policy $verb sandbox",
+    "bash -c 'tower policy use sandbox'",
+    "./setup.sh --profile sandbox",
+    "bash setup.sh --projects-dir ~/v --profile=sandbox",
+    # can't be checked, and would be let through in sandbox, but names the policy or a rule
+    "echo 'tower policy use sandbox' | bash",
+    "echo 'echo x >> ~/.claude/tower/policy.toml' | sh",
+    "cat x > ~/.claude/tower/policy.toml 'unclosed",
+]
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize(("tool", "file_path"), FLOOR_EDITS)
+def test_the_floor_asks_before_an_edit_of_policy_or_rules_in_every_profile(
+    tmp_path: Path, profile: str, tool: str, file_path: str
+) -> None:
+    call = {"tool_name": tool, "tool_input": {"file_path": file_path}}
+    assert asks(run_hook(tmp_path, call, policy=f'default_profile = "{profile}"\n'))
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("command", FLOOR_COMMANDS)
+def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_profile(
+    tmp_path: Path, profile: str, command: str
+) -> None:
+    assert asks(run_hook(tmp_path, bash(command), policy=f'default_profile = "{profile}"\n'))
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cat ~/.claude/tower/policy.toml", "tower policy", "grep wip ~/.claude/tower.conf", "./setup.sh --dry-run"],
+)
+def test_sandbox_asks_nothing_else(tmp_path: Path, command: str) -> None:
+    """In sandbox, reading tower's settings, and everything outside the floor, needs no approval."""
+    assert run_hook(tmp_path, bash(command), policy='default_profile = "sandbox"\n') is None
+
+
+def test_the_prompt_names_the_profile(tmp_path: Path) -> None:
+    decision = run_hook(tmp_path, bash("gh pr comment 5 -b hi"), policy='default_profile = "personal"\n')
+    assert decision is not None
+    reason = str(decision["permissionDecisionReason"])
+    assert reason.startswith("Public action or rule change (tower policy: personal) — approve? ")
+    assert "comments=ask" in reason

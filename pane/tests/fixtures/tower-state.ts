@@ -228,5 +228,17 @@ export const SHARED: TowerState = {
       "label": "feat__2-gone",
       "note": "orphan card (worktree gone), status: done"
     }
-  ]
+  ],
+  "policy": {
+    "profile": "personal",
+    "why": "default_profile in /tower/policy.toml",
+    "push": "force",
+    "merge_to_main": "ask",
+    "merge_to_branch": "auto",
+    "comments": "ask",
+    "issue_writes": "auto",
+    "pr_writes": "auto",
+    "cleanup": "ask",
+    "problems": []
+  }
 }

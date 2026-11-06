@@ -35,7 +35,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import events, ledger, sessions
+from tower import events, ledger, policy, sessions
 from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
 from tower.sessions import owning_worktree
 
@@ -195,7 +195,8 @@ class Report:
 
     sessions_source is "live" (`claude agents --json`), "events" (the event log stood in) or "none". agents is
     `claude agents --json`'s list when it could be read, so the scan's LIVE SESSIONS section draws the same snapshot the
-    statuses were decided from. notes says, in plain words, which facts were missing and why.
+    statuses were decided from. notes says, in plain words, which facts were missing and why. policy is the approval
+    policy for the repo (policy.py), which also sets wip_limit.
     """
 
     repo: str
@@ -208,6 +209,7 @@ class Report:
     sessions_source: str
     notes: list[str] = field(default_factory=list)
     agents: list[object] | None = None
+    policy: policy.Effective | None = None
 
     @property
     def slots(self) -> int:
@@ -234,6 +236,9 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
     ledger_folder, ledger_note = ledger.ledger_dir(name, conf)
     if ledger_note:
         notes.append(ledger_note)
+    effective, _ = policy.for_checkout(Path(main.path))
+    if effective.problems:
+        notes.append(f"the policy file has {plural(len(effective.problems), 'problem')}; `tower policy` lists them")
 
     paths = [os.path.realpath(w.path) for w in worktrees]
     agents, live_note = sessions.read_agents()
@@ -294,12 +299,13 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         main_checkout=main.path,
         ledger=str(ledger_folder) if ledger_folder is not None else None,
         base=base,
-        wip_limit=ledger.wip_limit(conf),
+        wip_limit=effective.wip_limit,
         worktrees=rows,
         orphan_cards=orphan_cards(ledger_folder, seen_cards, notes) if ledger_folder is not None else [],
         sessions_source=sessions_source,
         notes=notes,
         agents=agents,
+        policy=effective,
     )
 
 
@@ -571,6 +577,7 @@ def to_json(report: Report) -> dict[str, object]:
         ],
         "orphan_cards": [asdict(o) for o in report.orphan_cards],
         "housekeeping": [{"label": label, "note": note} for label, note in cleanup(report)],
+        "policy": None if report.policy is None else policy.to_json(report.policy),
     }
 
 

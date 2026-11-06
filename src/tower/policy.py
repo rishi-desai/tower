@@ -399,6 +399,81 @@ def for_checkout(folder: Path) -> tuple[Effective, str | None]:
     return loaded.for_repo(slug), slug
 
 
+# --- Reports ------------------------------------------------------------------------------------------
+
+KEY_HELP = {
+    "merge_to_main": "merging a PR into its repo's default branch",
+    "merge_to_branch": "merging a PR into any other branch",
+    "comments": "PR and issue comments and reviews",
+    "issue_writes": "creating, editing, closing and reopening issues",
+    "pr_writes": "opening, editing, readying, closing and reopening PRs",
+    "cleanup": "removing finished worktrees",
+}
+PUSH_HELP = {"every": "every push asks", "force": "only force pushes and branch deletes ask", "none": "no push asks"}
+# For the session's context: what each key lets through without asking, and what it asks for.
+SHORT_HELP = {
+    "merge_to_main": "merging PRs into the default branch",
+    "merge_to_branch": "merging PRs into other branches",
+    "comments": "PR and issue comments and reviews",
+    "issue_writes": "creating, editing and closing issues",
+    "pr_writes": "opening, editing and closing PRs",
+    "cleanup": "cleaning up finished worktrees",
+}
+FLOOR_NOTE = (
+    "The safety floor holds in every profile: an agent's changes to this policy, tower.conf, rule files and "
+    "CLAUDE.local.md always ask."
+)
+
+
+def describe(effective: Effective, slug: str | None, profiles: list[str]) -> list[str]:
+    """`tower policy`'s report: the profile for the repo whose `owner/repo` is slug, why, each key, the problems."""
+    where = slug or "this folder (no GitHub origin)"
+    lines = [f"tower policy for {where}: {effective.profile}", f"why: {effective.why}"]
+    lines.append(f"  {'push':<16} {effective.push:<6} {PUSH_HELP[effective.push]}")
+    lines += [f"  {key:<16} {effective.value(key):<6} {help_text}" for key, help_text in KEY_HELP.items()]
+    lines.append(f"  {'wip_limit':<16} {effective.wip_limit:<6} {effective.wip_limit_from}")
+    lines += ["problems:", *(f"  - {problem}" for problem in effective.problems)] if effective.problems else []
+    lines += [] if effective.problems else ["problems: none"]
+    lines += [FLOOR_NOTE, f"Switch in your own terminal: tower policy use <profile> [--repo]   ({', '.join(profiles)})"]
+    return lines
+
+
+def session_line(effective: Effective, slug: str | None) -> str:
+    """One line for a session's context: what it may do without asking and what asks you first."""
+    free: list[str] = []
+    asking: list[str] = []
+    if effective.push == "force":
+        free.append("plain git pushes")
+        asking.append("force pushes and branch deletes")
+    else:
+        (free if effective.push == "none" else asking).append("git pushes")
+    for key, text in SHORT_HELP.items():
+        (asking if effective.asks(key) else free).append(text)
+    where = f"this repo ({slug})" if slug else "this folder"
+    return (
+        f"tower policy for {where}: {effective.profile} ({effective.why}). "
+        f"Without asking: {'; '.join(free) or 'nothing'}. Asks the user first: {'; '.join(asking) or 'nothing'}. "
+        "Changing tower's policy, tower.conf or rule files always asks."
+    )
+
+
+def scan_line(effective: Effective) -> str:
+    """The hub scan's one-line summary of the repo's policy."""
+    keys = " | ".join(f"{key}: {effective.value(key)}" for key in KEYS)
+    problems = f" | problems: {len(effective.problems)} (see `tower policy`)" if effective.problems else ""
+    return f"Policy: {effective.profile} ({effective.why}) | {keys}{problems}"
+
+
+def to_json(effective: Effective) -> dict[str, object]:
+    """The policy as `tower state --json` reports it (the WIP limit is reported beside it, as wip_limit)."""
+    return {
+        "profile": effective.profile,
+        "why": effective.why,
+        **{key: effective.value(key) for key in KEYS},
+        "problems": list(effective.problems),
+    }
+
+
 # --- Migration from tower.conf ------------------------------------------------------------------------
 
 FILE_HEADER = """\

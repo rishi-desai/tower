@@ -233,8 +233,11 @@ def shared_fixture(repo: Fixture) -> None:
 
     feat-1 is busy with no card; feat-3's card says needs-you and no session contradicts it; feat-5 has an idle
     session and no card; feat-7 is busy with a stale needs-you card (you already answered); feat-8 waits on an
-    approval and feat-9 on a question, both with running cards. feat/2-gone's card outlived its worktree.
+    approval and feat-9 on a question, both with running cards. feat/2-gone's card outlived its worktree. The
+    machine's policy is the personal profile.
     """
+    repo.tower_dir.mkdir(exist_ok=True)
+    (repo.tower_dir / "policy.toml").write_text('default_profile = "personal"\n', encoding="utf-8")
     paths = {name: repo.add_worktree(name) for name in ("feat-1", "feat-3", "feat-5", "feat-7", "feat-8", "feat-9")}
     repo.write_card("feat-3", "needs-you", ticket="#3")
     repo.write_card("feat-7", "needs-you", ticket="#7")
@@ -258,7 +261,7 @@ def shortened(value: object, repo: Fixture) -> object:
     if isinstance(value, list):
         return [shortened(item, repo) for item in value]
     if isinstance(value, str):
-        for long, short in ((repo.ledger, "/vault/repo/Ledger"), (repo.main, "/p")):
+        for long, short in ((repo.ledger, "/vault/repo/Ledger"), (repo.main, "/p"), (repo.tower_dir, "/tower")):
             value = value.replace(os.path.realpath(long), short).replace(str(long), short)
     return value
 
@@ -351,3 +354,30 @@ def test_an_empty_project_mapping_falls_back_to_the_repo_name(
     conf = tmp_path / "tower.conf"
     conf.write_text(conf.read_text(encoding="utf-8") + "project.repo=\n", encoding="utf-8")
     assert tower_state(capsys)["ledger"] == str(repo.ledger)
+
+
+def test_the_policy_sets_the_wip_limit_and_is_reported(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """A profile's wip_limit outranks tower.conf's; the policy and any problems in its file are in the JSON."""
+    repo.tower_dir.mkdir(exist_ok=True)
+    (repo.tower_dir / "policy.toml").write_text(
+        'default_profile = "work"\n[profiles.work]\nwip_limit = 5\ncomment = "auto"\n', encoding="utf-8"
+    )
+
+    result = tower_state(capsys)
+
+    assert result["wip_limit"] == 5
+    policy = result["policy"]
+    assert isinstance(policy, dict)
+    assert (policy["profile"], policy["push"], len(policy["problems"])) == ("work", "every", 1)
+    assert "the policy file has 1 problem; `tower policy` lists them" in result["notes"]  # type: ignore[operator]
+
+
+def test_the_hub_scan_names_the_policy(repo: Fixture) -> None:
+    shared_fixture(repo)
+    report = subprocess.run(["bash", str(HUB_SCAN), "--no-github"], capture_output=True, text=True, check=True).stdout
+
+    policy_line = f"Policy: personal (default_profile in {repo.tower_dir / 'policy.toml'}) | push: force"
+    assert (
+        f"\n{policy_line} | merge_to_main: ask | merge_to_branch: auto | comments: ask | issue_writes: auto" in report
+    )
+    assert "PR approval" not in report
