@@ -1,7 +1,9 @@
 """github.py: the merged PRs `tower stats` measures, read from GitHub with the gh CLI (read-only calls only).
 
-A PR's tickets are its closingIssuesReferences plus every "Closes/Fixes/Resolves #N" in its body: GitHub links a
-closing keyword only for PRs into the default branch, and tower's workers often merge into an integration branch.
+A PR's tickets are the "Closes/Fixes/Resolves #N" in its body, read here rather than from GitHub's
+closingIssuesReferences: GitHub links a closing keyword only for PRs into the default branch (tower's workers often
+merge into an integration branch), and its references can name another repo's issue. "Closes owner/repo#N" doesn't
+match, so a ticket is always this repo's. PRs from forks are left out: their head branch isn't a local branch.
 """
 
 from __future__ import annotations
@@ -22,9 +24,8 @@ class GhError(Exception):
     """A gh call failed: not installed, not logged in, not a GitHub repo, or timed out."""
 
 
-def merged_prs(repo: str, since: datetime, reopens_from: datetime) -> list[MergedPr]:
-    """The PRs merged in repo (a checkout's path) at or after since, each with its tickets. Reopen counts (one gh call
-    per ticket) are fetched only for PRs merged at or after reopens_from; earlier ones get 0."""
+def merged_prs(repo: str, since: datetime) -> list[MergedPr]:
+    """The PRs merged in repo (a checkout's path) at or after since, each with its tickets; not those from forks."""
     output = gh(
         repo,
         "pr",
@@ -36,7 +37,7 @@ def merged_prs(repo: str, since: datetime, reopens_from: datetime) -> list[Merge
         "--limit",
         str(PR_LIMIT),
         "--json",
-        "number,title,headRefName,mergedAt,body,closingIssuesReferences",
+        "number,title,headRefName,mergedAt,body,isCrossRepository",
     )
     try:
         listed = json.loads(output)
@@ -49,26 +50,28 @@ def merged_prs(repo: str, since: datetime, reopens_from: datetime) -> list[Merge
             merged_at = datetime.fromisoformat(item["mergedAt"])
         except (KeyError, TypeError, ValueError) as error:
             raise GhError(f"gh pr list in {repo}: unexpected PR record {item!r}") from error
-        if merged_at < since:
+        if merged_at < since or item.get("isCrossRepository"):
             continue
-        closes = tickets(item.get("body") or "", item.get("closingIssuesReferences") or [])
-        reopened = sum(reopens_after(repo, ticket, merged_at) for ticket in closes) if merged_at >= reopens_from else 0
-        prs.append(MergedPr(repo, number, title, branch, merged_at, closes, reopened))
+        closes = tuple(sorted({int(match) for match in CLOSING_KEYWORD.findall(item.get("body") or "")}))
+        prs.append(MergedPr(repo, number, title, branch, merged_at, closes))
     return prs
 
 
-def tickets(body: str, closing_references: list[dict[str, object]]) -> tuple[int, ...]:
-    """The ticket numbers a PR closes, sorted: its closing references plus closing keywords in its body."""
-    numbers = {int(match) for match in CLOSING_KEYWORD.findall(body)}
-    for ref in closing_references:
-        number = ref.get("number")
-        if isinstance(number, int):
-            numbers.add(number)
-    return tuple(sorted(numbers))
+def ticket_reopens(repo: str, tickets: set[int]) -> tuple[dict[int, list[datetime]], list[str]]:
+    """When each of repo's tickets was reopened (one gh call per ticket), and a warning for each ticket whose events
+    couldn't be read (deleted, transferred, or a typo in a PR body); those tickets are left out, not the repo."""
+    reopens: dict[int, list[datetime]] = {}
+    warnings: list[str] = []
+    for ticket in sorted(tickets):
+        try:
+            reopens[ticket] = reopen_times(repo, ticket)
+        except GhError as error:
+            warnings.append(f"reopens of #{ticket} not counted: {error}")
+    return reopens, warnings
 
 
-def reopens_after(repo: str, issue: int, merged_at: datetime) -> int:
-    """How many times issue was reopened after merged_at."""
+def reopen_times(repo: str, issue: int) -> list[datetime]:
+    """Every time issue was reopened, oldest first."""
     out = gh(
         repo,
         "api",
@@ -78,7 +81,7 @@ def reopens_after(repo: str, issue: int, merged_at: datetime) -> int:
         '.[] | select(.event == "reopened") | .created_at',
     )
     try:
-        return sum(1 for line in out.splitlines() if line and datetime.fromisoformat(line) > merged_at)
+        return sorted(datetime.fromisoformat(line) for line in out.splitlines() if line)
     except ValueError as error:
         raise GhError(f"gh api in {repo}: unexpected reopen time in {out[:200]!r}") from error
 

@@ -24,12 +24,9 @@ def event(
     return Event(at(clock), event_type, session, repo, f"{repo}/worktrees/{branch}", branch, dict(data))
 
 
-def pr(
-    number: int, branch: str, merged: str, closes: tuple[int, ...] = (), reopened: int = 0, day: int = 5
-) -> stats.MergedPr:
+def pr(number: int, branch: str, merged: str, closes: tuple[int, ...] = (), day: int = 5) -> stats.MergedPr:
     """A PR in REPO merged at clock on 2026-11-<day>."""
-    merged_at = datetime.fromisoformat(at(merged, day))
-    return stats.MergedPr(REPO, number, f"PR {number}", branch, merged_at, closes, reopened)
+    return stats.MergedPr(REPO, number, f"PR {number}", branch, datetime.fromisoformat(at(merged, day)), closes)
 
 
 # One worker on feat-7, worked by hand:
@@ -79,20 +76,27 @@ def test_a_merged_pr_gets_its_numbers_from_its_branchs_events() -> None:
     assert result.untracked == []
 
 
-def test_rework_counts_later_prs_from_the_same_branch_and_reopened_tickets() -> None:
+def test_rework_counts_later_prs_from_the_same_branch_and_reopens_before_the_next_pr_for_the_ticket() -> None:
     fix = [event("08:00", "prompt", branch="fix-7", day=6), event("08:30", "stop", branch="fix-7", day=6)]
+    reopens = {
+        (REPO, 7): [
+            datetime.fromisoformat(at("11:00")),  # before #7 merged: nobody's rework
+            datetime.fromisoformat(at("18:00")),  # after #7, before #9: #7's
+            datetime.fromisoformat(at("10:00", day=6)),  # after #9 merged: #9's
+        ]
+    }
     prs = [
-        pr(7, "feat-7", "12:00", closes=(7,), reopened=1),
+        pr(7, "feat-7", "12:00", closes=(7,)),
         pr(9, "fix-7", "09:00", closes=(7,), day=6),  # later, same ticket, another branch: planned work, not rework
         pr(10, "feat-7", "10:00", day=6),  # later, same branch reused
         pr(11, "docs", "11:00", closes=(3,), day=6),  # later, unrelated, and no events at all
     ]
 
-    result = stats.compute(FEATURE_7 + fix, prs)
+    result = stats.compute(FEATURE_7 + fix, prs, reopens)
 
     by_number = {change.pr.number: change for change in result.changes}
-    assert by_number[7].rework == 2  # #10 and one reopen
-    assert by_number[9].rework == 0
+    assert by_number[7].rework == 2  # #10 and the 18:00 reopen
+    assert by_number[9].rework == 1  # the reopen after it
     assert [p.number for p in result.untracked] == [10, 11]
 
 

@@ -62,12 +62,16 @@ args = sys.argv[1:]
 if args[:2] == ["pr", "list"]:
     print(json.dumps([
         {{"number": 7, "title": "Add search", "headRefName": "feat-7", "mergedAt": "{merged}",
-          "body": "Closes #5", "closingIssuesReferences": []}},
+          "body": "Closes #5 and fixes #6", "isCrossRepository": False}},
         {{"number": 8, "title": "Typo", "headRefName": "typo", "mergedAt": "{merged}",
-          "body": "", "closingIssuesReferences": []}},
+          "body": "", "isCrossRepository": False}},
+        {{"number": 9, "title": "From a fork", "headRefName": "feat-7", "mergedAt": "{merged}",
+          "body": "", "isCrossRepository": True}},
     ]))
 elif args[0] == "api" and "issues/5/events" in args[2]:
     print("{reopened}")
+elif args[0] == "api" and "issues/6/events" in args[2]:
+    sys.exit("HTTP 404: Not Found")
 else:
     sys.exit("fake gh: unexpected " + " ".join(args))
 """
@@ -101,7 +105,7 @@ def test_stats_prints_one_row_per_merged_pr_from_the_log_and_github(
 
     assert cli.main(["stats", "--since", "3d"]) == 0
     out, err = capsys.readouterr()
-    assert err == ""
+    assert err.startswith(f"tower: {repo}: reopens of #6 not counted: gh api in {repo}: HTTP 404")
     lines = out.splitlines()
     assert lines[0].split() == [
         "PR", "start→merged", "active", "waiting", "interrupts", "resume", "follow-ups/report", "rework", "title",
@@ -110,11 +114,15 @@ def test_stats_prints_one_row_per_merged_pr_from_the_log_and_github(
     assert "1 merged PR with no events (made outside tower): app#8" in out
 
 
-def test_stats_rejects_a_since_it_cannot_read(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize(
+    ("since", "message"),
+    [("two weeks", "like 14d, 2w or 36h"), ("99999w", "longer than 3650 days"), ("999999999w", "longer than")],
+)
+def test_stats_rejects_a_since_it_cannot_use(since: str, message: str, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exit_info:
-        cli.main(["stats", "--since", "two weeks"])
+        cli.main(["stats", "--since", since])
     assert exit_info.value.code == 2
-    assert "like 14d, 2w or 36h" in capsys.readouterr().err
+    assert message in capsys.readouterr().err
 
 
 def test_stats_warns_about_a_repo_whose_folder_is_gone(

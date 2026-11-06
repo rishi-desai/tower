@@ -16,17 +16,19 @@ branch (if it was reused) and up to this merge. From them:
   follow_ups: your prompts after the worker's first report in that session (an `answer` to AskUserQuestion isn't
   one), so a prompt sent while it is still working on your last one counts too.
 - rework: later merged PRs from the same branch (more commits after it was done), plus reopens of its tickets after
-  its merge. Later PRs for the same ticket from another branch don't count: a ticket can take several changes.
+  its merge and before any later PR for that ticket merged (a reopen after that is the later PR's). Later PRs for the
+  same ticket from another branch don't count: a ticket can take several changes.
 
 Known gaps: a wait on a permission prompt you approve without typing, with no stop after it, runs on until your next
 input; start -> verified working capability waits for T14's integration check; model cost isn't recorded (see
-docs/research/claude-code-cost-metrics.md); rework for a recent PR grows as later fixes merge.
+docs/research/claude-code-cost-metrics.md); rework for a recent PR grows as later fixes merge; a branch name reused
+after a merge that prs doesn't include gives the new PR the old one's events too.
 """
 
 from __future__ import annotations
 
 import statistics
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -38,8 +40,8 @@ INPUTS = frozenset({"prompt", "answer"})
 
 @dataclass(frozen=True)
 class MergedPr:
-    """A merged PR: its repo (main checkout path, as events record it), head branch, merge time, the ticket numbers
-    it closes, and how many times those tickets were reopened after it merged."""
+    """A merged PR: its repo (main checkout path, as events record it), head branch, merge time, and the ticket
+    numbers it closes."""
 
     repo: str
     number: int
@@ -47,7 +49,6 @@ class MergedPr:
     branch: str
     merged_at: datetime
     closes: tuple[int, ...] = ()
-    reopened_after_merge: int = 0
 
 
 @dataclass(frozen=True)
@@ -81,10 +82,16 @@ class StatsResult:
     unreadable: int = 0
 
 
-def compute(log: Sequence[Event], prs: Sequence[MergedPr], merged_since: datetime | None = None) -> StatsResult:
+def compute(
+    log: Sequence[Event],
+    prs: Sequence[MergedPr],
+    reopens: Mapping[tuple[str, int], Sequence[datetime]] | None = None,
+    merged_since: datetime | None = None,
+) -> StatsResult:
     """The metrics for each PR in prs merged at or after merged_since (default: all), from the events in log (any
-    order). PRs without events go to untracked; events whose ts isn't an ISO 8601 time with a zone are counted in
-    unreadable and left out. PRs merged before merged_since only bound a reused branch's events."""
+    order) and reopens, the times each (repo, ticket) was reopened. PRs without events go to untracked; events whose
+    ts isn't an ISO 8601 time with a zone are counted in unreadable and left out. PRs merged before merged_since only
+    bound a reused branch's events."""
     timed: list[tuple[datetime, Event]] = []
     unreadable = 0
     for e in log:
@@ -94,6 +101,9 @@ def compute(log: Sequence[Event], prs: Sequence[MergedPr], merged_since: datetim
         else:
             timed.append((when, e))
     timed.sort(key=lambda pair: pair[0])
+    by_branch: dict[tuple[str | None, str | None], list[tuple[datetime, Event]]] = {}
+    for when, e in timed:
+        by_branch.setdefault((e.repo, e.branch), []).append((when, e))
     by_merge = sorted(prs, key=lambda p: p.merged_at)
     result = StatsResult(unreadable=unreadable)
     for index, merged in enumerate(by_merge):
@@ -103,15 +113,14 @@ def compute(log: Sequence[Event], prs: Sequence[MergedPr], merged_since: datetim
         previous_merge = max(earlier, default=None)
         change_events = [
             (when, e)
-            for when, e in timed
-            if (e.repo, e.branch) == (merged.repo, merged.branch)
-            and (previous_merge is None or when > previous_merge)
-            and when <= merged.merged_at
+            for when, e in by_branch.get((merged.repo, merged.branch), [])
+            if (previous_merge is None or when > previous_merge) and when <= merged.merged_at
         ]
         if not change_events:
             result.untracked.append(merged)
             continue
-        result.changes.append(change_stats(merged, change_events, rework(merged, by_merge[index + 1 :])))
+        rework_count = rework(merged, by_merge[index + 1 :], reopens or {})
+        result.changes.append(change_stats(merged, change_events, rework_count))
     return result
 
 
@@ -177,9 +186,18 @@ def active_time(inputs: list[datetime]) -> timedelta:
     return total
 
 
-def rework(merged: MergedPr, later: Sequence[MergedPr]) -> int:
-    """Later merged PRs in the same repo from the same branch, plus reopens of merged's tickets."""
-    return sum(1 for p in later if (p.repo, p.branch) == (merged.repo, merged.branch)) + merged.reopened_after_merge
+def rework(merged: MergedPr, later: Sequence[MergedPr], reopens: Mapping[tuple[str, int], Sequence[datetime]]) -> int:
+    """Later merged PRs (later sorted by merge) in the same repo from the same branch, plus reopens of merged's
+    tickets after its merge and before the next merged PR for that ticket."""
+    count = sum(1 for p in later if (p.repo, p.branch) == (merged.repo, merged.branch))
+    for ticket in merged.closes:
+        next_for_ticket = next((p.merged_at for p in later if p.repo == merged.repo and ticket in p.closes), None)
+        count += sum(
+            1
+            for reopened in reopens.get((merged.repo, ticket), [])
+            if reopened > merged.merged_at and (next_for_ticket is None or reopened < next_for_ticket)
+        )
+    return count
 
 
 def parse_ts(ts: str) -> datetime | None:
