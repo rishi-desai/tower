@@ -27,11 +27,14 @@ def conf_path() -> Path:
 
 def read_conf(path: Path) -> dict[str, str]:
     """The config's `key=value` lines as a dict; the last line for a key wins. It's parsed, never run, so a typo in it
-    can't run as a command. Values may hold spaces (iCloud paths do). A missing file is an empty config."""
+    can't run as a command. Values may hold spaces (iCloud paths do). A missing file is an empty config; one that
+    exists but can't be read raises LedgerError, so it never passes for a machine that was never set up."""
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except FileNotFoundError:
         return {}
+    except OSError as error:
+        raise LedgerError(f"can't read {path} ({error.strerror or type(error).__name__})") from error
     conf: dict[str, str] = {}
     for line in text.splitlines():
         key, sep, value = line.partition("=")
@@ -82,7 +85,10 @@ def open_ledger(repo_dir: Path) -> Path:
     """The Ledger folder of the repo holding repo_dir, created if needed. Raises NotARepo outside a git repo and
     LedgerError when the ledger can't be found."""
     ledger = project_dir(repo_name(repo_dir), read_conf(conf_path())) / "Ledger"
-    ledger.mkdir(parents=True, exist_ok=True)
+    try:
+        ledger.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise LedgerError(f"can't create {ledger} ({error.strerror or type(error).__name__})") from error
     return ledger
 
 

@@ -34,7 +34,7 @@ def adopt_scan(repo_dir: Path) -> str:
     name = repo_name(repo_dir)
     folder = ledger.open_ledger(repo_dir)
     worktrees = list_worktrees(repo_dir)
-    default = default_branch(repo_dir)
+    default = default_branch(repo_dir, worktrees[0].branch)
     # Compared with origin's copy when there is one, so "ahead" means "not yet on the remote default".
     base = f"origin/{default}" if has_ref(repo_dir, f"refs/remotes/origin/{default}") else default
     has_gh = try_gh(repo_dir, "auth", "status")[0] is not None and try_gh(repo_dir, "repo", "view")[0] is not None
@@ -60,12 +60,16 @@ def adopt_scan(repo_dir: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def default_branch(repo_dir: Path) -> str:
-    """What origin/HEAD points at, else main if there's a local main, else master."""
+def default_branch(repo_dir: Path, main_checkout_branch: str | None) -> str:
+    """What origin/HEAD points at, else a local main, else a local master, else the main checkout's branch (a repo
+    with no origin on `trunk`), else "main"."""
     origin_head = git(repo_dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if origin_head:
         return origin_head.removeprefix("origin/")
-    return "main" if has_ref(repo_dir, "refs/heads/main") else "master"
+    for name in ("main", "master"):
+        if has_ref(repo_dir, f"refs/heads/{name}"):
+            return name
+    return main_checkout_branch or "main"
 
 
 def has_ref(repo_dir: Path, ref: str) -> bool:
@@ -133,7 +137,10 @@ def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str] | None, list
     worktree_folders: list[str] = []
     for code, path in entries:
         if code == "??" and path.endswith("/") and holds_worktree(worktree / path, roots):
-            beside = untracked_beside_worktrees(worktree, path, roots)
+            # A worktree root itself (git lists one with status.showUntrackedFiles=all) holds nothing to look at.
+            beside = [] if is_root(worktree / path, roots) else untracked_beside_worktrees(worktree, path, roots)
+            if beside is None:
+                return None, []  # couldn't look inside: unknown, not clean
             if beside:
                 changes += [f"?? {p}" for p in beside]
             else:
@@ -143,21 +150,32 @@ def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str] | None, list
     return changes, worktree_folders
 
 
-def untracked_beside_worktrees(worktree: Path, folder: str, roots: set[str]) -> list[str]:
+def untracked_beside_worktrees(worktree: Path, folder: str, roots: set[str]) -> list[str] | None:
     """The untracked paths in folder (relative, ending in "/") other than the worktrees in it, as git's normal
-    `git status` would show them: an untracked subfolder is one entry, and ignored files don't show."""
+    `git status` would show them: an untracked subfolder is one entry, and ignored files don't show. None when the
+    folder can't be listed or git fails."""
     paths: list[str] = []
     pathspecs: list[str] = []
-    for child in sorted(os.listdir(worktree / folder)):
+    try:
+        children = sorted(os.listdir(worktree / folder))
+    except OSError:
+        return None
+    for child in children:
         inside = worktree / folder / child
         if is_root(inside, roots):
             continue
         if inside.is_dir() and not inside.is_symlink() and holds_worktree(inside, roots):
-            paths += untracked_beside_worktrees(worktree, f"{folder}{child}/", roots)
+            deeper = untracked_beside_worktrees(worktree, f"{folder}{child}/", roots)
+            if deeper is None:
+                return None
+            paths += deeper
         else:
             pathspecs.append(f"{folder}{child}")
     if pathspecs:  # one git call: with each child as a pathspec, git groups an untracked folder per child
-        paths += [path for _, path in status_entries(worktree, "--", *pathspecs) or []]
+        found = status_entries(worktree, "--", *pathspecs)
+        if found is None:
+            return None
+        paths += [path for _, path in found]
     return sorted(paths)
 
 

@@ -393,3 +393,54 @@ def test_the_card_path_and_rules_wrappers_run_the_core(repo: Fixture, home: Path
     )
     assert card.stdout == f"{repo.ledger / 'main.md'}\n"
     assert rules.stdout == f"{home / '.claude' / 'tower' / 'rules' / 'repo.md'}\n"
+
+
+def test_adopt_scan_says_unknown_not_clean_when_git_status_fails(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    worktree = repo.add_worktree("feat-1")
+    index = Path(git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+    index.write_bytes(b"not an index")
+
+    row = next(r for r in adopt_rows(capsys) if r.startswith("- [worktree] feat-1"))
+
+    assert row.startswith("- [worktree] feat-1 | no card | uncommitted: ? |")
+
+
+def test_adopt_scan_compares_with_the_main_checkouts_branch_when_there_is_no_main_or_master(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    git(repo.main, "branch", "-m", "main", "trunk")
+    repo.add_worktree("feat-1")
+
+    code, out, _ = run(capsys, "adopt-scan")
+
+    assert code == 0
+    assert "| default branch: trunk (compared with trunk) |" in out
+    assert "- [worktree] feat-1 | no card | uncommitted: 0 | ahead 1 / behind 0 of trunk |" in out
+    assert out.endswith("== BRANCHES WITH UNMERGED WORK AND NO WORKTREE ==\n(none)\n")
+
+
+def test_an_unreadable_backlog_is_reported_and_the_scan_goes_on(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (repo.ledger / "_backlog.md").mkdir()  # reading a folder fails like an unreadable file
+
+    code, out, _ = run(capsys, "scan", "--no-github")
+
+    assert code == 0
+    assert "== WORKTREES ==" in out
+    assert out.endswith(
+        f"== BACKLOG (parked ideas) ==\n(couldn't read {repo.ledger / '_backlog.md'}: Is a directory)\n"
+    )
+
+
+def test_an_unreadable_config_is_an_error_not_a_fresh_machine(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    conf = tmp_path / "tower.conf"
+    conf.chmod(0o000)
+    try:
+        assert run(capsys, "card-path") == (1, "", f"tower: can't read {conf} (Permission denied)\n")
+    finally:
+        conf.chmod(0o644)

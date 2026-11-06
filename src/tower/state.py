@@ -223,8 +223,12 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
     now = time.time() if now is None else now
     worktrees = list_worktrees(repo_dir)
     main = worktrees[0]
-    conf = ledger.read_conf(ledger.conf_path())
     notes: list[str] = []
+    try:
+        conf = ledger.read_conf(ledger.conf_path())
+    except ledger.LedgerError as error:
+        notes.append(f"{error}, so its settings weren't used")
+        conf = {}
 
     name = repo_name(repo_dir)
     ledger_folder, ledger_note = ledger.ledger_dir(name, conf)

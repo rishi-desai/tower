@@ -94,9 +94,11 @@ def gh_list(repo_dir: Path, title: str, *args: str) -> list[str]:
 
 
 def backlog(path: Path) -> str:
-    """The parked ideas file as it is, or "(empty)" when it's missing or empty."""
+    """The parked ideas file as it is, "(empty)" when it's missing or empty, or why it couldn't be read."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         text = ""
+    except OSError as error:  # an iCloud file not downloaded, or no permission: say so, the rest of the scan stands
+        return f"(couldn't read {path}: {error.strerror or type(error).__name__})\n"
     return text or "(empty)\n"
