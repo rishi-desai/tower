@@ -22,7 +22,7 @@ from tower import cli, events
 
 ROOT = Path(__file__).resolve().parent.parent
 HUB_SCAN = ROOT / "plugin" / "skills" / "hub" / "scripts" / "hub-scan.sh"
-PANE_TEST = ROOT / "pane" / "tests" / "tower-pane.test.tsx"
+PANE_FIXTURE = ROOT / "pane" / "tests" / "fixtures" / "tower-state.ts"
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -315,41 +315,87 @@ def test_a_detached_worktree_finds_its_card(repo: Fixture, capsys: pytest.Captur
     assert row["status"] == "blocked"
 
 
-def hub_and_pane_fixture(repo: Fixture, tmp_path: Path) -> str:
-    """Run hub-scan.sh --no-github on the fixture both the hub and the pane are tested with; paths shortened.
+def shared_fixture(repo: Fixture) -> None:
+    """The repo both the hub and the pane are tested on: one worker for each way a status can be decided.
 
-    Three workers, each a case where the hub and the pane used to disagree: a busy one with no card, a busy one whose
-    card still says needs-you, and a waiting one whose card says running.
+    feat-1 is busy with no card; feat-3's card says needs-you and no session contradicts it; feat-5 has an idle
+    session and no card; feat-7 is busy with a stale needs-you card (you already answered); feat-8 waits on an
+    approval and feat-9 on a question, both with running cards. feat/2-gone's card outlived its worktree.
     """
-    feat1, feat7, feat8 = repo.add_worktree("feat-1"), repo.add_worktree("feat-7"), repo.add_worktree("feat-8")
+    paths = {name: repo.add_worktree(name) for name in ("feat-1", "feat-3", "feat-5", "feat-7", "feat-8", "feat-9")}
+    repo.write_card("feat-3", "needs-you", ticket="#3")
     repo.write_card("feat-7", "needs-you", ticket="#7")
     repo.write_card("feat-8", "running", ticket="#8")
+    repo.write_card("feat-9", "running", ticket="#9")
+    repo.write_card("feat/2-gone", "done", ticket="#2")
     repo.sessions(
         interactive("hub-1", repo.main, "idle"),
-        interactive("w1", feat1, "busy"),
-        interactive("w7", feat7, "busy"),
-        interactive("w8", feat8, "waiting", waitingFor="approve Bash"),
+        interactive("w1", paths["feat-1"], "busy"),
+        interactive("w5", paths["feat-5"], "idle"),
+        interactive("w7", paths["feat-7"], "busy"),
+        interactive("w8", paths["feat-8"], "waiting", waitingFor="approve Bash"),
+        interactive("w9", paths["feat-9"], "waiting", waitingFor="input needed"),
     )
-    proc = subprocess.run(["bash", str(HUB_SCAN), "--no-github"], capture_output=True, text=True, check=True)
-    report = proc.stdout
-    for long, short in ((repo.ledger, "/vault/repo/Ledger"), (repo.main, "/p")):
-        report = report.replace(os.path.realpath(long), short).replace(str(long), short)
-    return report
 
 
-def test_the_hub_and_the_pane_are_tested_on_the_same_report(repo: Fixture, tmp_path: Path) -> None:
-    """hub-scan.sh's output for the shared fixture is, byte for byte, the report the pane's test feeds the pane
-    (HUB_AND_PANE in pane/tests/tower-pane.test.tsx), so the pane test proves the pane shows the hub's statuses.
-    If the report's format changes on purpose, paste the new output there."""
-    report = hub_and_pane_fixture(repo, tmp_path)
+def shortened(value: object, repo: Fixture) -> object:
+    """value with the fixture's temporary paths replaced by the short ones the pane's fixture uses."""
+    if isinstance(value, dict):
+        return {key: shortened(item, repo) for key, item in value.items()}
+    if isinstance(value, list):
+        return [shortened(item, repo) for item in value]
+    if isinstance(value, str):
+        for long, short in ((repo.ledger, "/vault/repo/Ledger"), (repo.main, "/p")):
+            value = value.replace(os.path.realpath(long), short).replace(str(long), short)
+    return value
 
-    pane_test = PANE_TEST.read_text(encoding="utf-8")
-    start = pane_test.index("const HUB_AND_PANE = `") + len("const HUB_AND_PANE = `")
-    assert report == pane_test[start : pane_test.index("`", start)]
-    assert "- feat-1 | status: running | card: none" in report
-    assert "- feat-7 | status: running | card: needs-you" in report
-    assert "- feat-8 | status: needs-you | card: running" in report
-    assert "WIP: 3 of 3 (execution slots: running + needs-you, main excluded) — AT LIMIT" in report
+
+PANE_FIXTURE_START = "export const SHARED: TowerState = "
+
+
+def test_the_pane_is_tested_on_tower_states_own_output(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """`tower state --json` for the shared fixture is exactly what the pane's tests feed the pane (SHARED in
+    pane/tests/fixtures/tower-state.ts), so the pane test proves the pane draws what the core decided. If the JSON
+    changes on purpose, paste the new output (printed below on failure) there."""
+    shared_fixture(repo)
+    produced = shortened(tower_state(capsys), repo)
+
+    fixture = PANE_FIXTURE.read_text(encoding="utf-8")
+    pasted = json.loads(fixture[fixture.index(PANE_FIXTURE_START) + len(PANE_FIXTURE_START) :])
+    assert produced == pasted, "paste this into SHARED:\n" + json.dumps(produced, indent=2)
+    statuses = {row["label"]: row["status"] for row in pasted["worktrees"]}
+    assert statuses == {
+        "main": "main",
+        "feat-1": "running",
+        "feat-3": "needs-you",
+        "feat-5": "no-card",
+        "feat-7": "running",
+        "feat-8": "needs-you",
+        "feat-9": "needs-you",
+    }
+
+
+def test_the_panes_issue_limit_matches_hub_scans() -> None:
+    """The pane says "+ N or more" when hub-scan.sh listed as many issues as its `gh issue list --limit` allows."""
+    pane = (ROOT / "pane" / "hooks" / "register.tsx").read_text(encoding="utf-8")
+    limit = pane.split("const HUB_SCAN_ISSUE_LIMIT = ")[1].split(" ")[0]
+    assert HUB_SCAN.read_text(encoding="utf-8").count(f'issue list --assignee "@me" --state open --limit {limit}') == 1
+    assert HUB_SCAN.read_text(encoding="utf-8").count(f"issue list --state open --limit {limit}") == 1
+
+
+def test_the_hub_groups_the_shared_fixture_as_the_pane_does(repo: Fixture) -> None:
+    """hub-scan.sh's GROUPS (what the hub reports from) put the same worktrees under NEEDS YOU and RUNNING as the
+    statuses in the pane's fixture: the hub and the pane can't disagree."""
+    shared_fixture(repo)
+    report = subprocess.run(["bash", str(HUB_SCAN), "--no-github"], capture_output=True, text=True, check=True).stdout
+
+    groups = report[report.index("== GROUPS") :].split("\n\n")[0].splitlines()
+    rows_in = {
+        title: [line[2:].split(" | ")[0] for line in groups[groups.index(title) + 1 : groups.index(after)]]
+        for title, after in (("NEEDS YOU", "BLOCKED"), ("RUNNING", "WAITING ON CI OR REVIEW"))
+    }
+    assert rows_in == {"NEEDS YOU": ["feat-3", "feat-8", "feat-9"], "RUNNING": ["feat-1", "feat-7"]}
+    assert "WIP: 5 of 3 (execution slots: running + needs-you, main excluded) — AT LIMIT" in report
 
 
 def test_just_after_midnight_on_the_1st_last_months_events_still_count(tmp_path: Path) -> None:
