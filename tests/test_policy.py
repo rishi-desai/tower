@@ -61,17 +61,17 @@ def write_policy(home: Path, text: str) -> Path:
     return path
 
 
-def gates(effective: policy.Effective) -> dict[str, str]:
-    """The seven approval keys of an effective policy, by name."""
-    return {key: getattr(effective, key) for key in WORK}
+def gates(repo_policy: policy.RepoPolicy) -> dict[str, str]:
+    """The seven approval keys of an repo_policy policy, by name."""
+    return {key: getattr(repo_policy, key) for key in WORK}
 
 
 def test_with_no_policy_file_the_strictest_profile_applies(home: Path) -> None:
-    effective = policy.load().for_repo("acme/widget")
+    repo_policy = policy.load().for_repo("acme/widget")
 
-    assert effective.profile == "work"
-    assert gates(effective) == WORK
-    assert "no policy file" in effective.why
+    assert repo_policy.profile == "work"
+    assert gates(repo_policy) == WORK
+    assert "no policy file" in repo_policy.why
     assert not (home / "policy.toml").exists()  # nothing to migrate, so nothing is written
 
 
@@ -79,11 +79,11 @@ def test_with_no_policy_file_the_strictest_profile_applies(home: Path) -> None:
 def test_each_built_in_profile_has_the_keys_the_issue_gives_it(home: Path, name: str) -> None:
     write_policy(home, f'default_profile = "{name}"\n')
 
-    effective = policy.load().for_repo(None)
+    repo_policy = policy.load().for_repo(None)
 
-    assert effective.profile == name
-    assert gates(effective) == BUILT_INS[name]
-    assert effective.problems == ()
+    assert repo_policy.profile == name
+    assert gates(repo_policy) == BUILT_INS[name]
+    assert repo_policy.problems == ()
 
 
 @pytest.mark.parametrize("name", list(BUILT_INS))
@@ -117,37 +117,37 @@ def test_an_exact_repo_beats_a_glob_and_a_longer_glob_beats_a_shorter_one(home: 
 def test_equally_specific_globs_take_the_stricter_value_of_each_key(home: Path) -> None:
     write_policy(home, '[repos]\n"acme/*" = "sandbox"\n"*/widg*" = "personal"\n')  # 5 literal characters each
 
-    effective = policy.load().for_repo("acme/widget")
+    repo_policy = policy.load().for_repo("acme/widget")
 
-    assert gates(effective) == PERSONAL  # personal is stricter than sandbox on every key
-    assert effective.profile == "sandbox+personal"
+    assert gates(repo_policy) == PERSONAL  # personal is stricter than sandbox on every key
+    assert repo_policy.profile == "sandbox+personal"
 
 
 def test_a_profile_table_changes_only_the_keys_it_names(home: Path) -> None:
     write_policy(home, 'default_profile = "personal"\n[profiles.personal]\ncomments = "auto"\nwip_limit = 5\n')
 
-    effective = policy.load().for_repo(None)
+    repo_policy = policy.load().for_repo(None)
 
-    assert gates(effective) == {**PERSONAL, "comments": "auto"}
-    assert (effective.wip_limit, effective.wip_limit_from) == (5, f"[profiles.personal] in {home / 'policy.toml'}")
+    assert gates(repo_policy) == {**PERSONAL, "comments": "auto"}
+    assert (repo_policy.wip_limit, repo_policy.wip_limit_from) == (5, f"[profiles.personal] in {home / 'policy.toml'}")
 
 
 def test_a_new_profile_takes_the_strictest_value_for_every_key_it_leaves_out(home: Path) -> None:
     write_policy(home, 'default_profile = "client"\n[profiles.client]\npush = "force"\nissue_writes = "auto"\n')
 
-    effective = policy.load().for_repo(None)
+    repo_policy = policy.load().for_repo(None)
 
-    assert effective.profile == "client"
-    assert gates(effective) == {**WORK, "push": "force", "issue_writes": "auto"}
+    assert repo_policy.profile == "client"
+    assert gates(repo_policy) == {**WORK, "push": "force", "issue_writes": "auto"}
 
 
 def test_wip_limit_comes_from_tower_conf_when_the_profile_has_none(home: Path) -> None:
     (home.parent / "tower.conf").write_text("wip_limit=7\n", encoding="utf-8")
     write_policy(home, 'default_profile = "sandbox"\n')
 
-    effective = policy.load().for_repo(None)
+    repo_policy = policy.load().for_repo(None)
 
-    assert (effective.wip_limit, effective.wip_limit_from) == (7, f"wip_limit in {home.parent / 'tower.conf'}")
+    assert (repo_policy.wip_limit, repo_policy.wip_limit_from) == (7, f"wip_limit in {home.parent / 'tower.conf'}")
 
 
 @pytest.mark.parametrize(
@@ -198,10 +198,10 @@ def test_invalid_or_unknown_values_get_the_strictest_and_are_reported(
 ) -> None:
     write_policy(home, text)
 
-    effective = policy.load().for_repo("acme/widget")
+    repo_policy = policy.load().for_repo("acme/widget")
 
-    assert gates(effective) == expected
-    assert any(problem in p for p in effective.problems) if problem else effective.problems == ()
+    assert gates(repo_policy) == expected
+    assert any(problem in p for p in repo_policy.problems) if problem else repo_policy.problems == ()
 
 
 @pytest.mark.parametrize(
@@ -226,11 +226,11 @@ def test_a_file_that_cant_be_read_gives_every_repo_the_strictest_profile(
 ) -> None:
     (home / "policy.toml").write_bytes(content)
 
-    effective = policy.load().for_repo("acme/widget")
+    repo_policy = policy.load().for_repo("acme/widget")
 
-    assert gates(effective) == WORK
-    assert "can't be used" in effective.why
-    assert any(problem in p for p in effective.problems) or problem in effective.why
+    assert gates(repo_policy) == WORK
+    assert "can't be used" in repo_policy.why
+    assert any(problem in p for p in repo_policy.problems) or problem in repo_policy.why
 
 
 # --- The TOML subset: what it reads must mean what TOML says, and what TOML forbids it must refuse --------
@@ -325,11 +325,11 @@ def test_old_tower_conf_approvals_are_migrated_into_a_policy_file_that_keeps_the
 ) -> None:
     write_conf(home, conf)
 
-    effective = policy.load().for_repo(None)
+    repo_policy = policy.load().for_repo(None)
 
-    assert (effective.profile, gates(effective)) == (expected_profile, expected)
+    assert (repo_policy.profile, gates(repo_policy)) == (expected_profile, expected)
     assert (home / "policy.toml").exists()
-    assert effective.problems == ()
+    assert repo_policy.problems == ()
     write_conf(home, "push_approval=none\npr_approval=none\n")  # from now on tower.conf's are ignored
     assert gates(policy.load().for_repo(None)) == expected
 
@@ -345,13 +345,13 @@ def test_migration_that_cant_write_still_keeps_the_old_approvals(home: Path) -> 
     write_conf(home, "push_approval=none\npr_approval=every\n")
     home.chmod(0o500)
     try:
-        effective = policy.load().for_repo(None)
+        repo_policy = policy.load().for_repo(None)
     finally:
         home.chmod(0o700)
 
-    assert gates(effective) == {**WORK, "push": "none"}
+    assert gates(repo_policy) == {**WORK, "push": "none"}
     assert not (home / "policy.toml").exists()
-    assert any("couldn't write" in p for p in effective.problems)
+    assert any("couldn't write" in p for p in repo_policy.problems)
 
 
 # --- tower policy use -------------------------------------------------------------------------------------
@@ -485,19 +485,19 @@ def test_for_checkout_reads_the_repo_from_git(home: Path, tmp_path: Path) -> Non
     subprocess.run(
         ["git", "-C", str(checkout), "remote", "add", "origin", "git@github.com:acme/widget.git"], check=True
     )
-    effective, slug = policy.for_checkout(checkout)
+    repo_policy, slug = policy.for_checkout(checkout)
 
-    assert (effective.profile, slug) == ("sandbox", "acme/widget")
+    assert (repo_policy.profile, slug) == ("sandbox", "acme/widget")
     assert policy.for_checkout(tmp_path / "not-a-repo-or-missing")[1] is None
 
 
 def test_a_tower_conf_that_isnt_utf8_is_a_problem_not_a_crash(home: Path) -> None:
     (home.parent / "tower.conf").write_bytes(b"push_approval=\xff\n")
 
-    effective = policy.load().for_repo(None)
+    repo_policy = policy.load().for_repo(None)
 
-    assert gates(effective) == WORK
-    assert any("isn't UTF-8" in p for p in effective.problems)
+    assert gates(repo_policy) == WORK
+    assert any("isn't UTF-8" in p for p in repo_policy.problems)
 
 
 @pytest.mark.parametrize(
@@ -528,3 +528,21 @@ def test_available_profiles_include_migrated_only_while_it_is_pending(home: Path
     assert policy.available_profiles() == ["migrated", "personal", "sandbox", "work"]
     write_policy(home, '[profiles.client]\npush = "force"\n')
     assert policy.available_profiles() == ["client", "personal", "sandbox", "work"]
+
+
+def test_every_remote_of_a_checkout_counts_toward_its_policy(home: Path, tmp_path: Path) -> None:
+    """A checkout is judged by the stricter profile of every repo its remotes' fetch and push URLs point at, so a
+    remote re-pointed or added can only tighten it; the reported repo is still origin's."""
+    checkout = tmp_path / "scratch"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    remote = ["git", "-C", str(checkout), "remote"]
+    subprocess.run([*remote, "add", "origin", "git@github.com:me/scratch.git"], check=True)
+    write_policy(home, 'default_profile = "personal"\n[repos]\n"me/scratch" = "sandbox"\n"acme/*" = "work"\n')
+    assert policy.for_checkout(checkout)[0].profile == "sandbox"
+
+    subprocess.run([*remote, "set-url", "--push", "origin", "https://github.com/acme/real"], check=True)
+    repo_policy, slug = policy.for_checkout(checkout)
+
+    assert (gates(repo_policy), slug) == (WORK, "me/scratch")
+    assert policy.remote_slugs(checkout) == ("me/scratch", ["me/scratch", "acme/real"])

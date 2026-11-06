@@ -72,7 +72,12 @@ print(ledger.conf_get(ledger.read_conf(Path(sys.argv[2])), sys.argv[3], sys.argv
 }
 # policy ARGS... — `tower policy ARGS`, run from this checkout's plugin (src/tower/policy.py does the work).
 policy() {
-  python3 -I "$here/plugin/scripts/run-tower.py" policy "$@"
+  TOWER_CONF="$conf" python3 -I "$here/plugin/scripts/run-tower.py" policy "$@"
+}
+# policy_py CODE — run Python CODE with this checkout's tower.policy imported as `policy`, reading this machine's tower.conf.
+policy_py() {
+  TOWER_CONF="$conf" python3 -I -c "import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
+$1" "$here/plugin/lib"
 }
 
 # Suggest the open Obsidian vault + /Projects the first time; afterwards, whatever is saved.
@@ -90,8 +95,7 @@ print(open_vaults[0] if open_vaults else "")' 2>/dev/null || true)"
 fi
 default_wip="$(conf_get wip_limit 3)"
 # The profile as things stand (tower.conf's old push/PR approval count until they're migrated), read without writing.
-default_profile="$(TOWER_CONF="$conf" python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
-print(policy.current_default())' "$here/plugin/lib")"
+default_profile="$(policy_py 'print(policy.current_default())')"
 
 ask() {   # ask PROMPT DEFAULT -> prints the answer (or the default on Enter)
   local answer
@@ -108,8 +112,7 @@ if [ -z "$profile" ]; then   # newer than the other flags: scripted runs without
 fi
 projects_dir="${projects_dir/#\~/$HOME}"                  # allow ~/... in the answer
 case "$wip_limit" in ''|*[!0-9]*) echo "WIP limit must be a whole number, got '$wip_limit'" >&2; exit 2 ;; esac
-profiles="$(TOWER_CONF="$conf" python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
-print(" ".join(policy.available_profiles()))' "$here/plugin/lib")"
+profiles="$(policy_py 'print(" ".join(policy.available_profiles()))')"
 case " $profiles " in *" $profile "*) ;; *) echo "profile must be one of: $profiles; got '$profile'" >&2; exit 2 ;; esac
 [ -n "$projects_dir" ] || { echo "a projects folder is required" >&2; exit 2; }
 
@@ -123,11 +126,10 @@ if [ ! -d "$projects_dir" ]; then
 fi
 
 echo "1. Config: $conf, and the profile in $policy_file"
-if [ ! -e "$policy_file" ] && grep -qE '^(push|pr)_approval=' "$conf" 2>/dev/null; then
+if [ -n "$(policy_py 'print(policy.migration_profile() or "")')" ]; then
   # Before tower.conf is rewritten without them: keep what push_approval/pr_approval did, as a policy file.
   if [ "$dry_run" -eq 1 ]; then echo "  [dry-run] migrate push_approval/pr_approval from $conf into $policy_file"
-  else TOWER_CONF="$conf" python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
-policy.load()' "$here/plugin/lib"; fi
+  else policy_py 'policy.load()'; fi
 fi
 new_conf="$(mktemp)"; trap 'rm -f "$new_conf"' EXIT
 {
@@ -144,7 +146,7 @@ new_conf="$(mktemp)"; trap 'rm -f "$new_conf"' EXIT
 } > "$new_conf"
 if [ "$dry_run" -eq 1 ]; then sed 's/^/  [dry-run] | /' "$new_conf"; else mkdir -p "$claude_dir"; cp "$new_conf" "$conf"; fi
 if [ "$dry_run" -eq 1 ]; then echo "  [dry-run] tower policy use $profile"
-else TOWER_CONF="$conf" policy use "$profile" | sed 's/^/  /'; fi
+else policy use "$profile" | sed 's/^/  /'; fi
 
 # ---------- 2. personal rules folder ----------
 echo "2. Rules folder: $rules_dir"

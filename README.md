@@ -355,8 +355,11 @@ agent must ask you instead of trying another way. The prompt names the profile: 
 For a merge, the hook asks `gh` which branch the PR goes into (`gh pr view`, then `gh repo view` for the default
 branch), with the same PR and `-R` the merge uses, but only when the two merge keys differ and the merge is the
 whole command (`gh pr merge 5 --squash --delete-branch`, nothing chained before it). Otherwise, or when `gh` can't
-say, it asks unless both keys are `auto`. A `gh` command naming another repo (`-R owner/repo`, a PR or issue URL,
-or a `gh api repos/OWNER/REPO/...` endpoint) gets the stricter of that repo's policy and this one's, key by key. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs,
+say, it asks unless both keys are `auto`. A repo is judged by every remote it has (fetch and push URLs; the strictest
+profile wins), so re-pointing or adding a remote can only tighten it. A command that reaches another repo gets the
+stricter of that repo's policy and this one's, key by key: a `gh` command naming one (`-R owner/repo`, a PR or issue
+URL, a `gh api repos/OWNER/REPO/...` endpoint), a `git push` to a URL, `git -C`, or a `cd` into another checkout. A
+repo or folder from a variable gets `work`. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs,
 GraphQL queries) never ask.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
@@ -370,8 +373,9 @@ Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-split
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
 script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
 `$CMD push`), git/gh aliases, or deliberately disguised names. A plain push straight to `main` is judged by `push`,
-not `merge_to_main` (GitHub branch protection refuses it, T03), and a command that `cd`s into another repo is
-judged by this repo's policy. The full list is in `confirm-public.py`'s docstring.
+not `merge_to_main` (GitHub branch protection refuses it, T03). The safety floor matches text too: a protected file
+reached by a path built at run time (pieces joined in a script, a glob) isn't caught, so Claude Code's own permission
+rules or sandbox are the backstop there. The full list is in `confirm-public.py`'s docstring.
 `pr-wait` itself only reads.
 
 ## Policy profiles: `~/.claude/tower/policy.toml`
@@ -402,7 +406,8 @@ Keys: `push` (`every` | `force` | `none`), `merge_to_main`, `merge_to_branch`, `
 `pr_writes`, `cleanup` (each `ask` | `auto`), and `wip_limit` (a whole number; without one, `tower.conf`'s
 `wip_limit` applies, else 3).
 
-Which profile a repo gets: the `[repos]` pattern matching its `owner/repo` (an exact name beats a glob; the glob with
+Which profile a repo gets: the `[repos]` pattern matching its `owner/repo`, read from every remote's URL (with several
+repos, the stricter value of each key) (an exact name beats a glob; the glob with
 more literal characters beats the others; a tie takes the stricter value of each key), else `default_profile`, else
 `work`. An unknown profile name gives `work`, an invalid value the strictest value of its key, and a file that can't
 be read gives `work` everywhere; `tower policy` lists each problem with its line (and `tower doctor`, T20, will too).

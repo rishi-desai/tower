@@ -32,8 +32,8 @@ def context_line(stdin_text: str) -> str:
     sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
     from tower import policy
 
-    effective, slug = policy.for_checkout(Path(cwd))
-    return policy.session_line(effective, slug)
+    repo_policy, slug = policy.for_checkout(Path(cwd))
+    return policy.session_line(repo_policy, slug)
 
 
 if __name__ == "__main__":

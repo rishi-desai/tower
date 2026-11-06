@@ -882,3 +882,93 @@ def test_the_prompt_names_the_profile(tmp_path: Path) -> None:
     reason = str(decision["permissionDecisionReason"])
     assert reason.startswith("Public action or rule change (tower policy: personal) — approve? ")
     assert "comments=ask" in reason
+
+
+# --- Which repo a command reaches: an agent can't swap its repo's identity to get a looser profile ----------
+
+SANDBOX_WIDGET = 'default_profile = "work"\n[repos]\n"acme/widget" = "sandbox"\n'
+
+
+@pytest.fixture
+def real(widget: Path) -> Path:
+    """A second checkout beside widget, of acme/real, which the policy leaves at the default (work)."""
+    checkout = widget.parent / "real"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", "git@github.com:acme/real.git"], check=True)
+    return checkout
+
+
+def sandbox_widget_asks(widget: Path, command: str) -> bool:
+    """Whether COMMAND asks in a session in widget, which the policy makes sandbox (default work)."""
+    decision = run_hook(widget.parent, in_widget(widget, command), policy=SANDBOX_WIDGET, env=widget_env(widget, None))
+    return asks(decision)
+
+
+@pytest.mark.parametrize(
+    "remote_change",
+    [
+        ["remote", "set-url", "--push", "origin", "git@github.com:acme/real.git"],
+        ["remote", "add", "upstream", "https://github.com/acme/real"],
+        ["config", "url.git@github.com:acme/real.git.pushInsteadOf", "git@github.com:Acme/Widget.git"],
+    ],
+)
+def test_every_remote_counts_so_repointing_one_only_tightens(widget: Path, remote_change: list[str]) -> None:
+    """A push URL, another remote or a rewrite pointing at a stricter repo makes the stricter profile apply."""
+    assert not sandbox_widget_asks(widget, "git push --force origin HEAD:main")
+    subprocess.run(["git", "-C", str(widget), *remote_change], check=True)
+    assert sandbox_widget_asks(widget, "git push --force origin HEAD:main")
+    assert sandbox_widget_asks(widget, "gh pr comment 5 -b hi")
+
+
+@pytest.mark.parametrize(
+    ("command", "expect_ask"),
+    [
+        ("git push --force origin HEAD:main", False),
+        ("git push --force git@github.com:acme/real.git HEAD:main", True),
+        ("git push -f https://github.com/acme/real HEAD:main", True),
+        ("git push --force --repo=github.com:acme/real.git", True),
+        ('git push --force "$URL" HEAD:main', True),
+        ("git -c remote.origin.pushurl=git@github.com:acme/real.git push --force", True),
+        ("git -C ../real push --force", True),
+        ("git --git-dir=../real/.git push --force", True),
+        ("cd ../real && git push --force", True),
+        ("cd ../real; bash -c 'git push --force'", True),
+        ('cd "$DIR" && git push --force', True),
+        ("cd - && git push --force", True),
+        ("cd . && git push --force", False),
+        ("GIT_DIR=../real/.git git push --force", True),
+        ("GH_REPO=acme/real gh pr comment 5 -b hi", True),
+        ("export GH_REPO=acme/real; gh issue create -t x", True),
+    ],
+)
+def test_a_push_or_gh_command_reaching_another_repo_gets_its_policy(
+    widget: Path, real: Path, command: str, expect_ask: bool
+) -> None:
+    assert sandbox_widget_asks(widget, command) == expect_ask
+
+
+# Ways around a text-matching floor that the review of T09 found; each must ask in every profile.
+FLOOR_BYPASSES = [
+    "cd ~/.claude && printf 'default_profile = \"sandbox\"' > tower/policy.toml",
+    "find ~/.claude -name policy.toml -exec sed -i '' s/work/sandbox/ {} +",
+    "printf 'push_approval=none' > ~/.claude/$'\\x74'ower.conf",
+    'cp /tmp/x "$HOME/.claude/$NAME"',
+    "python3 -c \"from pathlib import Path; (Path.home()/'.claude'/'tower'/'policy.toml').write_text('x')\"",
+    "uv run python -c 'from tower import policy; policy.use(\"sandbox\")'",
+    "node -e \"require('child_process').execSync('tower policy use sandbox')\"",
+]
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("command", FLOOR_BYPASSES)
+def test_the_floor_holds_against_known_ways_around_it(tmp_path: Path, profile: str, command: str) -> None:
+    assert asks(run_hook(tmp_path, bash(command), policy=f'default_profile = "{profile}"\n'))
+
+
+def test_the_floor_follows_a_symlink_to_tower_files(tmp_path: Path) -> None:
+    """An Edit through a link to ~/.claude is an edit of the policy file."""
+    (tmp_path / ".claude" / "tower").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / ".claude")
+    call = {"tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "link" / "tower" / "policy.toml")}}
+    assert asks(run_hook(tmp_path, call, policy='default_profile = "sandbox"\n'))

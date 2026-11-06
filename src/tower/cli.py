@@ -257,8 +257,9 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
 
 def show_policy() -> int:
     """Print the policy for the repo holding the current folder."""
-    effective, slug = policy.for_checkout(Path("."))
-    print("\n".join(policy.describe(effective, slug, sorted(policy.load().profiles))))
+    loaded = policy.load()
+    repo_policy, slug = loaded.for_folder(Path("."))
+    print("\n".join(policy.describe(repo_policy, slug, sorted(loaded.profiles))))
     return 0
 
 
@@ -266,7 +267,7 @@ def use_profile(profile: str, for_repo: bool) -> int:
     """Switch the default profile (or, with for_repo, this repo's) and print the result; exit 1, saying why, when
     it can't be done (nothing is changed then)."""
     try:
-        slug = policy.repo_slug(Path(".")) if for_repo else None
+        slug = policy.remote_slugs(Path("."))[0] if for_repo else None
         if for_repo and slug is None:
             raise policy.PolicyError("this folder isn't in a repo with a GitHub origin, so --repo can't name it")
         print(f"tower: {policy.use(profile, slug)}")

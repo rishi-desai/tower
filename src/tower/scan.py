@@ -41,7 +41,7 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
     report = state.gather(repo_dir)
 
     lines = [f"REPO: {report.repo}", f"LEDGER: {folder}", ""]
-    lines += [*state.worktrees_section(report)]
+    lines += state.worktrees_section(report)
     lines += [policy.scan_line(report.policy)] if report.policy is not None else []
     lines += [adopt_line(report), ""]
     lines.append("== LIVE SESSIONS (agent view) ==")

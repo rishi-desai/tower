@@ -211,7 +211,7 @@ class Report:
     sessions_source: str
     notes: list[str] = field(default_factory=list)
     agents: list[object] | None = None
-    policy: policy.Effective | None = None
+    policy: policy.RepoPolicy | None = None
 
     @property
     def slots(self) -> int:
@@ -245,9 +245,9 @@ def gather(
     ledger_folder, ledger_note = ledger.ledger_dir(name, conf)
     if ledger_note:
         notes.append(ledger_note)
-    effective, _ = policy.for_checkout(Path(main.path))
-    if effective.problems:
-        notes.append(f"the policy file has {plural(len(effective.problems), 'problem')}; `tower policy` lists them")
+    repo_policy, _ = policy.for_checkout(Path(main.path))
+    if repo_policy.problems:
+        notes.append(f"the policy file has {plural(len(repo_policy.problems), 'problem')}; `tower policy` lists them")
 
     paths = [os.path.realpath(w.path) for w in worktrees]
     listed, live_note = sessions.read_agents() if agents_read is None else agents_read
@@ -312,13 +312,13 @@ def gather(
         main_checkout=main.path,
         ledger=str(ledger_folder) if ledger_folder is not None else None,
         base=base,
-        wip_limit=effective.wip_limit,
+        wip_limit=repo_policy.wip_limit,
         worktrees=rows,
         orphan_cards=orphan_cards(ledger_folder, seen_cards, notes) if ledger_folder is not None else [],
         sessions_source=sessions_source,
         notes=notes,
         agents=listed,
-        policy=effective,
+        policy=repo_policy,
     )
 
 

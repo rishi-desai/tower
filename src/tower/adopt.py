@@ -36,13 +36,14 @@ def adopt_scan(repo_dir: Path) -> str:
     default = default_branch(repo_dir, worktrees[0].branch)
     # Compared with origin's copy when there is one, so "ahead" means "not yet on the remote default".
     base = f"origin/{default}" if has_ref(repo_dir, f"refs/remotes/origin/{default}") else default
+    repo_policy, _ = policy.for_checkout(repo_dir)
     has_gh = try_gh(repo_dir, "auth", "status")[0] is not None and try_gh(repo_dir, "repo", "view")[0] is not None
 
     lines = [
         "== CONFIG ==",
         (
             f"repo: {name} | ledger: {folder} | default branch: {default} (compared with {base})"
-            f" | WIP limit: {policy.for_checkout(repo_dir)[0].wip_limit} | GitHub: {'yes' if has_gh else 'no'}"
+            f" | WIP limit: {repo_policy.wip_limit} | GitHub: {'yes' if has_gh else 'no'}"
         ),
         "",
         "== WORKTREES ==",

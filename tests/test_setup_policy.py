@@ -60,8 +60,8 @@ def test_old_approvals_are_migrated_before_tower_conf_is_rewritten(home: Path) -
     proc = setup(home)  # no --profile and no terminal: keep the current one
 
     assert proc.returncode == 0, proc.stderr
-    effective = policy.load().for_repo(None)
-    assert (effective.profile, effective.push, effective.merge_to_main, effective.comments) == (
+    repo_policy = policy.load().for_repo(None)
+    assert (repo_policy.profile, repo_policy.push, repo_policy.merge_to_main, repo_policy.comments) == (
         "migrated",
         "none",
         "auto",

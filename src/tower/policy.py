@@ -25,9 +25,10 @@ Built-in profiles: work (everything asks), personal (only force pushes, merges i
 cleanup ask) and sandbox (nothing asks). A [profiles.<built-in>] table changes only the keys it names; a new
 profile's missing keys take the strictest value.
 
-Which profile a repo gets: the [repos] pattern matching its `owner/repo` (read from its origin remote; an exact name
-beats a glob, and the glob with more literal characters beats the others; a tie takes the stricter value of each
-key), else default_profile, else the built-in strictest, work. An unknown profile name gives work, an invalid value
+Which profile a repo gets: the [repos] pattern matching its `owner/repo` (an exact name beats a glob, and the glob with
+more literal characters beats the others; a tie takes the stricter value of each key), else default_profile, else the
+built-in strictest, work. A checkout is judged by every repo its remotes' fetch and push URLs point at, the stricter
+value of each key across them, so re-pointing or adding a remote can only tighten its policy. An unknown profile name gives work, an invalid value
 the strictest value for its key, and a file that can't be read or parsed gives work for every repo. Each of these is
 listed in `problems`, which `tower policy` prints. wip_limit isn't an approval, so an invalid one falls back to
 tower.conf's instead of a "strictest" number.
@@ -104,7 +105,7 @@ def policy_path() -> Path:
     return default_dir() / POLICY_NAME
 
 
-def shown(path: Path) -> str:
+def display_path(path: Path) -> str:
     """path as reports print it, with the home folder as ~."""
     home = str(Path.home())
     text = str(path)
@@ -115,7 +116,7 @@ def shown(path: Path) -> str:
 
 
 @dataclass(frozen=True)
-class Effective:
+class RepoPolicy:
     """The policy that applies to one repo: its profile, why that one, each key's value, and the file's problems."""
 
     profile: str
@@ -137,18 +138,18 @@ class Effective:
         return result
 
     def asks(self, key: str) -> bool:
-        """Whether an ask|auto key asks. push isn't one: it has three values."""
-        return self.value(key) == "ask"
+        """Whether an ask|auto key asks (anything but auto does). push isn't one: it has three values."""
+        return self.value(key) != "auto"
 
 
-def make_effective(
+def make_repo_policy(
     profile: str, why: str, values: dict[str, str], wip: tuple[int, str], problems: tuple[str, ...]
-) -> Effective:
-    """An Effective from a full set of key values (a KEYS name to one of its values)."""
-    return Effective(profile, why, **values, wip_limit=wip[0], wip_limit_from=wip[1], problems=problems)
+) -> RepoPolicy:
+    """A RepoPolicy from a full set of key values (a KEYS name to one of its values)."""
+    return RepoPolicy(profile, why, **values, wip_limit=wip[0], wip_limit_from=wip[1], problems=problems)
 
 
-def stricter(first: Effective, second: Effective) -> Effective:
+def stricter(first: RepoPolicy, second: RepoPolicy) -> RepoPolicy:
     """The stricter value of each key of two policies, for an action that touches both of their repos."""
     if first == second:
         return first
@@ -157,7 +158,7 @@ def stricter(first: Effective, second: Effective) -> Effective:
     why = f"the stricter of {first.profile} ({first.why}) and {second.profile} ({second.why}), key by key"
     wip = min((first.wip_limit, first.wip_limit_from), (second.wip_limit, second.wip_limit_from))
     problems = first.problems + tuple(p for p in second.problems if p not in first.problems)
-    return make_effective(profile, why, values, wip, problems)
+    return make_repo_policy(profile, why, values, wip, problems)
 
 
 @dataclass(frozen=True)
@@ -175,12 +176,12 @@ class Policy:
     broken: str = ""
     machine_wip: tuple[int, str] = (3, "the default")
 
-    def for_repo(self, slug: str | None) -> Effective:
+    def for_repo(self, slug: str | None) -> RepoPolicy:
         """The policy for the repo whose `owner/repo` is slug (None: no GitHub remote, so no override applies)."""
         if self.broken:
-            return self.strictest(f"{shown(self.path)} can't be used ({self.broken}), so the built-in strictest")
+            return self.strictest(f"{display_path(self.path)} can't be used ({self.broken}), so the built-in strictest")
         if not self.exists:
-            return self.strictest(f"no policy file ({shown(self.path)}), so the built-in strictest")
+            return self.strictest(f"no policy file ({display_path(self.path)}), so the built-in strictest")
         matched = self.matching_repos(slug) if slug else []
         if len(matched) > 1:
             first, *rest = (self.resolve(name, why) for name, why in matched)
@@ -190,8 +191,38 @@ class Policy:
         if matched:
             return self.resolve(*matched[0])
         if self.default_profile is None:
-            return self.strictest(f"no default_profile in {shown(self.path)}, so the built-in strictest")
-        return self.resolve(self.default_profile, f"default_profile in {shown(self.path)}")
+            return self.strictest(f"no usable default_profile in {display_path(self.path)}, so the built-in strictest")
+        return self.resolve(self.default_profile, f"default_profile in {display_path(self.path)}")
+
+    def for_repos(self, slugs: list[str]) -> RepoPolicy:
+        """The policy for a checkout whose remotes point at the repos SLUGS: the stricter of theirs, key by key, so a
+        remote added or re-pointed can only tighten it; with none, the default profile."""
+        if not slugs:
+            return self.for_repo(None)
+        combined = self.for_repo(slugs[0])
+        for slug in slugs[1:]:
+            combined = stricter(combined, self.for_repo(slug))
+        return combined
+
+    def for_folder(self, folder: Path) -> tuple[RepoPolicy, str | None]:
+        """The policy for the checkout holding folder (every remote counts, see for_repos), and its origin's
+        `owner/repo` (None without one); the built-in strictest when git can't say."""
+        try:
+            origin, slugs = remote_slugs(folder)
+        except RepoUnknown as error:
+            return self.strictest(f"which repo this is isn't known ({error}), so the built-in strictest"), None
+        return self.for_repos(slugs), origin
+
+    def with_repos(self, base: RepoPolicy, names: list[str]) -> RepoPolicy:
+        """The stricter, key by key, of base and the policy of each repo NAMES names (gh -R values, URLs)."""
+        combined = base
+        for name in names:
+            combined = stricter(combined, self.for_repo(slug_from_repo_arg(name)))
+        return combined
+
+    def with_policy(self, base: RepoPolicy, other: RepoPolicy) -> RepoPolicy:
+        """The stricter, key by key, of base and other (another checkout's policy, for a command that reaches it)."""
+        return stricter(base, other)
 
     def matching_repos(self, slug: str) -> list[tuple[str | None, str]]:
         """The (profile, why) of the most specific [repos] patterns matching slug: several only on a tie."""
@@ -201,26 +232,26 @@ class Policy:
             is_glob = any(char in lowered for char in GLOB_CHARS)
             if (fnmatch.fnmatchcase(slug, lowered) if is_glob else lowered == slug) and pattern:
                 score = (not is_glob, sum(1 for char in lowered if char not in GLOB_CHARS))
-                why = f"[repos] {json.dumps(pattern)} in {shown(self.path)} matches {slug}"
+                why = f"[repos] {json.dumps(pattern)} in {display_path(self.path)} matches {slug}"
                 scored.append((score, name, why))
         if not scored:
             return []
         best = max(score for score, _, _ in scored)
         return [(name, why) for score, name, why in scored if score == best]
 
-    def resolve(self, name: str | None, why: str) -> Effective:
+    def resolve(self, name: str | None, why: str) -> RepoPolicy:
         """The policy of the profile called name (None or unknown: the built-in strictest), chosen because of why."""
         if name is None or name not in self.profiles:
             label = "a value that isn't a string" if name is None else json.dumps(name)
             return self.strictest(f"{why}, but {label} isn't a profile, so the built-in strictest")
         wip = self.machine_wip
         if name in self.profile_wip:
-            wip = (self.profile_wip[name], f"[profiles.{name}] in {shown(self.path)}")
-        return make_effective(name, why, self.profiles[name], wip, self.problems)
+            wip = (self.profile_wip[name], f"[profiles.{name}] in {display_path(self.path)}")
+        return make_repo_policy(name, why, self.profiles[name], wip, self.problems)
 
-    def strictest(self, why: str) -> Effective:
+    def strictest(self, why: str) -> RepoPolicy:
         """The built-in strictest profile, work, chosen because of why."""
-        return make_effective(STRICTEST, why, dict(STRICTEST_VALUES), self.machine_wip, self.problems)
+        return make_repo_policy(STRICTEST, why, dict(STRICTEST_VALUES), self.machine_wip, self.problems)
 
 
 def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
@@ -237,9 +268,9 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
         problems.append(f"{error}, so its settings weren't used")
         conf = {}
     except UnicodeDecodeError:
-        problems.append(f"{shown(ledger.conf_path())} isn't UTF-8 text, so its settings weren't used")
+        problems.append(f"{display_path(ledger.conf_path())} isn't UTF-8 text, so its settings weren't used")
         conf = {}
-    machine_wip = (ledger.wip_limit(conf), f"wip_limit in {shown(ledger.conf_path())}")
+    machine_wip = (ledger.wip_limit(conf), f"wip_limit in {display_path(ledger.conf_path())}")
     if not conf.get("wip_limit", "").isdigit():
         machine_wip = (machine_wip[0], "the default")
     try:
@@ -247,24 +278,24 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
     except FileNotFoundError:
         text = migrate(path, conf, problems) if migrate_conf else None
     except (OSError, UnicodeDecodeError) as error:
-        return Policy(path, True, problems=(*problems, f"can't read {shown(path)}"), broken=reason(error))
+        return Policy(path, True, problems=(*problems, f"can't read {display_path(path)}"), broken=error_reason(error))
     if text is None:
         return Policy(path, False, problems=tuple(problems), machine_wip=machine_wip)
     try:
         document = parse_toml(text)
     except TomlError as error:
-        return Policy(path, True, problems=(*problems, f"{shown(path)}: {error}"), broken=str(error))
-    return build(path, document, problems, machine_wip)
+        return Policy(path, True, problems=(*problems, f"{display_path(path)}: {error}"), broken=str(error))
+    return from_document(path, document, problems, machine_wip)
 
 
-def reason(error: Exception) -> str:
+def error_reason(error: Exception) -> str:
     """A short, plain reason for an OS or decoding error."""
     if isinstance(error, UnicodeDecodeError):
         return "it isn't UTF-8 text"
     return getattr(error, "strerror", None) or type(error).__name__
 
 
-def build(path: Path, document: dict[str, object], problems: list[str], machine_wip: tuple[int, str]) -> Policy:
+def from_document(path: Path, document: dict[str, object], problems: list[str], machine_wip: tuple[int, str]) -> Policy:
     """A Policy from a parsed policy file, adding a problem for every unknown key, name or invalid value."""
     profiles = {name: dict(values) for name, values in BUILT_IN.items()}
     profile_wip: dict[str, int] = {}
@@ -272,7 +303,7 @@ def build(path: Path, document: dict[str, object], problems: list[str], machine_
     default_profile: str | None = None
     for key, value in document.items():
         if key == "default_profile":
-            default_profile = value if isinstance(value, str) else ""
+            default_profile = value if isinstance(value, str) else None
             if not isinstance(value, str):
                 problems.append(
                     f"default_profile = {toml_value(value)} isn't a profile name, so the built-in strictest"
@@ -289,11 +320,11 @@ def build(path: Path, document: dict[str, object], problems: list[str], machine_
                     problems.append(f"[repos] {json.dumps(pattern)} = {toml_value(name)} isn't a profile name")
                 repos.append((pattern, name if isinstance(name, str) else None))
         else:
-            problems.append(f"unknown or misplaced key {key!r} in {shown(path)}, so it was ignored")
+            problems.append(f"unknown or misplaced key {key!r} in {display_path(path)}, so it was ignored")
     for pattern, name in repos:
         if isinstance(name, str) and name not in profiles:
             problems.append(f"[repos] {json.dumps(pattern)} names {json.dumps(name)}, which isn't a profile")
-    if default_profile and default_profile not in profiles:
+    if default_profile is not None and default_profile not in profiles:
         problems.append(f"default_profile {json.dumps(default_profile)} isn't a profile, so the built-in strictest")
     return Policy(
         path,
@@ -377,12 +408,14 @@ def slug_from_repo_arg(value: str) -> str | None:
     return slug_from_path("/".join(match.group("path").split("/")[:2])) if match else None
 
 
-def repo_slug(folder: Path) -> str | None:
-    """The `owner/repo` of the checkout holding folder, from its origin remote; None outside a git repo or without
-    an origin. Raises RepoUnknown when git can't be run or times out."""
+def remote_slugs(folder: Path) -> tuple[str | None, list[str]]:
+    """The `owner/repo` of the checkout holding folder's origin (None without one), and of every repo its remotes'
+    fetch and push URLs point at, origin's first, each once; ([]) outside a git repo. `git remote -v` applies
+    insteadOf and pushInsteadOf, so they are the URLs git really uses. Raises RepoUnknown when git can't be run or
+    times out."""
     try:
         proc = subprocess.run(
-            ["git", "-C", str(folder), "remote", "get-url", "origin"],
+            ["git", "-C", str(folder), "remote", "-v"],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
@@ -390,18 +423,29 @@ def repo_slug(folder: Path) -> str | None:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise RepoUnknown(f"git remote get-url origin failed: {type(error).__name__}") from error
-    return slug_from_url(proc.stdout) if proc.returncode == 0 else None
+        raise RepoUnknown(f"git remote -v failed: {type(error).__name__}") from error
+    if proc.returncode != 0:
+        return None, []
+    origin: str | None = None
+    slugs: list[str] = []
+    for line in proc.stdout.splitlines():
+        name, _, rest = line.partition("\t")
+        slug = slug_from_url(rest.rsplit(" (", 1)[0])
+        if slug is None:
+            continue
+        if name == "origin" and origin is None:
+            origin = slug
+        if slug not in slugs:
+            slugs.append(slug)
+    if origin is not None:
+        slugs.remove(origin)
+        slugs.insert(0, origin)
+    return origin, slugs
 
 
-def for_checkout(folder: Path) -> tuple[Effective, str | None]:
-    """The policy for the checkout holding folder, and its `owner/repo` (None when it has none)."""
-    loaded = load()
-    try:
-        slug = repo_slug(folder)
-    except RepoUnknown as error:
-        return loaded.strictest(f"which repo this is isn't known ({error}), so the built-in strictest"), None
-    return loaded.for_repo(slug), slug
+def for_checkout(folder: Path) -> tuple[RepoPolicy, str | None]:
+    """The policy for the checkout holding folder, and its origin's `owner/repo` (see Policy.for_folder)."""
+    return load().for_folder(folder)
 
 
 # --- Reports ------------------------------------------------------------------------------------------
@@ -430,52 +474,54 @@ FLOOR_NOTE = (
 )
 
 
-def describe(effective: Effective, slug: str | None, profiles: list[str]) -> list[str]:
+def describe(repo_policy: RepoPolicy, slug: str | None, profiles: list[str]) -> list[str]:
     """`tower policy`'s report: the profile for the repo whose `owner/repo` is slug, why, each key, the problems."""
     where = slug or "this folder (no GitHub origin)"
-    lines = [f"tower policy for {where}: {effective.profile}", f"why: {effective.why}"]
-    lines.append(f"  {'push':<16} {effective.push:<6} {PUSH_HELP[effective.push]}")
-    lines += [f"  {key:<16} {effective.value(key):<6} {help_text}" for key, help_text in KEY_HELP.items()]
-    lines.append(f"  {'wip_limit':<16} {effective.wip_limit:<6} {effective.wip_limit_from}")
-    lines += ["problems:", *(f"  - {problem}" for problem in effective.problems)] if effective.problems else []
-    lines += [] if effective.problems else ["problems: none"]
+    lines = [f"tower policy for {where}: {repo_policy.profile}", f"why: {repo_policy.why}"]
+    lines.append(f"  {'push':<16} {repo_policy.push:<6} {PUSH_HELP[repo_policy.push]}")
+    lines += [f"  {key:<16} {repo_policy.value(key):<6} {help_text}" for key, help_text in KEY_HELP.items()]
+    lines.append(f"  {'wip_limit':<16} {repo_policy.wip_limit:<6} {repo_policy.wip_limit_from}")
+    if repo_policy.problems:
+        lines += ["problems:", *(f"  - {problem}" for problem in repo_policy.problems)]
+    else:
+        lines.append("problems: none")
     lines += [FLOOR_NOTE, f"Switch in your own terminal: tower policy use <profile> [--repo]   ({', '.join(profiles)})"]
     return lines
 
 
-def session_line(effective: Effective, slug: str | None) -> str:
+def session_line(repo_policy: RepoPolicy, slug: str | None) -> str:
     """One line for a session's context: what it may do without asking and what asks you first."""
     free: list[str] = []
     asking: list[str] = []
-    if effective.push == "force":
+    if repo_policy.push == "force":
         free.append("plain git pushes")
         asking.append("force pushes and branch deletes")
     else:
-        (free if effective.push == "none" else asking).append("git pushes")
+        (free if repo_policy.push == "none" else asking).append("git pushes")
     for key, text in SHORT_HELP.items():
-        (asking if effective.asks(key) else free).append(text)
+        (asking if repo_policy.asks(key) else free).append(text)
     where = f"this repo ({slug})" if slug else "this folder"
     return (
-        f"tower policy for {where}: {effective.profile} ({effective.why}). "
+        f"tower policy for {where}: {repo_policy.profile} ({repo_policy.why}). "
         f"Without asking: {'; '.join(free) or 'nothing'}. Asks the user first: {'; '.join(asking) or 'nothing'}. "
         "Changing tower's policy, tower.conf or rule files always asks."
     )
 
 
-def scan_line(effective: Effective) -> str:
+def scan_line(repo_policy: RepoPolicy) -> str:
     """The hub scan's one-line summary of the repo's policy."""
-    keys = " | ".join(f"{key}: {effective.value(key)}" for key in KEYS)
-    problems = f" | problems: {len(effective.problems)} (see `tower policy`)" if effective.problems else ""
-    return f"Policy: {effective.profile} ({effective.why}) | {keys}{problems}"
+    keys = " | ".join(f"{key}: {repo_policy.value(key)}" for key in KEYS)
+    problems = f" | problems: {len(repo_policy.problems)} (see `tower policy`)" if repo_policy.problems else ""
+    return f"Policy: {repo_policy.profile} ({repo_policy.why}) | {keys}{problems}"
 
 
-def to_json(effective: Effective) -> dict[str, object]:
+def to_json(repo_policy: RepoPolicy) -> dict[str, object]:
     """The policy as `tower state --json` reports it (the WIP limit is reported beside it, as wip_limit)."""
     return {
-        "profile": effective.profile,
-        "why": effective.why,
-        **{key: effective.value(key) for key in KEYS},
-        "problems": list(effective.problems),
+        "profile": repo_policy.profile,
+        "why": repo_policy.why,
+        **{key: repo_policy.value(key) for key in KEYS},
+        "problems": list(repo_policy.problems),
     }
 
 
@@ -505,30 +551,34 @@ def legacy_modes(conf: dict[str, str]) -> tuple[str, str] | None:
     return push_mode, pr_mode
 
 
+def migration_profile() -> str | None:
+    """With no policy file yet, the default profile migrating tower.conf would give (work when both old keys were
+    every, else migrated); None when there is a policy file or nothing to migrate. Writes nothing."""
+    if policy_path().exists():
+        return None
+    try:
+        modes = legacy_modes(ledger.read_conf(ledger.conf_path()))
+    except (ledger.LedgerError, UnicodeDecodeError):
+        return None  # load() reports an unreadable tower.conf; setup.sh's own read of it fails first
+    if modes is None:
+        return None
+    return STRICTEST if modes == ("every", "every") else "migrated"
+
+
 def current_default() -> str:
     """This machine's default profile as things stand, without writing anything (for setup.sh's question): the
-    policy file's default_profile; with no file, what migrating tower.conf would make it (work or migrated); else
-    work."""
+    policy file's default_profile, or what migrating tower.conf would make it, or work."""
     loaded = load(migrate_conf=False)
     if loaded.exists:
         return loaded.default_profile or STRICTEST
-    return "migrated" if pending_migration() else STRICTEST
+    return migration_profile() or STRICTEST
 
 
 def available_profiles() -> list[str]:
     """Every profile setup.sh may make the default, without writing anything: the built-ins, the policy file's own,
     and `migrated` when tower.conf's old approvals are still to be migrated into one."""
-    loaded = load(migrate_conf=False)
-    return sorted(set(loaded.profiles) | ({"migrated"} if not loaded.exists and pending_migration() else set()))
-
-
-def pending_migration() -> bool:
-    """Whether tower.conf's old approvals would migrate into a `migrated` profile (anything but every/every)."""
-    try:
-        modes = legacy_modes(ledger.read_conf(ledger.conf_path()))
-    except (ledger.LedgerError, UnicodeDecodeError):
-        return False
-    return modes is not None and modes != ("every", "every")
+    pending = {"migrated"} if migration_profile() == "migrated" else set()
+    return sorted(set(load(migrate_conf=False).profiles) | pending)
 
 
 def migration_text(conf: dict[str, str], today: date) -> str | None:
@@ -538,7 +588,7 @@ def migration_text(conf: dict[str, str], today: date) -> str | None:
     if modes is None:
         return None
     push_mode, pr_mode = modes
-    origin = f"from {shown(ledger.conf_path())}: push_approval={push_mode}, pr_approval={pr_mode}"
+    origin = f"from {display_path(ledger.conf_path())}: push_approval={push_mode}, pr_approval={pr_mode}"
     lines = [FILE_HEADER.rstrip("\n"), f"# Migrated on {today.isoformat()} {origin}.", ""]
     if (push_mode, pr_mode) == ("every", "every"):  # that is the built-in work profile exactly
         lines.append('default_profile = "work"')
@@ -567,41 +617,36 @@ def migrate(path: Path, conf: dict[str, str], problems: list[str]) -> str | None
     if text is None:
         return None
     try:
-        write_new(path, text)
+        write_file(path, text, if_absent=True)
     except FileExistsError:
         try:
             return path.read_text(encoding="utf-8")  # another hook won the race; read what it wrote
-        except (OSError, UnicodeDecodeError):
-            return text
+        except (OSError, UnicodeDecodeError) as error:
+            problems.append(f"{display_path(path)} appeared but can't be read ({error_reason(error)})")
+            return None
     except OSError as error:
-        problems.append(f"couldn't write {shown(path)} ({reason(error)}), so tower.conf's old keys are used for now")
+        problems.append(
+            f"couldn't write {display_path(path)} ({error_reason(error)}), so tower.conf's old keys are used for now"
+        )
     return text
 
 
-def write_new(path: Path, text: str) -> None:
-    """Create path holding text, all at once, failing with FileExistsError if it already exists: the text goes to a
-    temporary file first, which is then hard-linked into place, so no reader ever sees half a file."""
+def write_file(path: Path, text: str, if_absent: bool) -> None:
+    """Write path in one step, so no reader ever sees half a file: the text goes to a temporary file, which is then
+    renamed over path, or with if_absent hard-linked into place, failing with FileExistsError if path exists. (Like
+    card.write_atomically, which this module can't import: card imports state, which imports this.)"""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".policy-", suffix=".tmp")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as out:
             out.write(text)
-        os.link(temporary, path)
+        if if_absent:
+            os.link(temporary, path)
+        else:
+            os.replace(temporary, path)
     finally:
-        os.unlink(temporary)
-
-
-def replace_file(path: Path, text: str) -> None:
-    """Replace path with text all at once (a temporary file renamed over it), so no reader sees half a file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".policy-", suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as out:
-            out.write(text)
-        os.replace(temporary, path)
-    except BaseException:
-        os.unlink(temporary)
-        raise
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 # --- Changing it: tower policy use --------------------------------------------------------------------
@@ -618,7 +663,7 @@ def use(profile: str, slug: str | None = None) -> str:
     edited file wouldn't give that profile."""
     current = load()
     if current.broken:
-        raise PolicyError(f"{shown(current.path)} can't be used ({current.broken}); fix it first")
+        raise PolicyError(f"{display_path(current.path)} can't be used ({current.broken}); fix it first")
     if profile not in current.profiles:
         names = ", ".join(sorted(current.profiles))
         raise PolicyError(f"{json.dumps(profile)} isn't a profile; the profiles are {names}")
@@ -628,28 +673,28 @@ def use(profile: str, slug: str | None = None) -> str:
     except FileNotFoundError:  # never set up, or migration couldn't write it
         text = migration_text(ledger.read_conf(ledger.conf_path()), date.today()) or FILE_HEADER + REPOS_EXAMPLE
     except (OSError, UnicodeDecodeError) as error:
-        raise PolicyError(f"can't read {shown(current.path)} ({reason(error)})") from error
+        raise PolicyError(f"can't read {display_path(current.path)} ({error_reason(error)})") from error
     edited = set_repo(text, slug, profile) if slug else set_default(text, profile)
     try:
-        after = build(current.path, parse_toml(edited), [], current.machine_wip).for_repo(slug)
+        after = from_document(current.path, parse_toml(edited), [], current.machine_wip).for_repo(slug)
     except TomlError as error:
         raise PolicyError(f"the edited file wouldn't parse ({error}), so nothing was changed") from error
     if after.profile != profile:
         raise PolicyError(f"the edited file would still give {after.profile} ({after.why}), so nothing was changed")
     try:
-        replace_file(current.path, edited)
+        write_file(current.path, edited, if_absent=False)
     except OSError as error:
-        raise PolicyError(f"can't write {shown(current.path)} ({reason(error)})") from error
+        raise PolicyError(f"can't write {display_path(current.path)} ({error_reason(error)})") from error
     return f"{slug or 'default profile'}: {before.profile} -> {profile}"
 
 
 def file_lines(text: str) -> list[str]:
-    """text's lines, without the empty one after a final newline (put back by joined())."""
+    """text's lines, without the empty one after a final newline (put back by file_text())."""
     lines = text.split("\n")
     return lines[:-1] if lines and lines[-1] == "" else lines
 
 
-def joined(lines: list[str]) -> str:
+def file_text(lines: list[str]) -> str:
     """lines as file text, ending in a newline."""
     return "\n".join(lines) + "\n"
 
@@ -662,12 +707,12 @@ def set_default(text: str, profile: str) -> str:
     for index in range(first_table):
         if DEFAULT_PROFILE_LINE.match(lines[index]):
             lines[index] = new_line
-            return joined(lines)
+            return file_text(lines)
     insert = 0
     while insert < first_table and (not lines[insert].strip() or lines[insert].lstrip().startswith("#")):
         insert += 1
     lines[insert:insert] = [new_line, ""] if insert < len(lines) and lines[insert].strip() else [new_line]
-    return joined(lines)
+    return file_text(lines)
 
 
 def set_repo(text: str, slug: str, profile: str) -> str:
@@ -677,19 +722,19 @@ def set_repo(text: str, slug: str, profile: str) -> str:
     new_line = f"{json.dumps(slug)} = {json.dumps(profile)}"
     header = next((i for i, line in enumerate(lines) if REPOS_HEADER.fullmatch(line)), None)
     if header is None:
-        return joined([*lines, *([""] if lines and lines[-1].strip() else []), "[repos]", new_line])
+        return file_text([*lines, *([""] if lines and lines[-1].strip() else []), "[repos]", new_line])
     end = next((i for i in range(header + 1, len(lines)) if HEADER_LINE.match(lines[i])), len(lines))
     found = [i for i in range(header + 1, end) if line_key(lines[i], i + 1) == slug.lower()]
     if found:
         lines[found[0]] = new_line
         for index in reversed(found[1:]):
             del lines[index]
-        return joined(lines)
+        return file_text(lines)
     insert = end
     while insert > header + 1 and not lines[insert - 1].strip():
         insert -= 1
     lines.insert(insert, new_line)
-    return joined(lines)
+    return file_text(lines)
 
 
 def line_key(text: str, number: int) -> str | None:
