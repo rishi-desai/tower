@@ -317,7 +317,7 @@ another way.
 | `gh pr` comment, review; `gh issue` comment, create, edit, close, reopen, … | `every` (default): every `git push` |
 | `gh release` / `gh label` writes | `force`: only force pushes, `+refspec`, branch deletes |
 | `gh api` writes: GraphQL mutations, `-X POST/PATCH/PUT/DELETE`, or fields without `-X GET` (gh defaults to POST) | `none`: pushes never ask |
-| Any edit to a `CLAUDE.local.md`, anything under `~/.claude/tower/` (your rules), or `tower.conf`; Bash commands naming a rule file, or naming `tower.conf` other than to read it (`cat`, `grep`) | |
+| Any edit to a `CLAUDE.local.md`, `tower.conf` or anything under `~/.claude/tower/`; Bash commands naming a rule file, or naming `tower.conf` or the event log other than to read them (`cat`, `grep`, `tail`) | |
 | Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs), a git/gh subcommand from a variable | |
 
 `gh pr` create, edit, ready, merge, close, reopen and update-branch depend on `pr_approval`: `every` (default)
@@ -332,7 +332,7 @@ first, and the hub lists it under **Needs you** with the session's name.
 The hook reads a command the way the shell would: quotes, `&&`/`;`/`|`/newlines, `$( )`, heredocs, global options
 (`git -C <path>`, `gh pr -R owner/repo`), attached flags (`gh api -XPOST`), and wrappers (`bash -c`, `env`,
 `xargs`, `eval`, `sudo`, `ssh`, `watch`, ...). Text that only mentions a command (`git commit -m "fix git push"`) doesn't ask.
-Why it has its own parser instead of `shlex`: `docs/adr/0002-approval-hook-splits-commands-itself.md`.
+Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-splits-commands-itself.md`.
 
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
 script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,

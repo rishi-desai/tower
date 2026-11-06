@@ -261,6 +261,8 @@ READS = [
     "cat ~/.claude/tower.conf",
     "grep pr_approval ~/.claude/tower.conf",
     "PR=$(grep pr_approval ~/.claude/tower.conf)",
+    "tail -n 20 ~/.claude/tower/errors.log",
+    "cat ~/.claude/tower/events.jsonl",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -421,6 +423,7 @@ RULE_FILE_COMMANDS = [
     "echo x >> ~/.claude//tower/rules/a.md",
     'echo x >> ~/.claude/to""wer/rules/a.md',
     "cat /tmp/x > ~/.claude/tower.conf",
+    "echo '{}' >> ~/.claude/tower/events.jsonl",
     "python3 - <<'EOF'\nopen('/Users/x/.claude/tower.conf', 'w').write('push_approval=none')\nEOF",
 ]
 
@@ -436,7 +439,8 @@ def test_edit_of_rule_file_asks(tmp_path: Path, tool: str, file_path: str, push:
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", RULE_FILE_COMMANDS)
 def test_command_naming_rule_file_asks(tmp_path: Path, command: str, push: str) -> None:
-    """A Bash command naming a rule file asks even when it only reads it; one that could write tower.conf asks."""
+    """A Bash command naming a rule file asks even when it only reads it; one that could write tower.conf or
+    another file in ~/.claude/tower asks."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 

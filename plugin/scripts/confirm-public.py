@@ -18,12 +18,13 @@ Pushes:       depends on push_approval in ~/.claude/tower.conf
                 none            -> pushes never ask
               An unknown value is treated as `every`, the safest choice.
 
-Rule files:   any Edit/Write/MultiEdit of a CLAUDE.local.md, a file under ~/.claude/tower/ (the rules,
-              and later T09's policy file) or a tower.conf always asks, and so does any Bash command
-              naming a rule file. A Bash command naming tower.conf asks unless it only reads it with a
-              program like cat or grep (workers check pr_approval that way). Rule files are standing
-              instructions loaded into every session and tower.conf sets the approvals above, so a prompt
-              injection must not be able to change them silently.
+Rule files:   any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf or a file under ~/.claude/tower/
+              (the rules, the event log, and later T09's policy file) always asks, and so does any Bash
+              command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/). A Bash command naming
+              tower.conf or another file in ~/.claude/tower asks unless it only reads it with a program like
+              cat, grep or tail (workers check pr_approval that way). Rule files are standing instructions
+              loaded into every session and tower.conf sets the approvals above, so a prompt injection must
+              not be able to change them silently.
 
 How a command is read: it is split into simple commands roughly the way bash or zsh splits it: on
 && || ; | & and newlines and around ( ), respecting quotes, escapes, comments, heredocs, case
@@ -963,19 +964,20 @@ def parse_gh_api(args: list[Word]) -> GhApiCall:
     return call
 
 
-# --- Rule files, tower.conf, and the hook itself --------------------------------------------------
+# --- Rule files, tower's files, and the hook itself -----------------------------------------------
 
 # Case-insensitive, since macOS's disk is: TOWER.conf is tower.conf. Paths are normalized (a//b, a/./b) first.
-# Edit/Write: CLAUDE.local.md, anything under ~/.claude/tower/ (the rules, and later T09's policy file), tower.conf.
+# Edit/Write: CLAUDE.local.md, tower.conf, and anything under ~/.claude/tower/ (rules, event log, later T09's policy).
 PROTECTED_PATH = re.compile(r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/|(?:^|/)tower\.conf$", re.IGNORECASE)
-# Bash: naming a rule file asks even for a read; tower.conf may be read by READ_ONLY_PROGRAMS.
-RULE_FILE_MENTION = re.compile(r"CLAUDE\.local\.md|\.claude/tower(?![\w.-])", re.IGNORECASE)
-TOWER_CONF_MENTION = re.compile(r"tower\.conf", re.IGNORECASE)
+# Bash: naming a rule file asks even for a read.
+RULE_FILE_MENTION = re.compile(r"CLAUDE\.local\.md|\.claude/tower/rules", re.IGNORECASE)
+# Bash: tower.conf and the rest of ~/.claude/tower/ (event log, errors.log) may be read by READ_ONLY_PROGRAMS.
+TOWER_FILE_MENTION = re.compile(r"tower\.conf|\.claude/tower(?![\w.-])", re.IGNORECASE)
 # Programs that can't write a file except through a redirection (workers check pr_approval with cat or grep).
 READ_ONLY_PROGRAMS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "ls", "stat", "file", "diff", "cmp"}
 READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":"}
-RULE_FILE_REASON = "the command touches a personal rule file (CLAUDE.local.md or ~/.claude/tower/)"
-TOWER_CONF_REASON = "the command may change tower.conf, which sets these approvals"
+RULE_FILE_REASON = "the command touches a personal rule file (CLAUDE.local.md or ~/.claude/tower/rules)"
+TOWER_FILE_REASON = "the command may change tower.conf (which sets these approvals) or tower's files in ~/.claude/tower"
 
 
 def check_protected_edit(file_path: str) -> str | None:
@@ -986,21 +988,23 @@ def check_protected_edit(file_path: str) -> str | None:
 
 
 def protected_reasons(command: SimpleCommand) -> list[str]:
-    """Reasons to ask because COMMAND names a rule file or tower.conf, judged on its words and redirect targets
-    with quotes removed and paths normalized. A rule file asks even when only read. tower.conf may be read by
-    a read-only program; a redirect into it, or any other program naming it, asks."""
-    texts = [os.path.normpath(word.text) for word in command.words if word.text]
-    texts += [os.path.normpath(redirect.target.text) for redirect in command.redirects if redirect.target.text]
+    """Reasons to ask because COMMAND names a rule file or one of tower's files, judged on its words and redirect
+    targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf and the
+    rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any other program
+    naming them, asks."""
+    words = [os.path.normpath(word.text) for word in command.words if word.text]
+    targets = [(redirect.writes, os.path.normpath(redirect.target.text)) for redirect in command.redirects]
+    texts = words + [target for _, target in targets]
     if any(RULE_FILE_MENTION.search(text) for text in texts):
         return [RULE_FILE_REASON]
-    if not any(TOWER_CONF_MENTION.search(text) for text in [*texts, command.stdin_text or ""]):
+    if not any(TOWER_FILE_MENTION.search(text) for text in [*texts, command.stdin_text or ""]):
         return []
-    if any(redirect.writes and TOWER_CONF_MENTION.search(redirect.target.text) for redirect in command.redirects):
-        return [TOWER_CONF_REASON]
+    if any(writes and TOWER_FILE_MENTION.search(target) for writes, target in targets):
+        return [TOWER_FILE_REASON]
     program = program_position(command.words)
     if program >= len(command.words) or program_name(command.words[program]) in READ_ONLY_PROGRAMS:
         return []  # only assignments (their $( ) commands are checked on their own), or a read
-    return [TOWER_CONF_REASON]
+    return [TOWER_FILE_REASON]
 
 
 def ask(reasons: list[str], prefix: str) -> None:
