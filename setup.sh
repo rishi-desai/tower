@@ -175,27 +175,39 @@ if [ "$plugin" -eq 0 ]; then
   echo "5. Plugin: skipped (--no-plugin)"
 else
   echo "5. Plugin: marketplace 'tower' from $plugin_source, plugin tower@tower (skills, hooks and the pane)"
+  # installed ID — whether `claude plugin list --json` has a plugin with exactly this id (unreadable output: no).
+  installed() {
+    claude plugin list --json 2>/dev/null | python3 -I -c 'import json, sys
+try:
+    plugins = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if any(p.get("id") == sys.argv[1] for p in plugins) else 1)' "$1"
+  }
+  # Before 0.11.0 the pane was a second plugin. tower carries it now and the marketplace no longer lists it, so an
+  # old copy is left failing to load. Upgrade first (marketplace, then tower), and uninstall the old pane only once
+  # that worked, so a failed update never leaves the machine with no pane. A failed uninstall is reported, not hidden.
+  old_pane=0
+  installed tower-pane@tower && old_pane=1
   if claude plugin marketplace list 2>/dev/null | grep -qw tower; then
-    echo "  marketplace already added (update with: claude plugin marketplace update tower)"
+    if [ "$old_pane" -eq 1 ]; then
+      run claude plugin marketplace update tower
+    else
+      echo "  marketplace already added (update with: claude plugin marketplace update tower)"
+    fi
   else
     run claude plugin marketplace add "$plugin_source"
   fi
-  # Before 0.11.0 the pane was a second plugin. tower carries it now and the marketplace no longer lists it, so the
-  # old one is left failing to load: uninstall it and update tower to the version that has the pane. A failure is
-  # reported, not hidden.
-  old_pane=0
-  if claude plugin list 2>/dev/null | grep -q 'tower-pane@tower'; then
-    old_pane=1
-    run claude plugin uninstall tower-pane@tower ||
-      echo "  couldn't uninstall the old tower-pane plugin; run: claude plugin uninstall tower-pane@tower" >&2
-  fi
-  if ! claude plugin list 2>/dev/null | grep -q 'tower@tower'; then
+  if ! installed tower@tower; then
     run claude plugin install tower@tower
   elif [ "$old_pane" -eq 1 ]; then
-    run claude plugin marketplace update tower
     run claude plugin update tower@tower
   else
     echo "  plugin already installed (update with: claude plugin marketplace update tower && claude plugin update tower@tower)"
+  fi
+  if [ "$old_pane" -eq 1 ]; then
+    run claude plugin uninstall tower-pane@tower ||
+      echo "  couldn't uninstall the old tower-pane plugin; run: claude plugin uninstall tower-pane@tower" >&2
   fi
 fi
 

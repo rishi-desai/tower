@@ -464,7 +464,8 @@ which needs no login). Run `mise install` once first.
 ## Updating and uninstalling
 
 - **Update tower:** commit and push changes here, then on each Mac `claude plugin marketplace update tower && claude plugin update tower@tower`. Bump `version` in `plugin/.claude-plugin/plugin.json` so installs notice. Re-run `setup.sh` if `CLAUDE.global.md` changed.
-- **Change the pane:** edit `plugin/hooks/register.tsx`, run `claude plugin validate --strict plugin && claude plugin test plugin`, and try it with `claude --plugin-dir plugin` before pushing (uninstalled, or the installed copy loads too).
+- **Change the pane:** edit `plugin/hooks/register.tsx`, run `claude plugin validate --strict plugin && claude plugin test plugin`, and try it with `claude --plugin-dir plugin` before pushing: for that session the checkout replaces the installed
+  tower (Claude Code logs `Plugin "tower" from --plugin-dir overrides installed version`), so nothing runs twice.
 - **Update babysit-pr from upstream:** see `plugin/skills/babysit-pr/SAFETY.md`: diff against the pinned commit, re-read, re-apply the local patches, update the fingerprints.
 - **Uninstall:** `claude plugin uninstall tower@tower` and `claude plugin marketplace remove tower`; delete `~/.claude/tower.conf` (and `~/.claude/tower/rules/` if you don't want your rules); remove the marked block from `~/.claude/CLAUDE.md` (or restore `CLAUDE.md.pre-tower.bak`). Your cards stay in the vault.
 
