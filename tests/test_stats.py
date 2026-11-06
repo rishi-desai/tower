@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
 
 from tower import stats
 from tower.events import Event
 
 REPO = "/code/app"
+SRC = Path(__file__).resolve().parent.parent / "src"
+SYSTEM_PYTHON = "/usr/bin/python3"  # what a hook's `python3` can resolve to; 3.9 on macOS
 
 
 def at(clock: str, day: int = 5) -> str:
@@ -157,3 +163,16 @@ def test_a_pr_merged_before_the_window_is_not_listed_but_still_bounds_its_branch
 
     assert [(c.pr.number, c.lead_time) for c in result.changes] == [(8, timedelta(hours=1))]
     assert result.untracked == []
+
+
+def test_parse_ts_reads_the_logs_z_suffix_as_utc() -> None:
+    assert stats.parse_ts("2026-11-06T04:12:33.120Z") == datetime(2026, 11, 6, 4, 12, 33, 120000, timezone.utc)
+
+
+@pytest.mark.skipif(not Path(SYSTEM_PYTHON).exists(), reason=f"no {SYSTEM_PYTHON} on this machine")
+def test_parse_ts_reads_the_z_suffix_under_the_system_python3_too() -> None:
+    """The plugin runs the core under whatever `python3` it finds; before 3.11, fromisoformat rejects a trailing Z."""
+    script = f"import sys; sys.path.insert(0, {str(SRC)!r}); from tower import stats; "
+    script += "print(stats.parse_ts('2026-11-06T04:12:33.120Z'))"
+    proc = subprocess.run([SYSTEM_PYTHON, "-I", "-c", script], capture_output=True, text=True, check=True)
+    assert proc.stdout == "2026-11-06 04:12:33.120000+00:00\n"

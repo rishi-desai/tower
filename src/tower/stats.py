@@ -201,9 +201,10 @@ def rework(merged: MergedPr, later: Sequence[MergedPr], reopens: Mapping[tuple[s
 
 
 def parse_ts(ts: str) -> datetime | None:
-    """An event's ts ("2026-11-06T04:12:33.120Z") as an aware datetime, or None if it isn't one."""
+    """An event's ts ("2026-11-06T04:12:33.120Z") as an aware datetime, or None if it isn't one. 3.9's fromisoformat
+    doesn't take "Z", hence the replace."""
     try:
-        when = datetime.fromisoformat(ts)
+        when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
     return when if when.tzinfo is not None else None
