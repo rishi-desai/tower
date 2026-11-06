@@ -462,7 +462,14 @@ def test_the_repo_slug_comes_from_the_origin_url(url: str, slug: str | None) -> 
 
 @pytest.mark.parametrize(
     ("value", "slug"),
-    [("acme/widget", "acme/widget"), ("github.com/Acme/Widget", "acme/widget"), ("https://ghe.io/a/b", "a/b")],
+    [
+        ("acme/widget", "acme/widget"),
+        ("github.com/Acme/Widget", "acme/widget"),
+        ("https://ghe.io/a/b", "a/b"),
+        ("https://github.com/Acme/Other/pull/5", "acme/other"),
+        ("https://github.com/acme/other.git", "acme/other"),
+        ("https://github.com/acme", None),
+    ],
 )
 def test_the_repo_slug_of_a_gh_repo_flag(value: str, slug: str) -> None:
     assert policy.slug_from_repo_arg(value) == slug

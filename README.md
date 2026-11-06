@@ -337,8 +337,8 @@ agent must ask you instead of trying another way. The prompt names the profile: 
 For a merge, the hook asks `gh` which branch the PR goes into (`gh pr view`, then `gh repo view` for the default
 branch), with the same PR and `-R` the merge uses, but only when the two merge keys differ and the merge is the
 whole command (`gh pr merge 5 --squash --delete-branch`, nothing chained before it). Otherwise, or when `gh` can't
-say, it asks unless both keys are `auto`. A `gh` command naming another repo (`-R owner/repo`, or a PR URL) gets the
-stricter of that repo's policy and this one's, key by key. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs,
+say, it asks unless both keys are `auto`. A `gh` command naming another repo (`-R owner/repo`, a PR or issue URL,
+or a `gh api repos/OWNER/REPO/...` endpoint) gets the stricter of that repo's policy and this one's, key by key. Reads (`gh pr view`, `gh pr checks`, `gh api` GETs,
 GraphQL queries) never ask.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card

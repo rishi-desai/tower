@@ -369,8 +369,12 @@ def slug_from_path(path: str) -> str | None:
 
 
 def slug_from_repo_arg(value: str) -> str | None:
-    """The `owner/repo` gh's -R/--repo VALUE names: OWNER/REPO, HOST/OWNER/REPO or a URL."""
-    return slug_from_url(value) if "://" in value else slug_from_path(value)
+    """The lower-cased `owner/repo` a gh argument names: OWNER/REPO or HOST/OWNER/REPO (an -R/--repo value), or a
+    GitHub URL, whose path starts with owner/repo (https://github.com/owner/repo/pull/5)."""
+    if "://" not in value:
+        return slug_from_path(value)
+    match = SCHEME_URL.fullmatch(value.strip())
+    return slug_from_path("/".join(match.group("path").split("/")[:2])) if match else None
 
 
 def repo_slug(folder: Path) -> str | None:

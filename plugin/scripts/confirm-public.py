@@ -20,8 +20,8 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
 The rest ask unless every GitHub key above is auto (as in the sandbox profile), since no one key covers
 them: gh release and gh label writes, `gh api` calls that write (GraphQL mutations or queries read from a
 file, REST with a write method or with fields, since gh defaults to POST when fields are given), and a gh
-subcommand taken from a variable. A gh command naming another repo (-R/--repo) is judged by the stricter of
-that repo's policy and the session's, key by key. If tower's core can't be loaded, the built-in strictest
+subcommand taken from a variable. A gh command naming another repo (-R/--repo, a PR or issue URL, or a gh api
+repos/OWNER/REPO endpoint) is judged by the stricter of that repo's policy and the session's, key by key. If tower's core can't be loaded, the built-in strictest
 profile (work: everything asks) applies.
 
 Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf or a file
@@ -65,9 +65,10 @@ Limits: this sees only the command text. These are not caught:
     config set outside the command that changes what push does;
   - a plain push straight to the default branch (`git push origin HEAD:main`) is judged by push, not
     merge_to_main: refusing direct pushes to main is GitHub branch protection's job (T03, #20);
-  - which repo a command acts on, beyond gh's -R/--repo: one that cds into, or uses git -C on, another
-    repo is judged by the policy of the session's repo (the hook's `cwd`); TOWER_DIR and TOWER_CONF,
-    which move the policy file and tower.conf for tests, aren't known to the safety floor.
+  - which repo a command acts on, beyond what gh's words name (-R/--repo, a URL, a gh api repos/OWNER/REPO
+    endpoint): one that cds into, or uses git -C on, another repo, or a GraphQL mutation (which can reach
+    any repo by node id), is judged by the policy of the session's repo (the hook's `cwd`); TOWER_DIR and
+    TOWER_CONF, which move the policy file and tower.conf for tests, aren't known to the safety floor.
 """
 
 from __future__ import annotations
@@ -142,6 +143,8 @@ GH_MERGE_SWITCHES = {
     "squash": "s",
     "help": "h",
 }
+# A gh api REST endpoint under one repo: repos/OWNER/REPO/...
+REPOS_ENDPOINT = re.compile(r"/?repos/([^/\s]+/[^/\s]+)")
 GH_LOOKUP_TIMEOUT = 5  # seconds for each of a merge's two read-only gh calls
 WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 # git's global options that take the next word as their value (git.c, handle_options).
@@ -819,7 +822,7 @@ class CommandChecker:
         if not indexes:
             return None
         flags = [arg for position, arg in enumerate(args) if position not in indexes[:2]]
-        gates = self.policy.for_repos(gh_repo_flags(flags))
+        gates = self.policy.for_repos(gh_named_repos(args[: indexes[0]] + args[indexes[0] + 1 :]))  # api's endpoint too
         group = args[indexes[0]]
         if group.dynamic:
             return None if gates.github_open else GH_DYNAMIC_REASON
@@ -839,7 +842,7 @@ class CommandChecker:
         key = group_keys.get(name, group_keys.get("*"))
         action = f"gh {group.text} {name}"
         if key == "merge":
-            self.merges.append(parse_merge(flags, gates, is_whole_command, self.policy))
+            self.merges.append(parse_merge(flags, gates, is_whole_command))
             return None
         if key is None:  # release and label writes
             return None if gates.github_open else f"{action} changes something on GitHub that no one key covers"
@@ -884,6 +887,18 @@ class PendingMerge:
     readable: bool  # gh is the top-level program, every flag is known, nothing comes from a variable, at most one PR
 
 
+def gh_named_repos(words: list[Word]) -> list[Word]:
+    """The repos a gh command's WORDS (all but its command words) name besides the session's: -R/--repo values, a
+    URL anywhere (a PR or issue given by URL: tower reads owner/repo from its path), and a gh api endpoint under
+    repos/OWNER/REPO. Wherever they are, so an unknown flag can't hide one."""
+    found = gh_repo_flags(words) + [word for word in words if "://" in word.text]
+    for word in words:
+        endpoint = REPOS_ENDPOINT.match(word.text)
+        if endpoint and "{" not in endpoint.group(1):  # {owner}/{repo} is gh's placeholder for this repo
+            found.append(Word(endpoint.group(1), word.dynamic))
+    return found
+
+
 def gh_repo_flags(words: list[Word]) -> list[Word]:
     """The values of gh's -R/--repo flags among WORDS (a gh command's words other than its command words)."""
     found: list[Word] = []
@@ -903,9 +918,9 @@ def changes_base(words: list[Word]) -> bool:
     return any(word.dynamic or word.text == "--base" or word.text.startswith(("--base=", "-B")) for word in words)
 
 
-def parse_merge(words: list[Word], gates: Gates, is_whole_command: bool, policy: SessionPolicy) -> PendingMerge:
-    """The merge gh pr merge's WORDS (all but `pr` and `merge`) ask for, read the way gh's flag library reads them.
-    A PR given by URL also counts that URL's repo for the policy."""
+def parse_merge(words: list[Word], gates: Gates, is_whole_command: bool) -> PendingMerge:
+    """The merge gh pr merge's WORDS (all but `pr` and `merge`) ask for, read the way gh's flag library reads them,
+    to be judged by GATES (those for the repos the command names)."""
     short_values = {letter for letter in GH_MERGE_VALUE_FLAGS.values() if letter}
     short_switches = {letter for letter in GH_MERGE_SWITCHES.values() if letter}
     positionals: list[str] = []
@@ -945,8 +960,6 @@ def parse_merge(words: list[Word], gates: Gates, is_whole_command: bool, policy:
             repo = value
     readable = readable and len(positionals) <= 1
     selector = positionals[0] if positionals else None
-    if selector is not None and "://" in selector:
-        gates = policy.for_repos([Word(selector), *([Word(repo)] if repo else [])])
     return PendingMerge(gates, selector, repo, readable)
 
 

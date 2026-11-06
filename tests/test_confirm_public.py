@@ -773,6 +773,23 @@ def test_a_merge_asks_gh_about_the_same_pr_and_repo_it_merges(widget: Path) -> N
     assert calls[1][:3] == ["repo", "view", "https://github.com/acme/widget"]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr merge https://github.com/acme/other/pull/5 --squash",
+        "gh pr merge --frobnicate https://github.com/acme/other/pull/5",
+        "gh pr comment https://github.com/acme/other/pull/5 -b hi",
+        "gh issue close https://github.com/acme/other/issues/3",
+        "gh api -X POST repos/acme/other/issues -f title=x",
+        "gh api -X POST /repos/Acme/Other/issues/3/comments -f body=x",
+    ],
+)
+def test_a_pr_url_in_a_stricter_repo_is_judged_by_that_repo(widget: Path, command: str) -> None:
+    """In a sandbox session, a PR, issue or endpoint in a repo the policy says is work asks, wherever it's named."""
+    policy = 'default_profile = "sandbox"\n[repos]\n"acme/other" = "work"\n'
+    assert asks(run_hook(widget.parent, in_widget(widget, command), policy=policy, env=widget_env(widget, "dev")))
+
+
 def test_no_gh_lookup_when_both_merge_keys_agree(widget: Path) -> None:
     for profile in ("work", "sandbox"):
         run_hook(widget.parent, in_widget(widget, "gh pr merge 5"), policy=f'default_profile = "{profile}"\n',
@@ -789,6 +806,10 @@ def test_no_gh_lookup_when_both_merge_keys_agree(widget: Path) -> None:
         ("gh pr comment 5 -b hi --repo=github.com/acme/other", True),
         ('gh pr comment 5 -b hi -R "$REPO"', True),  # a repo from a variable: the strictest
         ("gh pr merge https://github.com/acme/other/pull/5 --squash", True),
+        ("gh pr merge https://github.com/acme/widget/pull/5 --squash", False),
+        ('gh pr merge https://github.com/acme/widget/pull/5 -R "$X"', True),
+        ("gh api -X POST repos/{owner}/{repo}/issues -f title=x", False),  # gh's placeholders: this repo
+        ("gh api -X POST repos/acme/widget/issues -f title=x", False),
     ],
 )
 def test_a_gh_command_naming_another_repo_gets_the_stricter_policy(
