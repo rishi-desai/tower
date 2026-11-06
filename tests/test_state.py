@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -78,6 +79,7 @@ def interactive(name: str, cwd: Path, status: str, **extra: object) -> dict[str,
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Fixture]:
+    """A repo with only its main checkout, an empty ledger, wip_limit=3, and no sessions; cwd is the main checkout."""
     main = tmp_path / "code" / "repo"
     main.mkdir(parents=True)
     git(main, "init", "-q", "-b", "main")
@@ -210,6 +212,7 @@ def test_without_claude_the_event_log_stands_in_for_live_sessions(
     now = time.time()
 
     def log(session: str, place: Path, event_type: str, minutes_ago: float, **data: object) -> None:
+        """Record one event for session in place, minutes_ago before now."""
         ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - minutes_ago * 60))
         events.append(
             events.Event(ts, event_type, session, str(repo.main), str(place), None, dict(data)), repo.tower_dir
@@ -366,3 +369,50 @@ def test_just_after_midnight_on_the_1st_last_months_events_still_count(tmp_path:
 
     activities = {s.name: s.activity for s in found[os.path.realpath(worktree)]}
     assert activities == {"s-late": "busy", "s-early": "idle"}
+
+
+def test_a_pipe_in_a_card_never_splits_a_report_row(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """An agent that copied the status-card template's `status: running | needs-you | ...` line literally."""
+    repo.add_worktree("feat-1")
+    repo.write_card("feat-1", "running | needs-you | waiting-ci | blocked | done")
+
+    assert cli.main(["state"]) == 0
+    row = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("- feat-1 | status:"))
+
+    fields = row.split(" | ")
+    assert fields[1:3] == ["status: no-card", "card: running / needs-you / waiting-ci / blocked / done"]
+    assert len(fields) == 7  # label, status, card, ticket, updated, reason, path
+
+
+def test_an_empty_project_mapping_falls_back_to_the_repo_name(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """As ledger-lib.sh's tower_conf_get does: an empty value means the default."""
+    conf = tmp_path / "tower.conf"
+    conf.write_text(conf.read_text(encoding="utf-8") + "project.repo=\n", encoding="utf-8")
+    assert tower_state(capsys)["ledger"] == str(repo.ledger)
+
+
+def test_the_agents_snapshot_is_saved_for_the_live_sessions_section(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    repo.sessions(interactive("hub-1", repo.main, "idle"))
+    saved = tmp_path / "agents-snapshot.json"
+    tower_state(capsys, "--save-agents", str(saved))
+    assert json.loads(saved.read_text(encoding="utf-8"))[0]["name"] == "hub-1"
+
+
+def test_hub_scan_fails_with_the_reason_when_tower_state_cant_run(repo: Fixture, tmp_path: Path) -> None:
+    """Without statuses the report would read "nothing needs you": the scan says why and exits 1 instead."""
+    real_python = shutil.which("python3")
+    fake = tmp_path / "bin" / "python3"
+    fake.write_text(
+        f'#!/bin/sh\ncase "$2" in *run-tower.py) echo "boom" >&2; exit 1 ;; esac\nexec "{real_python}" "$@"\n'
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    proc = subprocess.run(["bash", str(HUB_SCAN), "--no-github"], check=False, capture_output=True, text=True)
+
+    assert proc.returncode == 1
+    assert "hub-scan: tower state failed: boom" in proc.stderr
+    assert "== GROUPS ==\n(tower state failed: boom)" in proc.stdout

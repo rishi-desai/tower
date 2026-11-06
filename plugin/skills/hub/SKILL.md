@@ -143,6 +143,7 @@ Never write `/effort <level>` for the user to paste: a level typed after `/effor
 - If most worktrees have no card, or the main checkout has several sessions or uncommitted changes, the repo hasn't been adopted yet: suggest running the `tower:adopt` skill instead of listing every problem.
 - The main checkout is labelled `main checkout (no card expected)`. Don't flag it for having no card.
 - You run in the main checkout yourself, so LIVE SESSIONS counts you there. Only flag main if there are other interactive sessions besides you.
+- If the scan exits non-zero saying `tower state failed`, WORKTREES, ORPHAN CARDS and GROUPS have no statuses: show the error as it is, and don't report "nothing needs you" from the empty groups.
 - LIVE SESSIONS only covers this machine, and its format isn't a documented contract. If it prints a "skipping" line, the WORKTREES section's `NOTE:` lines say what tower used instead (the event log's last 24h, or cards alone): report from GROUPS as usual and mention it once.
 - The scan's statuses never use PR state (hub-scan.sh doesn't pass `--pr`), so the pane's 30-second refresh and your report always agree. Don't re-decide a status from the GITHUB section; if an open PR looks merged or a Done worktree looks finished, say so as a Housekeeping suggestion.
 - If context is getting long, tell the user to `/clear` and run the hub again — all state is on disk, nothing is lost.

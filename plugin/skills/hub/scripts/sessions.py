@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """sessions.py: which Claude Code sessions are open in each worktree, and what state they're in.
 
-  sessions.py BRANCH=PATH [BRANCH=PATH ...]
+  sessions.py [--agents-json FILE] BRANCH=PATH [BRANCH=PATH ...]
+
+--agents-json reads the list `tower state --save-agents` saved instead of running `claude agents --json` again, so
+this section draws the same snapshot the statuses were decided from. An empty or missing FILE means tower couldn't
+read agent view; the WORKTREES section's NOTE lines say why.
 
 This only draws hub-scan.sh's LIVE SESSIONS section. Which state each worktree is in, using these same sessions, is
 decided by tower's core (src/tower/state.py), not here.
@@ -82,14 +86,30 @@ def describe(session: dict[str, Any]) -> str:
     return label
 
 
+def saved_sessions(path: str) -> list[dict[str, Any]] | None:
+    """The list tower state saved at path. Returns None (after printing why) if there's none or it isn't a list."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            sessions = json.load(handle)
+    except (OSError, ValueError):
+        sessions = None
+    if not isinstance(sessions, list):
+        print("(no live sessions: tower couldn't read agent view; see the NOTE lines under WORKTREES)")
+        return None
+    return sessions
+
+
 def main(argv: list[str]) -> int:
+    agents_json = None
+    if argv[:1] == ["--agents-json"] and len(argv) > 1:
+        agents_json, argv = argv[1], argv[2:]
     worktrees: dict[str, str] = {}  # real path -> branch label
     for arg in argv:
         branch, _, path = arg.partition("=")
         if path:
             worktrees[os.path.realpath(path)] = branch
 
-    sessions = load_sessions()
+    sessions = saved_sessions(agents_json) if agents_json else load_sessions()
     if sessions is None:
         return 0
 

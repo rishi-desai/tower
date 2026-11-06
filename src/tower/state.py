@@ -78,7 +78,8 @@ class Pr:
 @dataclass(frozen=True)
 class WorktreeFacts:
     """Everything known about one worktree. sessions_known is False when neither live sessions nor recent events
-    could be read, so "no sessions" means "don't know". unshipped_commits, dirty and pr are None when unknown."""
+    could be read, so "no sessions" means "don't know". unshipped_commits, dirty and pr are None when unknown;
+    dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow)."""
 
     label: str
     branch: str | None
@@ -125,6 +126,10 @@ def decide(worktree: WorktreeFacts) -> Verdict:
     if busy:
         if card_status is None:
             return verdict("running", f"no card yet, but session {busy[0].name} is busy", worktree)
+        if card_status == "needs-you" and not worktree.sessions_known:
+            # Event-log "busy" is only the last prompt: asking a pop-up records nothing, so the card may be right.
+            reason = f"the card says needs-you; the event log shows session {busy[0].name} active, but live sessions couldn't be read"
+            return verdict("needs-you", reason, worktree)
         if card_status == "needs-you":
             reason = f"the card says needs-you but session {busy[0].name} is busy: you already answered"
             return verdict("running", reason, worktree)
@@ -215,10 +220,12 @@ class GitWorktree:
     branch: str | None
 
 
-def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> Report:
+def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None, save_agents: Path | None = None) -> Report:
     """Gather every fact about repo_dir's worktrees and decide each one's effective state.
 
     Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR.
+    save_agents, when given, receives `claude agents --json`'s output (only when it was usable), so hub-scan.sh's
+    LIVE SESSIONS section draws the same snapshot instead of asking again.
     """
     now = time.time() if now is None else now
     worktrees = list_worktrees(repo_dir)
@@ -232,11 +239,17 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
         notes.append(ledger_note)
 
     paths = [os.path.realpath(w.path) for w in worktrees]
-    live, live_note = live_sessions(paths)
+    live, live_note = live_sessions(paths, save_agents)
     sessions_source = "live"
     if live is None:
         notes.append(live_note)
-        live = sessions_from_events(events.default_dir(), paths, now)
+        try:
+            live = sessions_from_events(events.default_dir(), paths, now)
+        except OSError as error:
+            notes.append(
+                f"couldn't read the event log ({error.strerror or type(error).__name__}), so it didn't stand in"
+            )
+            live = {}
         sessions_source = "events" if any(live.values()) else "none"
 
     prs: dict[str, Pr] = {}
@@ -256,6 +269,7 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
     for index, wt in enumerate(worktrees):
         is_main = index == 0
         card = None
+        pr = prs.get(wt.branch) if wt.branch else None
         if ledger is not None:
             card_file = card_name(wt.branch, wt.sha, Path(main.path))
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
@@ -271,8 +285,9 @@ def gather(repo_dir: Path, with_pr: bool = False, now: float | None = None) -> R
             unshipped_commits=None
             if is_main or base is None
             else unshipped(Path(main.path), base, wt.branch or wt.sha),
-            dirty=None if is_main else is_dirty(Path(wt.path)),
-            pr=prs.get(wt.branch) if wt.branch else None,
+            # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise.
+            dirty=is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None,
+            pr=pr,
         )
         rows.append((facts, decide(facts)))
 
@@ -367,7 +382,8 @@ def ledger_dir(repo: str, conf: dict[str, str]) -> tuple[Path | None, str]:
         return None, f"no projects_dir in {conf_path()}, so no cards were read (run setup.sh on this machine)"
     if not os.path.isdir(projects_dir):
         return None, f"projects_dir does not exist: {projects_dir}, so no cards were read"
-    return Path(projects_dir) / conf.get(f"project.{repo}", repo) / "Ledger", ""
+    # `or`, not a get() default: an empty `project.<repo>=` falls back to the repo name, as tower_conf_get does.
+    return Path(projects_dir) / (conf.get(f"project.{repo}") or repo) / "Ledger", ""
 
 
 def card_name(branch: str | None, sha: str, repo_dir: Path) -> str:
@@ -448,8 +464,14 @@ def owning_worktree(cwd: str, worktrees: list[str]) -> str | None:
     return best
 
 
-def live_sessions(worktrees: list[str]) -> tuple[dict[str, list[Session]] | None, str]:
-    """Sessions per worktree path from `claude agents --json`, or None and why it couldn't be used.
+def finished(card: Card | None, pr: Pr | None) -> bool:
+    """Whether decide() may call this worktree ready-to-clean, and so needs to know if it's dirty."""
+    return (card is not None and card.status == "done") or (pr is not None and pr.state == "MERGED")
+
+
+def live_sessions(worktrees: list[str], save_to: Path | None = None) -> tuple[dict[str, list[Session]] | None, str]:
+    """Sessions per worktree path from `claude agents --json`, or None and why it couldn't be used. save_to, when
+    given, receives the command's output once it parsed as a list.
 
     The JSON's fields (kind, cwd, status, state, waitingFor, name) aren't a documented contract, so anything unexpected
     means "unavailable", never a crash. A finished background session is history, not a session.
@@ -471,6 +493,8 @@ def live_sessions(worktrees: list[str]) -> tuple[dict[str, list[Session]] | None
         listed = None
     if not isinstance(listed, list):
         return None, "claude agents --json printed something unexpected (its format may have changed)"
+    if save_to is not None:
+        save_to.write_text(proc.stdout, encoding="utf-8")
     found: dict[str, list[Session]] = {}
     for entry in listed:
         if not isinstance(entry, dict) or not isinstance(entry.get("cwd"), str):
@@ -693,40 +717,41 @@ def render_text(report: Report) -> str:
     """The report as hub-scan.sh prints it: its WORKTREES, ORPHAN CARDS and GROUPS sections, one row per line.
 
     The pane parses the WORKTREES rows (`status:` is the effective state), so keep the `field: value | ...` shape and
-    the path last. No value here may contain " | ".
+    the path last. Every value from a card or a session goes through cell(), so none can contain " | ".
     """
     out = ["== WORKTREES =="]
     for facts, v in report.worktrees:
         if facts.is_main:
             out.append(
-                f"- {facts.label} | status: {v.status} | main checkout (no card expected) | reason: {v.reason} | {facts.path}"
+                f"- {cell(facts.label)} | status: {v.status} | main checkout (no card expected)"
+                f" | reason: {cell(v.reason)} | {facts.path}"
             )
             continue
         card = facts.card
         fields = [
-            f"- {facts.label}",
+            f"- {cell(facts.label)}",
             f"status: {v.status}",
-            f"card: {card.status if card else 'none'}",
-            f"ticket: {card.ticket if card else 'none'}",
-            f"updated: {(card.updated if card else '') or '?'}",
+            f"card: {cell(card.status) if card else 'none'}",
+            f"ticket: {cell(card.ticket) if card else 'none'}",
+            f"updated: {cell(card.updated if card else '') or '?'}",
         ]
         if card and card.stale:
             fields.append("STALE: not updated in over 24h")
-        out.append(" | ".join([*fields, f"reason: {v.reason}", facts.path]))
+        out.append(" | ".join([*fields, f"reason: {cell(v.reason)}", facts.path]))
     limit = " — AT LIMIT" if report.slots >= report.wip_limit else ""
     out.append(
         f"WIP: {report.slots} of {report.wip_limit} (execution slots: running + needs-you, main excluded){limit}"
     )
     unshipped_rows = [f for f, _ in report.worktrees if f.unshipped_commits]
     if unshipped_rows:
-        listed = ", ".join(f"{f.label} ({plural(f.unshipped_commits or 0, 'commit')})" for f in unshipped_rows)
+        listed = ", ".join(f"{cell(f.label)} ({plural(f.unshipped_commits or 0, 'commit')})" for f in unshipped_rows)
         out.append(f"UNSHIPPED: {listed} not on {report.base}")
     else:
         out.append(f"UNSHIPPED: (none){f' — every branch is on {report.base}' if report.base else ''}")
     out.extend(f"NOTE: {note}" for note in report.notes)
 
     out += ["", "== ORPHAN CARDS (worktree gone) =="]
-    out += [f"- {o.name} | status: {o.status or '?'} | {o.path}" for o in report.orphan_cards] or ["(none)"]
+    out += [f"- {cell(o.name)} | status: {cell(o.status) or '?'} | {o.path}" for o in report.orphan_cards] or ["(none)"]
 
     out += ["", "== GROUPS (report in this order) =="]
     if report.sessions_source == "events":
@@ -745,10 +770,10 @@ def render_text(report: Report) -> str:
 def group_row(facts: WorktreeFacts, v: Verdict) -> str:
     """One worktree's line under its group: label, ticket, PR if known, and why it's in that group."""
     if facts.is_main:
-        return f"- {facts.label} (main checkout) | {v.reason}"
-    ticket = facts.card.ticket if facts.card else "none"
+        return f"- {cell(facts.label)} (main checkout) | {cell(v.reason)}"
+    ticket = cell(facts.card.ticket) if facts.card else "none"
     pr = f" | PR #{facts.pr.number} {facts.pr.state.lower()}" if facts.pr else ""
-    return f"- {facts.label} | ticket: {ticket}{pr} | {v.reason}"
+    return f"- {cell(facts.label)} | ticket: {ticket}{pr} | {cell(v.reason)}"
 
 
 def housekeeping(report: Report) -> list[str]:
@@ -756,19 +781,26 @@ def housekeeping(report: Report) -> list[str]:
     lines: list[str] = []
     for facts, v in report.worktrees:
         if v.status == "ready-to-clean":
-            lines.append(f"- {facts.label} | ready to clean up: {v.reason}")
+            lines.append(f"- {cell(facts.label)} | ready to clean up: {cell(v.reason)}")
         if not facts.is_main and facts.card is None:
-            lines.append(f"- {facts.label} | no card")
+            lines.append(f"- {cell(facts.label)} | no card")
         elif facts.card and facts.card.status not in CARD_STATUSES:
-            lines.append(f"- {facts.label} | unknown card status: {facts.card.status or '?'}")
+            lines.append(f"- {cell(facts.label)} | unknown card status: {cell(facts.card.status) or '?'}")
         if facts.card and facts.card.stale:
-            lines.append(f"- {facts.label} | STALE: running card not updated in over 24h")
+            lines.append(f"- {cell(facts.label)} | STALE: running card not updated in over 24h")
         interactive = sum(1 for s in facts.sessions if s.kind == "interactive")
         if interactive > 1:
             where = " (in the main checkout, one is the hub)" if facts.is_main else ""
-            lines.append(f"- {facts.label} | {interactive} interactive sessions share this worktree{where}")
-    lines += [f"- {o.name} | orphan card (worktree gone), status: {o.status or '?'}" for o in report.orphan_cards]
+            lines.append(f"- {cell(facts.label)} | {interactive} interactive sessions share this worktree{where}")
+    lines += [
+        f"- {cell(o.name)} | orphan card (worktree gone), status: {cell(o.status) or '?'}" for o in report.orphan_cards
+    ]
     return lines
+
+
+def cell(text: str) -> str:
+    """text made safe for one field of a report row: on one line, with "|" (the field separator) turned into "/"."""
+    return " ".join(text.replace("|", "/").split())
 
 
 def plural(count: int, noun: str) -> str:

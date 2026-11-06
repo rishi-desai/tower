@@ -35,10 +35,12 @@ def facts(
 
 
 def card(status: str, stale: bool = False) -> Card:
+    """A card for ticket #42 with the given status."""
     return Card(status=status, ticket="#42", updated="2026-11-06T09:00", pr="none", stale=stale)
 
 
 def session(activity: str, waiting_for: str = "") -> Session:
+    """The worktree's one interactive session, doing activity."""
     return Session(name="feat-42-a1", kind="interactive", activity=activity, waiting_for=waiting_for)
 
 
@@ -150,3 +152,13 @@ def test_a_merged_pr_never_overrides_a_running_or_needs_you_card() -> None:
         verdict = state.decide(facts(card(status), pr=merged))
         assert (verdict.status, verdict.holds_slot) == (status, True), status
     assert state.decide(facts(card("waiting-ci"), pr=merged)).status == "ready-to-clean"
+
+
+def test_only_a_live_busy_session_beats_a_needs_you_card() -> None:
+    """From the event log, "busy" only means the turn's prompt was the last event: the session may be stopped on a
+    pop-up (asking records nothing) or have crashed, so the card's needs-you stands."""
+    verdict = state.decide(facts(card("needs-you"), (BUSY,), sessions_known=False))
+    assert (verdict.status, verdict.holds_slot) == ("needs-you", True)
+    assert verdict.reason == (
+        "the card says needs-you; the event log shows session feat-42-a1 active, but live sessions couldn't be read"
+    )

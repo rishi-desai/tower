@@ -135,6 +135,13 @@ test('a needs-you card whose session is working again is shown as running, not a
   await ui.unmount()
 })
 
+test('a report from tower before 0.9.0 still shows a resumed needs-you card as running', async ($, on) => {
+  // REPORT's rows have no card field, as hub-scan.sh printed them before tower state decided the status.
+  const w = world(on, REPORT.replace('- copilot | 1 open: copilot-1(int:waiting) waiting for: approve Bash', '- rolly-polly | 1 open: rolly-ad(int:busy)'))
+  await $.command.run({ command: 'tower' })
+  expect(w.statuses.at(-1)).toBe('tower WIP 2/3')
+})
+
 // hub-scan.sh's real output for the fixture in tests/test_state.py, which checks it byte for byte: three workers the
 // hub and the pane used to disagree on (busy with no card; busy with a stale needs-you card; waiting with a running
 // card). The hub reports from its GROUPS section; this test shows the pane draws the same status for each.

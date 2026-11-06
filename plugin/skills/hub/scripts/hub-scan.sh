@@ -36,12 +36,13 @@ echo "LEDGER: $ledger"
 echo
 
 state_out="$(mktemp)"   # tower state's report: sections 1, 3 and 4, printed in their places below
+agents="$(mktemp)"      # the `claude agents --json` snapshot tower state decided from, redrawn by section 2
 gh_err="$(mktemp)"      # each failing command's stderr, so failures show their real reason
-trap 'rm -f "$state_out" "$gh_err"' EXIT
+trap 'rm -f "$state_out" "$agents" "$gh_err"' EXIT
 state_failed=""         # why tower state didn't run; sections 1, 3 and 4 say so instead of guessing
 if ! command -v python3 >/dev/null 2>&1; then
   state_failed="python3 not found"
-elif ! python3 -I "$here/../../../scripts/run-tower.py" state >"$state_out" 2>"$gh_err"; then
+elif ! python3 -I "$here/../../../scripts/run-tower.py" state --save-agents "$agents" >"$state_out" 2>"$gh_err"; then
   state_failed="tower state failed: $(tail -n1 "$gh_err")"
 fi
 
@@ -79,7 +80,11 @@ while IFS= read -r line; do
   esac
 done < <(git worktree list --porcelain; echo)   # trailing echo guarantees a final blank line
 if command -v python3 >/dev/null 2>&1; then
-  python3 -I "$here/sessions.py" "${session_args[@]}"
+  if [ -z "$state_failed" ]; then
+    python3 -I "$here/sessions.py" --agents-json "$agents" "${session_args[@]}"
+  else
+    python3 -I "$here/sessions.py" "${session_args[@]}"     # tower state didn't run: ask agent view directly
+  fi
 else
   echo "(python3 not found; skipping live sessions)"
 fi
@@ -142,4 +147,10 @@ if [ -s "$ledger/_backlog.md" ]; then   # -s = file exists and isn't empty
   cat "$ledger/_backlog.md"
 else
   echo "(empty)"
+fi
+
+# Without tower state the report has no statuses: fail, so the pane shows the reason instead of "nothing needs you".
+if [ -n "$state_failed" ]; then
+  echo "hub-scan: $state_failed" >&2
+  exit 1
 fi

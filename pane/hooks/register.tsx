@@ -78,7 +78,8 @@ export type Report = {
 
 /** The report as rows: one worktree per row, sessions grouped by worktree. */
 export function parseReport(text: string): Report {
-  const worktrees = sectionLines(text, 'WORKTREES')
+  const legacy = new Set<string>() // rows from hub-scan.sh before tower 0.9.0, whose status is the card's own
+  const rows = sectionLines(text, 'WORKTREES')
     .filter(line => line.startsWith('- '))
     .map((line, index): Worktree => {
       const parts = line.slice(2).split(' | ')
@@ -87,7 +88,8 @@ export function parseReport(text: string): Report {
       let status = (field('status') || (parts.some(p => p.startsWith('main checkout')) ? 'main' : '')).toLowerCase()
       if (status === 'no card') status = 'no-card' // a report from hub-scan.sh before tower 0.9.0
       // Rows from before tower 0.9.0 have no card field: there, status was the card's own.
-      const card = parts.some(p => p.startsWith('card: ')) ? field('card') : isMain ? '' : status === 'no-card' ? 'none' : status
+      if (!parts.some(p => p.startsWith('card: '))) legacy.add(parts[0] ?? '')
+      const card = legacy.has(parts[0] ?? '') ? (isMain ? '' : status === 'no-card' ? 'none' : status) : field('card')
       const path = [...parts].reverse().find(p => p.startsWith('/')) ?? '' // the row's last field; never drawn, only handed to Orca
       return { branch: parts[0] ?? '', path, isMain, status, card, reason: field('reason'), ticket: field('ticket'), updated: field('updated'), isStale: parts.some(p => p.startsWith('STALE')) }
     })
@@ -102,6 +104,14 @@ export function parseReport(text: string): Report {
     const many = line.match(/<-- (\d+) interactive/)
     if (many?.[1]) shared[branch] = Number(many[1])
   }
+  // A legacy needs-you row whose session is working again, and none waiting: the user already answered. Newer
+  // reports arrive with this decided (tower state); remove once no tower older than 0.9.0 is installed.
+  const worktrees = rows.map(w => {
+    const list = sessions[w.branch] ?? []
+    const isResumed = legacy.has(w.branch) && w.status === 'needs-you' && list.some(s => s.state === 'busy')
+      && !list.some(s => s.state === 'waiting' || s.state === 'blocked')
+    return isResumed ? { ...w, status: 'running', reason: 'the card says needs-you but its session is busy: you already answered' } : w
+  })
   return {
     repo: text.match(/^REPO: (.+)$/m)?.[1] ?? '',
     ledger: text.match(/^LEDGER: (.+)$/m)?.[1] ?? '',
@@ -623,7 +633,7 @@ export const register: Register = on => {
         ))}
         {needCards.map(card => {
           const session = waiting.find(w => w.branch === card.branch)?.session
-          const detail = `${hasCard(card) ? cardAge(card.updated) : 'no card'}${session ? ` · ${session.name} waiting${session.waitingFor ? `: ${session.waitingFor}` : ''}` : ''}`
+          const detail = `${hasCard(card) ? cardAge(card.updated) : card.isMain ? 'main checkout' : 'no card'}${session ? ` · ${session.name} waiting${session.waitingFor ? `: ${session.waitingFor}` : ''}` : ''}`
           const top = [orcaName(`orca-${card.branch}`, card.branch, nextHotkey()), ticketOf(card) ? <Text>{ticketOf(card)}</Text> : null, hasCard(card) ? cardLink(card.branch) : null]
           return row(`need-${card.branch}`, 'needs-you', false, top, detail)
         })}
