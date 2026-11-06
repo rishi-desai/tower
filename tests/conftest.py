@@ -67,6 +67,13 @@ def interactive(name: str, cwd: Path, status: str, **extra: object) -> dict[str,
     return {"id": name, "name": name, "kind": "interactive", "cwd": str(cwd), "status": status, **extra}
 
 
+@pytest.fixture(autouse=True)
+def isolated_tower_dir(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test gets its own tower folder (policy file, event log), so none reads or migrates this machine's real
+    ~/.claude/tower. Tests that need a particular one set TOWER_DIR themselves."""
+    monkeypatch.setenv("TOWER_DIR", str(tmp_path_factory.mktemp("tower-dir")))
+
+
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Fixture]:
     """A repo with only its main checkout, an empty ledger, wip_limit=3, and no sessions; cwd is the main checkout."""

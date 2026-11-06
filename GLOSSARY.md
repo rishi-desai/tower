@@ -103,3 +103,25 @@ _Avoid_: task, ticket (a ticket can take several changes)
 **Report**:
 A worker's turn that ended with it stopping for you. A prompt you type after one is a follow-up.
 _Avoid_: card (that is the written note), summary
+
+## Approvals
+
+**Policy**:
+Which of an agent's actions ask you first, repo by repo: the profile each repo gets, from `~/.claude/tower/policy.toml`
+(`tower policy` shows it). The approval hook enforces it.
+_Avoid_: settings, permissions (Claude Code's own allow rules are a separate thing)
+
+**Gate**:
+One kind of action the approval hook may stop for your approval (a push, a merge, a comment, an issue write); each is
+judged by one key of the repo's profile, or, for what no key covers, asks unless every GitHub key is auto.
+_Avoid_: check, permission
+
+**Profile**:
+A named set of the policy's keys (push, merge_to_main, merge_to_branch, comments, issue_writes, pr_writes, cleanup,
+wip_limit): the built-in work, personal or sandbox, or one the policy file defines. Each repo gets exactly one.
+_Avoid_: mode, level, preset
+
+**Safety floor**:
+What asks in every profile, sandbox included: an agent's change to the policy file, tower.conf, a rule file or a
+CLAUDE.local.md, or running `tower policy use`. It is how an agent is kept from loosening its own rules.
+_Avoid_: hard rule, override

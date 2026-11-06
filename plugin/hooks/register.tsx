@@ -333,7 +333,9 @@ async function scanOnce($: EngineInterface): Promise<void> {
   await readBacklog($, state.ledger)
 
   const count = needsYou(state).length
-  $.ui.status(`tower WIP ${state.slots}/${state.wip_limit}${count ? ` · ${count} need${count === 1 ? 's' : ''} you` : ''}`)
+  // `tower · work · 2/4`: the repo's approval profile (an older core reports none), then the WIP count.
+  const profile = state.policy ? ` · ${state.policy.profile}` : ''
+  $.ui.status(`tower${profile} · ${state.slots}/${state.wip_limit}${count ? ` · ${count} need${count === 1 ? 's' : ''} you` : ''}`)
   if (lastItems !== null) {
     for (const item of items.filter(item => !lastItems!.includes(item))) {
       $.ui.toast(`tower: ${item} — /tower`)
@@ -497,6 +499,7 @@ export const register: Register = on => {
       >
         <Box flexDirection="row" flexWrap="wrap" columnGap={3}>
           <Text weight="bold">{state.repo}</Text>
+          {state.policy && <Text>{`policy ${state.policy.profile}`}</Text>}
           <Text>{`WIP ${state.slots}/${state.wip_limit}`}</Text>
           {state.at_limit && <Text backgroundColor="error" color="inverseText" weight="bold"> AT LIMIT </Text>}
           <Text>{`updated ${clockTime(now)}`}</Text>

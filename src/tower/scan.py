@@ -1,8 +1,9 @@
 """scan.py: `tower scan`, the hub's view of one repo, so the hub never reads transcripts.
 
 Prints, from anywhere inside the repo:
-  1. WORKTREES     every worktree with its effective state, the WIP count, unshipped work, and whether the repo
-                   still needs adopting (the ADOPT: line, which switches the hub into its adopt flow)
+  1. WORKTREES     every worktree with its effective state, the WIP count, unshipped work, the repo's approval
+                   policy (the Policy: line, see policy.py), and whether the repo still needs adopting (the ADOPT:
+                   line, which switches the hub into its adopt flow)
   2. LIVE SESSIONS the Claude sessions open in each worktree right now (from agent view)
   3. ORPHAN CARDS  cards whose worktree no longer exists (finished or deleted work)
   4. GROUPS        every worktree in the hub's report order (Needs you, Blocked, Running, Waiting on CI or review,
@@ -22,7 +23,7 @@ import os
 import shutil
 from pathlib import Path
 
-from tower import adopt, ledger, sessions, state
+from tower import adopt, ledger, policy, sessions, state
 from tower.github import try_gh
 
 PR_TEMPLATE = (
@@ -37,14 +38,12 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
     """The whole scan as text. Raises NotARepo outside a git repo and LedgerError when the ledger can't be found:
     a hub without cards would report "nothing needs you"."""
     folder = ledger.open_ledger(repo_dir)
-    conf = ledger.read_conf(ledger.conf_path())
-    pr_approval = ledger.conf_get(conf, "pr_approval", "every")
-    if pr_approval not in ("every", "none"):
-        pr_approval = "every"  # anything else is the safe default, as the approval hook reads it
     report = state.gather(repo_dir)
 
     lines = [f"REPO: {report.repo}", f"LEDGER: {folder}", ""]
-    lines += [*state.worktrees_section(report), f"PR approval: {pr_approval}", adopt_line(report), ""]
+    lines += state.worktrees_section(report)
+    lines += [policy.scan_line(report.policy)] if report.policy is not None else []
+    lines += [adopt_line(report), ""]
     lines.append("== LIVE SESSIONS (agent view) ==")
     if report.agents is None:
         lines.append("(no live sessions: tower couldn't read agent view; see the NOTE lines under WORKTREES)")

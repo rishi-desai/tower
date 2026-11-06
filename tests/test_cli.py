@@ -136,3 +136,77 @@ def test_stats_warns_about_a_repo_whose_folder_is_gone(
     out, err = capsys.readouterr()
     assert f"skipped {gone}: the folder is gone" in err
     assert out == "No merged PR in the window has events.\n"
+
+
+@pytest.fixture
+def policy_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A checkout of acme/widget as the current folder, with tower's files in a temporary folder; returns the
+    policy file's path (not written yet)."""
+    checkout = tmp_path / "widget"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", "https://github.com/acme/widget"], check=True
+    )
+    monkeypatch.chdir(checkout)
+    monkeypatch.setenv("TOWER_DIR", str(tmp_path / "tower"))
+    monkeypatch.setenv("TOWER_CONF", str(tmp_path / "tower.conf"))
+    return tmp_path / "tower" / "policy.toml"
+
+
+def test_policy_shows_the_profile_for_this_repo_and_why(policy_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    policy_home.parent.mkdir()
+    policy_home.write_text('default_profile = "work"\n[repos]\n"acme/*" = "personal"\n', encoding="utf-8")
+
+    assert cli.main(["policy"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("tower policy for acme/widget: personal\n")
+    assert f'why: [repos] "acme/*" in {policy_home} matches acme/widget\n' in out
+    assert "  push             force  only force pushes and branch deletes ask\n" in out
+    assert "  merge_to_branch  auto   merging a PR into any other branch\n" in out
+    assert "  wip_limit        3      the default\n" in out
+    assert "problems: none\n" in out
+    assert "tower policy use <profile> [--repo]" in out
+
+
+def test_policy_lists_the_files_problems(policy_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    policy_home.parent.mkdir()
+    policy_home.write_text('default_profile = "sandbox"\n[profiles.sandbox]\npush = "never"\n', encoding="utf-8")
+
+    assert cli.main(["policy"]) == 0
+    out = capsys.readouterr().out
+    assert "  push             every  every push asks\n" in out
+    assert (
+        "\nproblems:\n  - [profiles.sandbox] push = \"never\" isn't one of every, force, none, so it's every\n" in out
+    )
+
+
+def test_policy_use_sets_the_default_profile(policy_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["policy", "use", "personal"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("tower: default profile: work -> personal\n")
+    assert "tower policy for acme/widget: personal\n" in out
+    assert 'default_profile = "personal"' in policy_home.read_text(encoding="utf-8")
+
+
+def test_policy_use_with_repo_sets_this_repos_profile(policy_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["policy", "use", "personal"]) == 0
+    assert cli.main(["policy", "use", "sandbox", "--repo"]) == 0
+    out = capsys.readouterr().out
+    assert "tower: acme/widget: personal -> sandbox\n" in out
+    assert '"acme/widget" = "sandbox"' in policy_home.read_text(encoding="utf-8")
+
+
+def test_policy_use_refuses_an_unknown_profile(policy_home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["policy", "use", "yolo"]) == 1
+    assert capsys.readouterr().err == ('tower: "yolo" isn\'t a profile; the profiles are personal, sandbox, work\n')
+    assert not policy_home.exists()
+
+
+def test_policy_use_repo_needs_a_github_origin(
+    policy_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["policy", "use", "sandbox", "--repo"]) == 1
+    assert "isn't in a repo with a GitHub origin" in capsys.readouterr().err
