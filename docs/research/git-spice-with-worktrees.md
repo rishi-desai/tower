@@ -35,8 +35,9 @@ Terms used below:
 ## Recommendation
 
 **One worktree per stack.** The whole stack is checked out in one worktree (one session). You move between its
-branches with `git-spice up`/`down`/`top`/`bottom`. In `remote-stack-out.txt` this layout ran clean from start to finish
-with default config:
+branches with `git-spice up`/`down`/`top`/`bottom`. In `remote-stack-out.txt` this layout worked from start to finish
+with default config. The one manual step: a `git fetch` (and a same-tree check) before the first submit after each merge
+(question 4).
 
 - submit set every base right;
 - restack moved every branch in one command;
@@ -50,8 +51,10 @@ worktrees. And with default config, `repo sync` leaves the stack in a state `sub
 worktree" would become "one *stack* = one worktree" for stacked tickets. A stack is sequential anyway: the upper branch
 can't land before the lower one.
 
-If per-branch worktrees are ever needed (say, two agents on two layers at once), set
-`git config spice.repoSync.detachWorktrees true` and restack bottom-up from each worktree. Both are shown below.
+If per-branch worktrees are ever needed (say, two workers on two layers at once), restack bottom-up from each
+worktree. After a merge, have the worktree that holds the merged branch move off it and run `git-spice repo sync`
+itself. Avoid `spice.repoSync.detachWorktrees=true` there: it's a setting in the shared repo config, so any worker's sync
+detaches *another* live worker's worktree, and that worker's next commits land on no branch. Details below.
 
 ## Unexpected: GitHub now stacks the PRs itself
 
@@ -68,8 +71,8 @@ anything in the scratch repos; whether every account gets this is unknown. From 
   `WRN Retarget failed ... Cannot change the base branch because the pull request is part of a stack`. It's harmless:
   the base is already right.
 
-Tower's workers merge with `gh pr merge`, so this breaks them on stacked PRs. `gh help` also advertises an official
-`gh stack` extension. Both points are written up as a drafted follow-up issue in
+Tower's workers merge with `gh pr merge`, so this breaks them on stacked PRs. Also, `gh stack --help` says an official
+`gh stack` extension exists (`gh extension install github/gh-stack`, in `env-out.txt`; not installed or tried). Both points are written up as a drafted follow-up issue in
 [`followup-issue-stacked-merge.md`](followup-issue-stacked-merge.md), not filed yet.
 
 ## Answers
@@ -84,9 +87,10 @@ Two gotchas:
 
 - `git-spice branch create` in a per-branch worktree **moves that worktree** to the new branch. After it, `wt-feat3`
   holds `feat4`, and `feat3` isn't checked out anywhere.
-- A branch made outside git-spice is untracked. `orca worktree create --base-branch feat1` makes a plain new branch
-  (per its `--help`). The script simulates this with `git worktree add -b`, without running Orca itself. Running
-  `git-spice branch track` inside the worktree adopts it, and it inferred `base feat1` on its own.
+- A branch made outside git-spice is untracked. `orca worktree create --base-branch <ref>` creates the worktree "from"
+  a base ref (`env-out.txt`), so git-spice doesn't know about whatever branch it ends up on. The script simulates this
+  with `git worktree add -b`, without running Orca itself. Running `git-spice branch track` inside the worktree adopts
+  it, and it inferred `base feat1` on its own.
 
 ```sh
 git-spice log short --all            # from any worktree: whole stack, with [wt: path] per branch
@@ -143,14 +147,22 @@ how that goes depends on the layout:
 - **Per branch, default config:** sync skips deleting `feat1` (`checked out in another worktree, skipping deletion`)
   and doesn't move `feat2` locally. `git-spice branch submit` then refuses:
   `Branch has stale base branch=feat2 base=feat1 ... run 'gs repo sync' first`.
-- **Per branch, with `spice.repoSync.detachWorktrees=true`:** sync detaches `wt-feat1`, deletes `feat1` and moves
-  `feat2` onto `main`. Per the config docs, it leaves the worktree's changes in place.
+  The error's hint ("run 'gs repo sync' first") doesn't help from `wt-feat2`; the skip is about `wt-feat1`. The
+  sync's own warning gives the fix: "Run 'git-spice branch delete' or run 'git-spice repo sync' again from that
+  worktree". That per-branch path wasn't scripted. `remote-stack-out.txt` shows the same mechanism working: sync run
+  from the worktree that holds the merged branch deletes it.
+- **Per branch, with `spice.repoSync.detachWorktrees=true`:** sync detaches `wt-feat1` itself, deletes `feat1` and moves
+  `feat2` onto `main`. Per the config docs, it leaves the worktree's changes in place. It's shared repo config, though:
+  with live workers in other worktrees, one worker's sync pulls another's worktree off its branch. Don't use it for
+  tower.
 
 After the sync, git-spice's restack and GitHub's server-side rebase give the same tree but different SHAs
-(`local feat2 12cf72c, origin/feat2 ed0f3ea, same tree: yes`). So run `git fetch` before submitting. Without it, the
-local copy of the remote branch is stale and git-spice's lease-protected push is rejected:
-`! [rejected] ... -> feat2 (stale info)`. After the fetch, `git-spice stack submit` pushes the equivalent rebase.
-Alternatively, take GitHub's version with `git reset --hard origin/feat2` and restack above it.
+(`local feat2 12cf72c, origin/feat2 ed0f3ea, same tree: yes`). Without a `git fetch`, the local copy of the remote
+branch is stale and git-spice's lease-protected push is rejected: `! [rejected] ... -> feat2 (stale info)`. Fetching
+refreshes the lease, so the next submit force-pushes over whatever is on the remote branch. Check the trees match first:
+if someone pushed a real commit there (say, a reviewer's suggested change), a blind submit drops it. Alternatively,
+take GitHub's version: `git branch -f feat2 origin/feat2` (only while `feat2` isn't checked out; a `reset --hard` would
+move whichever branch *is*), then `git-spice upstack restack --branch feat2`.
 
 Auto-merge wasn't tested: GitHub's auto-merge needs required checks, and the scratch repos had none. Untested
 inferences:
@@ -161,10 +173,12 @@ inferences:
 Either way, the merge itself is the same event, so the retargeting above should apply.
 
 ```sh
-gh api -X PUT repos/OWNER/REPO/pulls/1/merge-async -f merge_method=squash -f merge_action=direct_merge
-gh api repos/OWNER/REPO/pulls/1/merge-async/UUID --jq .status        # pending, then merged
-gh api repos/OWNER/REPO/pulls/2 --jq '{base: .base.ref, stack}'        # base is now main
-git-spice repo sync && git fetch && git-spice stack restack && git-spice stack submit
+UUID=$(gh api -X PUT repos/OWNER/REPO/pulls/1/merge-async -f merge_method=squash -f merge_action=direct_merge \
+  --jq .details.uuid)
+gh api repos/OWNER/REPO/pulls/1/merge-async/"$UUID" --jq .status    # pending, then merged
+gh api repos/OWNER/REPO/pulls/2 --jq '{base: .base.ref, stack}'     # base is now main
+git-spice repo sync && git fetch && git-spice stack restack
+git diff --quiet feat2 origin/feat2 && git-spice stack submit       # submit only if trees match
 ```
 
 ### 5. The `gs` / Ghostscript name clash on macOS
@@ -186,7 +200,7 @@ gs='git-spice'`, but skip that on any machine that needs Ghostscript (it isn't i
 **Note for #32:** its text says "submit with `gs`". Tower's docs, scripts and kickoffs should write `git-spice`.
 
 ```sh
-brew install git-spice          # or: mise use aqua:abhinav/git-spice@0.33.0
+brew install git-spice          # or, without touching any mise.toml: mise install aqua:abhinav/git-spice@0.33.0
 git-spice --version             # git-spice 0.33.0
 git spice --version             # same binary, as a git subcommand
 ```
@@ -200,6 +214,8 @@ git fetch origin prototype/30-git-spice
 SPIKE=$(mktemp -d) && git worktree add "$SPIKE" origin/prototype/30-git-spice
 cd "$SPIKE/docs/research/git-spice-spike.PROTOTYPE"
 bash local.sh
-bash remote-stack.sh OWNER/new-scratch-repo     # creates it private; one repo per run
-gh repo archive -y OWNER/new-scratch-repo
+bash remote.sh OWNER/new-scratch-repo           # per-branch layout; creates the repo private
+bash remote-stack.sh OWNER/other-scratch-repo   # per-stack layout; a fresh repo per run
+gh repo archive -y OWNER/new-scratch-repo && gh repo archive -y OWNER/other-scratch-repo
+cd - && git worktree remove "$SPIKE"
 ```

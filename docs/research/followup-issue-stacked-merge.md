@@ -18,7 +18,7 @@ When PRs chain their bases (`feat2 -> feat1 -> main`, which is what `git-spice s
 
 - `gh pr merge` fails: `GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API.`
 - `PUT /repos/{o}/{r}/pulls/{n}/merge` returns 403: `Merging stacked PRs via this endpoint is not supported.`
-- Only `PUT /repos/{o}/{r}/pulls/{n}/merge-async` works (then poll `GET .../merge-async/{uuid}` until `status` is `merged`).
+- Only `PUT /repos/{o}/{r}/pulls/{n}/merge-async` works. Its response carries `.details.uuid`; poll `GET .../merge-async/{uuid}` until `status` is `merged`.
 - GitHub retargets and rebases the upper PRs server-side after a merge, and refuses base-branch edits on stacked PRs.
 
 ## Why it matters for tower
@@ -26,5 +26,6 @@ When PRs chain their bases (`feat2 -> feat1 -> main`, which is what `git-spice s
 
 ## Questions
 - Should the worker merge instruction fall back to `merge-async` for stacked PRs (detect via `gh api repos/{o}/{r}/pulls/{n} --jq .stack`)?
-- `gh help` now advertises an official `gh stack` extension (`gh extension install github/gh-stack`). Does it make git-spice unnecessary for #32? Worth a short spike before #32 starts.
+- `gh stack --help` says an official `gh stack` extension exists (`gh extension install github/gh-stack`). Does it make git-spice unnecessary for #32? Worth a short spike before #32 starts.
+- `--delete-branch` has no merge-async equivalent. Should merged head branches be deleted by turning on "delete head branch on merge", or by hand after GitHub retargets the PR above? Untested either way: the spike only ran with auto-delete off, and deleting a lower branch before the retarget may close the upper PRs.
 - Untested: `gh pr merge --auto` on a stacked PR, and `merge_action=merge_queue|default` on `merge-async` as the auto-merge path.
