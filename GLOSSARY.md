@@ -43,8 +43,8 @@ the status, ticket, branch and PR from facts (`tower card write`), so a card can
 _Avoid_: status file, report
 
 **Ticket guess**:
-The ticket tower reads from a branch name when nothing else names one, the same guess wherever tower shows it. A year
-or a version in the name (`release-2026-11`) is not a ticket.
+The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess wherever tower shows it. It can miss or
+be wrong, so it is a guess, never a fact.
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
 **Ledger**:
