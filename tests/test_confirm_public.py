@@ -104,6 +104,23 @@ ALWAYS_ASK = [
     "GH pr comment 5 -b hi",
     '"$HOME/bin/gh" pr comment 5 -b hi',
     "=gh pr comment 5 -b hi",
+    "{gh pr comment 5 -b hi}",
+    # a case word that is quoted or only an argument isn't the keyword; an outer heredoc waits for its own line
+    'echo "$(echo { case)"; gh pr comment 5 -b hi; : "; esac)"',
+    'echo "$(\\case)"; gh pr comment 5 -b hi; : "; esac)"',
+    "cat <<EOF; echo $(\ngh pr comment 5 -b hi\nEOF\n)",
+    # shell code given to other shells and programs, and git/gh text inside another language's code
+    "tcsh -c 'gh pr comment 5 -b hi'",
+    "csh -c 'gh issue close 3'",
+    "ssh host 'gh pr comment 5 -b hi'",
+    "watch 'gh pr comment 5 -b hi'",
+    "python3 -c \"import os; os.system('gh pr comment 5 -b hi')\"",
+    "osascript -e 'do shell script \"gh issue close 3\"'",
+    # part of a deciding word, or a GraphQL query, from a variable or command output
+    "gh pr comm${x}ent 5 -b hi",
+    "gh api -X PO$(echo ST) repos/a/b/issues",
+    'gh api graphql -f query="$Q"',
+    'gh api graphql -F query="$(cat q.graphql)"',
 ]
 PR_CHANGES = [
     "gh pr create --fill",
@@ -160,6 +177,17 @@ PUSHES = [
     "x=$(( 1 << 2 ))\ngit push",
     "GIT push",
     "env -S 'git push origin x'",
+    "git pu$(echo sh) origin x",
+    "git p$'ush'",
+    "/opt/homebrew/opt/git/libexec/git-core/git-push origin x",
+    "git -c alias.p=push p origin x",
+    "su -c 'git push' bob",
+    "tmux new -d 'git push'",
+    # a heredoc or here-string feeding a shell's standard input is checked
+    "bash <<<'git push' 3<<<'x'",
+    "bash <<<'git push' <<<'true'",
+    "source /dev/stdin <<< 'git push'",
+    "bash /dev/stdin <<< 'git push'",
 ]
 FORCE = [
     "git push --force origin x",
@@ -179,6 +207,7 @@ FORCE = [
     "git push origin --del old",
     "git push --mir",
     "git push --forc",
+    "git -c remote.origin.mirror=true push",
 ]
 READS = [
     "gh pr view 5",
@@ -220,6 +249,18 @@ READS = [
     "ps aux | grep bash",
     "echo $(( 1 << 2 ))",
     'echo "$(case a in a) echo hi;; esac)"',
+    "grep -c bash <<EOF\ngit push\nEOF",
+    "ssh host 'git status'",
+    "python3 -c 'print(1)'",
+    "man git-push",
+    "git add .",
+    "cd . && ls .",
+    "source ~/.zshrc",
+    "bash --version",
+    # reading tower.conf with a read-only program is fine (workers check pr_approval)
+    "cat ~/.claude/tower.conf",
+    "grep pr_approval ~/.claude/tower.conf",
+    "PR=$(grep pr_approval ~/.claude/tower.conf)",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -235,6 +276,20 @@ UNCHECKABLE = [
     "echo 'git push' | timeout 30 bash",
     "bash <(echo 'git push')",
     "source <(echo 'git push')",
+    "echo 'git push' |\nbash",
+    "echo 'git push' | { bash; }",
+    "echo 'git push' | (cd /tmp; bash)",
+    "{ bash; } <<EOF\ngh pr comment 5 -b hi\nEOF",
+    "(bash) <<<'git push'",
+    "echo 'git push' | arch -arm64 bash",
+    "bash < <(echo 'git push')",
+    "echo 'gh pr comment 5 -b hi' | tee >(bash) >/dev/null",
+    "echo 'git push' | bash /dev/stdin",
+    "bash =(echo 'git push')",
+    "bash -c 'echo ${ git push; }'",
+    "printf 'git push\\0' | xargs -0 bash -c",
+    "echo 'gh pr comment 5 -b hi' | xargs -I{} sh -c '{}'",
+    "cat <<$'EOF'\nx\nEOF\ngh pr comment 5 -b hi\n$'EOF'",
 ]
 
 
@@ -350,6 +405,8 @@ RULE_FILE_EDITS = [
     ("Write", "~/.claude/tower/policy.toml"),
     ("Write", "~/.claude/TOWER.conf"),
     ("Edit", "/repo/worktrees/x/claude.LOCAL.md"),
+    ("Write", "/Users/x/.claude/./tower/rules/a.md"),
+    ("Write", "/Users/x/.claude//tower/policy.toml"),
 ]
 RULE_FILE_COMMANDS = [
     "echo 'use pytest' >> CLAUDE.local.md",
@@ -361,6 +418,10 @@ RULE_FILE_COMMANDS = [
     'cp /tmp/x "$HOME/.claude/tower.conf"',
     "echo x | tee ~/.claude/tower/policy.toml",
     "cd ~/.claude/tower/rules && echo x >> Poot.md",
+    "echo x >> ~/.claude//tower/rules/a.md",
+    'echo x >> ~/.claude/to""wer/rules/a.md',
+    "cat /tmp/x > ~/.claude/tower.conf",
+    "python3 - <<'EOF'\nopen('/Users/x/.claude/tower.conf', 'w').write('push_approval=none')\nEOF",
 ]
 
 
@@ -375,7 +436,7 @@ def test_edit_of_rule_file_asks(tmp_path: Path, tool: str, file_path: str, push:
 @pytest.mark.parametrize("push", PUSH_MODES)
 @pytest.mark.parametrize("command", RULE_FILE_COMMANDS)
 def test_command_naming_rule_file_asks(tmp_path: Path, command: str, push: str) -> None:
-    """Any Bash command naming a rule file, ~/.claude/tower or tower.conf asks, even one that only reads it."""
+    """A Bash command naming a rule file asks even when it only reads it; one that could write tower.conf asks."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
 
 
@@ -452,10 +513,16 @@ def test_unexpected_input_asks(tmp_path: Path, call: object) -> None:
     assert asks(run_hook(tmp_path, call))
 
 
-def test_crash_asks(tmp_path: Path) -> None:
-    """A crash inside the hook (here, $( ) nested past Python's recursion limit) asks instead of letting the
-    command run."""
+def test_deep_nesting_asks(tmp_path: Path) -> None:
+    """$( ) nested past Python's recursion limit asks instead of crashing."""
     assert asks(run_hook(tmp_path, bash("echo " + "$(" * 600 + "x" + ")" * 600)))
+
+
+def test_crash_asks(tmp_path: Path) -> None:
+    """A crash inside the hook asks instead of letting the command run. Here a tower.conf that isn't UTF-8
+    makes reading the approval modes raise."""
+    (tmp_path / "tower.conf").write_bytes(b"push_approval=\xff\n")
+    assert asks(run_hook(tmp_path, bash("git status"), write_conf=False))
 
 
 def test_command_too_big_to_check_asks_in_time(tmp_path: Path) -> None:
