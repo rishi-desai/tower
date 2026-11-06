@@ -205,3 +205,12 @@ def read_until(fd: int, wanted: bytes, timeout: float = 20) -> bytes:
             return out
         out += chunk
     return out
+
+
+def test_setup_ends_with_tower_doctor_and_a_problem_it_finds_does_not_fail_setup(home: Path) -> None:
+    proc = setup(home, "--profile", "personal")  # --no-plugin: the plugin check can only fail
+
+    assert proc.returncode == 0, proc.stderr
+    report = proc.stdout.split("6. tower doctor", 1)[1]
+    assert "FAIL  plugin" in report and "fix: " in report
+    assert "Fix the problems above" in report

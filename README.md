@@ -52,7 +52,8 @@ gh repo clone rishi-desai/tower ~/Developer/personal/tower
 
 `setup.sh` writes `~/.claude/tower.conf` and the default profile in `~/.claude/tower/policy.toml` (see
 [Policy profiles](#policy-profiles-claudetowerpolicytoml)), creates the worktrees folder and `~/.claude/tower/rules/`, adds `CLAUDE.local.md` to your
-global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, and installs the one plugin:
+global git ignore, refreshes the tower block in `~/.claude/CLAUDE.md`, installs the one plugin, and ends with
+`tower doctor` (below):
 
 ```bash
 claude plugin marketplace add rishi-desai/tower
@@ -243,6 +244,16 @@ PR change.
 | a worktree with `NO CARD` | ask that session to "write your status card", or ask the hub to adopt the repo |
 | no approval prompt before a comment or push | run `tower policy`: the profile may let it through. Otherwise check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
 | prompts for everything, `tower policy: work` | `tower policy` says why: no policy file, or a problem in it (each listed with its line) |
+
+When something isn't working and the cause isn't clear, run `tower doctor` (`uv run tower doctor` from this checkout,
+or `python3 -I <plugin>/scripts/run-tower.py doctor`). It checks each thing tower depends on and, under each problem,
+prints a `fix:` line saying what to run or change: Orca is reachable; `gh` is logged in, inside a repo to an account
+that can push to it; the vault folder (`projects_dir`) exists; the tower plugin is enabled; git-spice and mise run;
+the policy file reads with no problems; `claude agents --json` still parses (its format is undocumented, so a Claude
+Code update that changes it shows here first); and the hooks are firing (an event in the last hour). It changes
+nothing. Orca down, no policy file and no event in the last hour are warnings (the hub has a fallback, or the fact
+can't be known for sure); the rest are problems, and any problem makes it exit 1. `setup.sh` runs it last, and the hub
+runs it when a scan fails.
 
 ## Daily loop
 
@@ -437,7 +448,7 @@ Which profile a repo gets: the `[repos]` pattern matching its `owner/repo`, read
 repos, the stricter value of each key) (an exact name beats a glob; the glob with
 more literal characters beats the others; a tie takes the stricter value of each key), else `default_profile`, else
 `work`. An unknown profile name gives `work`, an invalid value the strictest value of its key, and a file that can't
-be read gives `work` everywhere; `tower policy` lists each problem with its line (and `tower doctor`, T20, will too).
+be read gives `work` everywhere; `tower policy` lists each problem with its line (and so does `tower doctor`).
 The file is read with a small reader for the part of TOML it needs (the hooks run on macOS's Python 3.9, which has no
 TOML library): tables, quoted keys, strings, whole numbers and comments; arrays, inline tables and dotted keys are
 reported, not read.

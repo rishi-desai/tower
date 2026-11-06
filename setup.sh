@@ -23,6 +23,7 @@
 #   4. refreshes the marked block in ~/.claude/CLAUDE.md (original backed up once)
 #   5. adds the tower marketplace and installs the tower plugin (skills, hooks and the pane) with `claude plugin`;
 #      an older install's separate tower-pane plugin is uninstalled, since tower now carries the pane
+#   6. runs `tower doctor`, which checks every dependency and names the fix for each problem (it changes nothing)
 # Orca's CLI can't set the folder Orca creates worktrees in, so the last lines say where to set it in the app.
 
 set -euo pipefail
@@ -45,7 +46,7 @@ while [ $# -gt 0 ]; do
     --worktrees-dir) worktrees_dir="${2:?--worktrees-dir needs a path}"; shift ;;
     --plugin-source) plugin_source="${2:?--plugin-source needs a GitHub repo or path}"; shift ;;
     --no-plugin)     plugin=0 ;;
-    -h|--help)       sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,27p' "$0"; exit 0 ;;
     *)               echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -269,6 +270,17 @@ sys.exit(0 if any(p.get("id") == sys.argv[1] for p in plugins) else 1)' "$1"
   fi
 fi
 
+# ---------- 6. doctor ----------
+if [ "$dry_run" -eq 0 ]; then
+  echo "6. tower doctor: each dependency, and the fix for any problem"
+  # From $HOME: setup is per machine, so gh is checked for a login, not for access to whichever repo this was run in.
+  # A problem is reported with its fix but doesn't fail setup: everything above is done and stays done. pipefail
+  # (set above) makes the pipe fail when doctor does.
+  if ! (cd "$HOME" && TOWER_CONF="$conf" python3 -I "$here/plugin/scripts/run-tower.py" doctor) | sed 's/^/  /'; then
+    echo "  Fix the problems above (each says how), then check again: python3 -I $here/plugin/scripts/run-tower.py doctor"
+  fi
+fi
+
 echo
 if [ -n "$worktrees_dir" ]; then
   # `orca project setup-update --worktree-base-path` exists, but sets one project; the app-wide folder is a setting.
@@ -276,4 +288,5 @@ if [ -n "$worktrees_dir" ]; then
   echo "  Settings > General > Workspace > Workspace Directory: $worktrees_dir"
   echo "  and turn on Nest Workspaces there, so each repo's worktrees get their own subfolder."
 fi
+echo
 if [ "$dry_run" -eq 1 ]; then echo "Dry run: nothing was changed."; else echo "Set up. Restart Claude Code, open a repo, and run /tower:hub (it adopts a messy one first)."; fi
