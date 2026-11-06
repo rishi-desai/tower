@@ -8,25 +8,12 @@ effort: medium
 
 Every worktree keeps one short card describing where its work stands. A separate hub session reads all cards to tell the user what needs them, so the card is the only thing that leaves this session. Write it for someone who has not seen this conversation.
 
-## Where it goes
+## How to write it
 
-Run `scripts/card-path.sh` from this skill's base directory (use its absolute path), from inside the repo. It prints the card's path (in the user's notes vault, outside the repo). Overwrite that file each time; it is the current state, not a log.
-
-Get the timestamp from `date '+%Y-%m-%dT%H:%M'`. Don't write a time from memory.
-
-## Format
-
-The frontmatter block at the top is parsed by the hub's script and shown as properties in Obsidian. Keep its keys and shape exactly; quote values that start with `#`.
+You write only the prose. tower's core fills in the rest (status, ticket, branch, PR, base branch, time) from git and GitHub and writes the card into the user's notes vault, outside the repo. Pipe the sections into the core, from inside the repo; `<plugin>` is two folders up from this skill's base directory (use its absolute path):
 
 ```
----
-status: running | needs-you | waiting-ci | blocked | done
-ticket: "#42"            # or none
-updated: 2026-11-04T14:30
-branch: feat/42-discord-tracker
-pr: "#57"                # or none
----
-
+python3 -I <plugin>/scripts/run-tower.py card write [--status needs-you|blocked --reason "<one line>"] <<'EOF'
 ## Done
 - Up to 3 bullets in plain English: what now works that didn't before.
 
@@ -38,31 +25,32 @@ pr: "#57"                # or none
   A) ... (recommended: why)
   B) ... (trade-off)
 
-## Verify it yourself
+## Verify
 - The one command, URL, or click that proves it works.
 
 ## Words used
-- Define any acronym or project term above that isn't in the repo's GLOSSARY.md (skip if none).
-
-## Files touched
-- path/one, path/two
+- Define any acronym or project term above that isn't in the repo's GLOSSARY.md (leave the section out if none).
+EOF
 ```
+
+It prints the card's path and the status it chose, with why. If it exits 1, it wrote nothing: fix what it says and run it again.
+
+## Status
+
+- Without `--status`, the core decides from this branch's PR: no PR → `running`, open → `waiting-ci`, merged → `done`. You can't claim `done`; merging is what makes a card done.
+- `--status needs-you --reason "..."` only when work truly cannot continue without the user. Then ask the question with the AskUserQuestion tool (the pop-up), recommended option first and labelled "(Recommended)". Don't leave it only in your final text: the user answers in the pop-up, and the tower pane shows the card meanwhile. When they answer, a hook switches the card back to `running`.
+- `--status blocked --reason "..."` when waiting on something other than the user or your own PR (another ticket, a teammate, an outage).
+- `--status running` while you fix a failed check or review on an open PR, so the card doesn't say `waiting-ci` while you work.
+- The ticket is guessed from the branch (`feat-42-x` → #42) or kept from the last card. Pass `--ticket 42` (or `--ticket none`) when that's wrong.
 
 ## Rules
 
 - Under ~30 lines. If you need more, the detail belongs in the PR body; link it.
-- `needs-you` only when work truly cannot continue without the user. Otherwise keep working and leave `running`.
-- When you need a decision: write the card first (status `needs-you`, the question and options under Needs you), then ask it with the AskUserQuestion tool (the pop-up), recommended option first and labelled "(Recommended)". Don't leave the question only in your final text: the user answers in the pop-up, and the tower pane shows the card meanwhile.
-- `waiting-ci` means your work is finished and the PR only waits on CI, a review or a merge, with nothing else for you to do, even while you watch it (babysit-pr, `pr-wait`). Put the PR in `pr:`. It doesn't take a WIP slot, so don't leave such a card on `running`. If CI fails or a review asks for changes, go back to `running` while you fix it.
-- `blocked` means waiting on something other than the user that isn't your own PR's CI or review (another ticket, a teammate, an outage). Say what in Needs you.
-- `done` means merged, or ready for the user to merge with nothing left to wait for, with the PR number in `pr:`.
-- The hub doesn't take a card at its word: a session waiting on the user shows as needs-you, and a busy session beats a needs-you card (the user already answered). Keep the card current anyway; it's what the hub repeats to the user.
 - Name things so a reader of the card alone can follow it: "#44 (the theme and mascot ticket)", not "#44". The hub repeats card text to the user.
 - The card is the short version for the hub. Your final chat message is the full version for the user: same facts, written out in the report format from your CLAUDE.md (What happened, Done, Why it matters, Needs you, Verify), without the card's length limit.
 
 ## Gotchas
 
-- Run the script from inside the repo; outside git it fails.
-- If the script says `projects_dir` is missing, tell the user to run tower's `setup.sh` on this machine. Don't write the card anywhere else; the hub wouldn't find it.
+- If it says `projects_dir` is missing, tell the user to run tower's `setup.sh` on this machine. Don't write the card anywhere else; the hub wouldn't find it.
+- If it warns that GitHub couldn't be asked, the card says `pr: unknown` and stays `running`; mention it in your final message.
 - Don't commit the card. It lives outside the repo on purpose.
-- `ticket: #42` without quotes is a YAML comment, which leaves the field empty in Obsidian. Always quote it.

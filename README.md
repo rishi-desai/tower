@@ -34,7 +34,7 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
                      └─> one screen: Needs you → Blocked → Running → Waiting on CI → Done → Housekeeping → ONE next action
 ```
 
-- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. Its top block is YAML frontmatter, so Obsidian shows the fields as properties.
+- **Status card**: a ~25-line Markdown note per worktree: status (`running`, `needs-you`, `waiting-ci`, `blocked`, `done`), ticket, PR, what's done, why it matters, the one decision it needs from you, how to verify. The worker writes only the prose; tower's core (`tower card write`) fills the top block (YAML frontmatter: `status`, `ticket`, `updated`, `branch`, `pr`, `base`, and `reason` on `needs-you` and `blocked`) from git and GitHub, so Obsidian shows the fields as properties and a card can't say `done` before its PR merges.
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
 - **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR).
@@ -164,7 +164,7 @@ worktree, never on main.
    touches security). Without the kickoff, type those yourself.
 2. It opens the PR: it drafts the title and description and asks before creating it.
 3. It babysits the PR (the kickoff says so; otherwise say **"babysit the PR"**). It watches your repo's checks and review comments, fixes real failures, and asks before every reply or push.
-4. When checks are green, its card says `done` with the PR number. You merge.
+4. When checks are green, its card says `waiting-ci` with the PR number (waiting on your merge). You merge; its next card says `done`.
 
 With `pr_approval=none` in `~/.claude/tower.conf` (per machine; e.g. personal Mac on, work laptop off), steps 2–4
 collapse: once `/code-review` passes, the worker opens the PR and squash-merges it itself after the checks pass,
@@ -258,7 +258,7 @@ description, or you type `/tower:<name>`.
 
 | Skill | Fires when | What it does |
 |---|---|---|
-| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Finds this worktree's card in the vault (`card-path.sh`) and overwrites it with the current state. The card is the short version for the hub; the final chat message is the full version for you. |
+| `tower:status-card` | an agent finishes a chunk, stops for you, gets blocked, or opens/updates a PR | Pipes the card's sections (Done, Why it matters, Needs you, Verify, Words used) into `tower card write`, which picks the status from the branch's PR (none → running, open → waiting-ci, merged → done; the agent may ask for needs-you or blocked with a reason) and overwrites the card in the vault. The card is the short version for the hub; the final chat message is the full version for you. |
 | `tower:hub` | you ask what's going on, what needs you, what's next, to park an idea, or to start a worktree | Runs `hub-scan.sh` (which sorts worktrees into the report groups itself), reports in the fixed order, enforces the WIP limit, discusses ideas into specs (grilling on main, committing nothing) or parks them as GitHub issues (or `Ledger/_backlog.md` without GitHub), picks the next unblocked `ready-for-agent` ticket, and starts it with one `orca worktree create` command on your yes (two paste steps without Orca). Suggests `adopt` when the repo clearly hasn't been adopted. |
 | `tower:adopt` | you want to start tower on a messy, in-flight repo | See [above](#adopting-an-existing-repo). |
 | `tower:project-rules` | you explicitly ask to remember a rule for this project | Adds your rule to `~/.claude/tower/rules/<Project>.md` (asks you) and links it into the worktree's git-ignored `CLAUDE.local.md`. |
@@ -289,8 +289,9 @@ description, or you type `/tower:<name>`.
 - **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
-  answer a session, by typing or in its pop-up, a card that says `needs-you` is switched to `running` (only the
-  `status` and `updated` lines). The session rewrites the rest when it next stops. Without it, a card stayed
+  answer a session, by typing or in its pop-up, a card that says `needs-you` is re-rendered by tower's core as `running` (the
+  answer itself is recorded by the event log hook). The body and the other properties stay; the session rewrites the
+  rest when it next stops. Without it, a card stayed
   needs-you for the whole stretch between your answer and the session's next stop.
 - **The needs-you notification** (`notify-needs-you.py`, a Notification hook): a macOS notification titled with the project and branch ("tower · poot" / "rolly-polly") when a session waits on an approval, a reply you haven't read, or input. The first one may ask you to allow notifications from Script Editor, which is what `osascript` shows up as.
 - **The event log** (`record-event.py`, on SessionStart, UserPromptSubmit, Notification, PostToolUse on

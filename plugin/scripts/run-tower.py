@@ -4,8 +4,8 @@
   python3 -I run-tower.py scan [--no-github]      (or any other `tower` subcommand)
 
 The skills' scripts (hub-scan.sh, adopt-scan.sh, card-path.sh, project-rules.sh) are one-line wrappers around this,
-and the tower pane runs it for `state --json`. Like record-event.py, it reaches tower's core through the
-plugin's `lib/tower` symlink (a marketplace install copies the link's target), so it works under whatever `python3` is
+the tower pane runs it for `state --json`, and the skills run it for `card write`. Like record-event.py, it reaches
+tower's core through the plugin's `lib/tower` symlink (a marketplace install copies the link's target), so it works under whatever `python3` is
 on PATH, 3.9 included. It isn't named tower.py: Python puts this folder first on sys.path, and a tower.py here would
 shadow the package.
 """

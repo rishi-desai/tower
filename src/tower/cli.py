@@ -7,6 +7,8 @@ tower state [--repo PATH] [--json] [--pr]
 tower scan [--no-github]   the hub's view of this repo: state, live sessions, GitHub, backlog (see scan.py)
 tower adopt-scan           facts for bringing an in-flight repo under tower (see adopt.py)
 tower card-path [DIR]      where the worktree holding DIR (default: here) keeps its status card (see ledger.py)
+tower card write [--status running|needs-you|blocked] [--reason TEXT] [--ticket N] [--dir DIR] [--if-absent]
+                           render this worktree's card from facts and the narrative sections on stdin (see card.py)
 tower rules                link this project's personal rules into this worktree; prints the rules file (see rules.py)
 tower stats [--since 14d] [--repo [PATH]]
                            metrics per PR merged in the window, from the event log and GitHub (see stats.py);
@@ -24,7 +26,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import __version__, adopt, events, github, hook_events, ledger, rules, scan, state, stats
+from tower import __version__, adopt, card, events, github, hook_events, ledger, rules, scan, state, stats
 from tower.gitrepo import NotARepo
 
 SINCE_SPAN = re.compile(r"(\d+)([hdw])")
@@ -74,6 +76,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("adopt-scan", help="read-only facts for bringing an in-flight repo under tower")
     card_parser = commands.add_parser("card-path", help="where this worktree's status card lives")
     card_parser.add_argument("dir", nargs="?", type=Path, default=Path("."), help="a folder in the worktree")
+    card_write_parser(commands)
     commands.add_parser("rules", help="link this project's personal rules file into this worktree")
     stats_parser = commands.add_parser("stats", help="metrics per merged PR, from the event log and GitHub")
     stats_parser.add_argument(
@@ -83,6 +86,49 @@ def parser() -> argparse.ArgumentParser:
         "--repo", nargs="?", const=".", metavar="PATH", help="only this checkout's repo (default with no PATH: here)"
     )
     return top
+
+
+def card_write_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The `card write` subcommand's parser, under commands."""
+    card_parser = commands.add_parser("card", help="this worktree's status card, rendered by the core")
+    card_commands = card_parser.add_subparsers(dest="card_command", required=True)
+    write = card_commands.add_parser(
+        "write", help="render the card from facts and the narrative sections on stdin (## Done, ## Needs you, ...)"
+    )
+    write.add_argument(
+        "--status",
+        choices=card.REQUESTS,
+        help="ask for a status: needs-you or blocked (with --reason), or running while fixing an open PR;"
+        " otherwise it comes from the PR (done, waiting-ci or running)",
+    )
+    write.add_argument("--reason", default="", help="why needs-you or blocked, in one line")
+    write.add_argument(
+        "--ticket", help="the ticket, like 42 or #42, or none (default: the last card's, else the branch's)"
+    )
+    write.add_argument("--dir", type=Path, default=Path("."), help="a folder in the worktree (default: here)")
+    write.add_argument(
+        "--if-absent", action="store_true", help="write only if the worktree has no card yet (exit 3 if it has)"
+    )
+
+
+def write_card(args: argparse.Namespace) -> int:
+    """Run `tower card write`: print the card's path and status, warnings on stderr. Exit 1 (writing nothing) when the
+    narrative, a flag, the repo or the ledger is wrong; 3 when --if-absent finds a card."""
+    try:
+        written = card.write_card(
+            args.dir, sys.stdin.read(), args.status, args.reason, args.ticket, if_absent=args.if_absent
+        )
+    except card.CardExists as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 3
+    except (NotARepo, ledger.LedgerError, card.CardError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    for warning in written.warnings:
+        print(f"tower: {warning}", file=sys.stderr)
+    print(written.path)
+    print(f"status: {written.status} ({written.why})")
+    return 0
 
 
 def events_tail(n: int) -> int:
@@ -192,6 +238,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_or_explain(lambda: sys.stdout.write(adopt.adopt_scan(Path("."))))
     if args.command == "card-path":
         return run_or_explain(lambda: print(ledger.card_path(args.dir)))
+    if args.command == "card" and args.card_command == "write":
+        return write_card(args)
     if args.command == "rules":
         return run_or_explain(link_rules)
     if args.command == "stats":
