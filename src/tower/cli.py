@@ -29,7 +29,21 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import __version__, adopt, card, events, github, hook_events, ledger, multirepo, rules, runtime, scan, state, stats
+from tower import (
+    __version__,
+    adopt,
+    card,
+    events,
+    github,
+    hook_events,
+    ledger,
+    multirepo,
+    rules,
+    runtime,
+    scan,
+    state,
+    stats,
+)
 from tower.gitrepo import NotARepo
 
 SINCE_SPAN = re.compile(r"(\d+)([hdw])")
