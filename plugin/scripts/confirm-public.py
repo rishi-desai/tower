@@ -915,16 +915,29 @@ class CommandChecker:
 
     def tower_clean_reasons(self, words: list[Word], index: int) -> list[str]:
         """The reason to ask for the `tower clean` that word INDEX of WORDS (tower or run-tower.py) runs, if it does
-        (a subcommand from a variable may be clean) and cleanup asks. A dry run only checks, so it never asks: the
-        exact --dry-run among clean's options (before any --, which makes the words after it worktree names), with
-        no word from a variable among them (one could be --)."""
+        (a subcommand from a variable may be clean) and cleanup asks. A dry run only checks, so it never asks: tower
+        run as the command itself (bare, from python with only python's switches, or with uv run, so the words after
+        it are all tower's, not another command's as in find -exec ... \\; -exec ... --dry-run), clean right after it,
+        and the exact --dry-run among clean's options (before any --, which makes the words after it worktree
+        names), with no word from a variable among them (one could be --)."""
         position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
         if position is None or not (words[position].dynamic or words[position].text == "clean"):
             return []
-        after = words[position + 1 :]
+        launcher, after = words[program_position(words) : index], words[position + 1 :]
+        direct = (
+            not launcher
+            or [word.text for word in launcher] == ["uv", "run"]
+            or (
+                program_name(launcher[0]).startswith("python")
+                and all(PYTHON_SWITCHES.fullmatch(word.text) for word in launcher[1:])
+            )
+        )
         options = after[: next((i for i, word in enumerate(after) if word.text == "--"), len(after))]
-        dry_run = not any(word.dynamic for word in words[: position + 1] + options) and any(
-            word.text == "--dry-run" for word in options
+        dry_run = (
+            direct
+            and position == index + 1
+            and not any(word.dynamic for word in words[: position + 1] + options)
+            and any(word.text == "--dry-run" for word in options)
         )
         return [] if dry_run or not self.tower_gates().asks("cleanup") else [CLEANUP_REASON]
 

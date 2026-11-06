@@ -19,7 +19,7 @@ it moved, and it says why when it leaves one); the local branch is deleted only 
 commit (`git update-ref -d`), with its upstream settings; its card moves to the Ledger's _archive folder. Live sessions are read again just before each worktree's terminals close, since a removal before it (a stacked
 PR's branch delete waits for GitHub) takes time. When the worktree can't be removed, nothing after it runs; a branch or
 card step that fails is said and makes the run fail, but the others still run. Once every worktree is done, the main
-checkout runs `git pull --ff-only` if any was removed. Git-ignored files (.env, build output) go with the worktree:
+checkout runs `git pull --ff-only` if any was removed; a pull that fails is said, but the cleanup is done by then. Git-ignored files (.env, build output) go with the worktree:
 neither `git status --porcelain` nor `git worktree remove` counts them, so --dry-run says so.
 
 --all takes every worktree but the main checkout whose branch's PR is merged, and says why each other one was left;
@@ -81,7 +81,9 @@ class Target:
 
 
 def run_program(program: str, cwd: Path, timeout: float) -> Run:
-    """A Run for program in cwd with a timeout, never prompting; one that can't start or times out is exit 1."""
+    """A Run for program in cwd with a timeout, never prompting (git asks for no credentials): one that isn't
+    installed is exit 127 and one that times out exit 124, as in a shell; one that can't start otherwise, exit 1."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
 
     def run(args: list[str]) -> GhResult:
         """Run program with args."""
@@ -89,13 +91,18 @@ def run_program(program: str, cwd: Path, timeout: float) -> Run:
             proc = subprocess.run(
                 [program, *args],
                 cwd=cwd,
+                env=env,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except FileNotFoundError:
+            return GhResult(127, "", f"{program} isn't installed")
+        except subprocess.TimeoutExpired:
+            return GhResult(124, "", f"{program} {args[0]} timed out after {timeout:.0f}s")
+        except OSError as error:
             return GhResult(1, "", f"{program} {args[0]} didn't run ({type(error).__name__}: {error})")
         return GhResult(proc.returncode, proc.stdout, proc.stderr)
 
@@ -156,7 +163,7 @@ def clean(
         return False
     managed, orca_error = orca_worktrees(orca)
     if managed is None:
-        say(f"Orca is running but couldn't list its worktrees ({orca_error}), so nothing was removed: run it again")
+        say(f"Orca couldn't say which worktrees it manages ({orca_error}), so nothing was removed: run it again")
         return False
     if dry_run:
         for target in ready:
@@ -168,8 +175,9 @@ def clean(
         via_orca = os.path.realpath(target.worktree.path) in managed
         removed, steps_worked = remove(target, Path(main.path), ledger_folder, via_orca, gh, orca, say, sleep, clock)
         worked, removed_any = worked and steps_worked, removed_any or removed
-    pulled = pull_main(Path(main.path), say) if removed_any else True
-    return all_passed and worked and pulled
+    if removed_any:
+        pull_main(Path(main.path), say)
+    return all_passed and worked
 
 
 def resolve(worktrees: list[GitWorktree], names: list[str], here: Path) -> list[GitWorktree]:
@@ -216,8 +224,11 @@ def check(
     here: Path,
 ) -> Target:
     """Run every check on worktree (none stops the others, so every failure is said) and return what they found."""
-    failures: list[str] = []
     path = Path(worktree.path)
+    if not path.is_dir():  # removed outside tower: git still lists it until it is pruned
+        gone = "its folder is gone (removed outside tower): git worktree prune in the main checkout forgets it"
+        return Target(worktree, None, None, True, None, (), (gone,))
+    failures: list[str] = []
     pr_number, head, pr_failure, pr_known = merged_pr(gh, worktree.branch)
     if pr_failure:
         failures.append(pr_failure)
@@ -227,7 +238,8 @@ def check(
             f"its HEAD ({str(current)[:7] if current else 'unreadable'}) isn't PR #{pr_number}'s head ({head[:7]}),"
             " so the merge may not have every commit"
         )
-    status = git(path, "status", "--porcelain")
+    # Explicit, so status.showUntrackedFiles=no or a submodule setting can't hide a file git worktree remove deletes
+    status = git(path, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
     if status is None:
         failures.append("git couldn't say whether it has uncommitted changes")
     elif status:
@@ -324,10 +336,13 @@ def card_of(worktree: GitWorktree, path: Path, ledger_folder: Path | None, ledge
 
 def orca_worktrees(orca: Run) -> tuple[set[str] | None, str]:
     """The real paths of the worktrees Orca manages: none when Orca isn't running (`orca status --json` isn't ok with
-    result.runtime.reachable), or None and Orca's error when it runs but can't list them (then removing anything with
-    git could leave its terminals open in a deleted folder)."""
-    status, _ = orca_answer(orca(["status", "--json"]))
-    if merge.json_at(status, "runtime", "reachable") is not True:
+    result.runtime.reachable, as the hub decides it), or None and why when Orca times out or runs but can't list them
+    (then removing anything with git could leave its terminals open in a deleted folder)."""
+    asked = orca(["status", "--json"])
+    if asked.code == 124:  # it is there but didn't answer: it may well manage these worktrees
+        return None, merge.gh_reason(asked)
+    status, _ = orca_answer(asked)
+    if merge.json_at(status, "runtime", "reachable") is not True:  # not installed, not started, or not reachable
         return set(), ""
     answer, error = orca_answer(orca(["worktree", "list", "--json"]))
     listed = merge.json_at(answer, "worktrees")
@@ -463,15 +478,14 @@ def archive_card(card: Path, ledger_folder: Path) -> Path:
     return target
 
 
-def pull_main(main: Path, say: Say) -> bool:
-    """git pull --ff-only in the main checkout, so it has the merged work; True when it pulled or has nothing to pull
-    from (no upstream)."""
+def pull_main(main: Path, say: Say) -> None:
+    """git pull --ff-only in the main checkout, so it has the merged work. A pull that fails (local changes in the way,
+    no network) is said, but doesn't fail the cleanup, which is done by then."""
     if git(main, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") is None:
         say(f"the main checkout's branch has no upstream, so nothing was pulled into {main}")
-        return True
+        return
     pulled = run_program("git", main, PULL_TIMEOUT_SECONDS)(["pull", "--ff-only"])
     if pulled.code != 0:
-        say(f"git pull --ff-only in {main} failed: {merge.gh_reason(pulled)}")
-        return False
+        say(f"git pull --ff-only in {main} failed ({merge.gh_reason(pulled)}); the cleanup itself is done")
+        return
     say(f"pulled the merged work into {main} (git pull --ff-only)")
-    return True

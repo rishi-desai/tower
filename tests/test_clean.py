@@ -4,6 +4,7 @@ and FakeOrca standing in for Orca's CLI."""
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,10 +56,13 @@ class FakeOrca:
     known: bool = True  # Orca manages every worktree of the repo
     rm_error: str = ""
     list_error: str = ""  # `orca worktree list` fails with this while Orca runs
+    status_times_out: bool = False
     calls: list[list[str]] = field(default_factory=list)
 
     def __call__(self, args: list[str]) -> GhResult:
         self.calls.append(args)
+        if args[:1] == ["status"] and self.status_times_out:
+            return GhResult(124, "", "orca status timed out after 60s")
         if args[:1] == ["status"]:
             return ok({"ok": True, "result": {"runtime": {"reachable": self.reachable}}})
         if not self.reachable:
@@ -476,7 +480,7 @@ def test_when_orca_runs_but_cant_list_its_worktrees_nothing_is_removed(repo: Fix
     said = run_clean(repo, worker, "feat-1")
 
     assert said[-2:] == [
-        "Orca is running but couldn't list its worktrees (runtime timed out), so nothing was removed: run it again",
+        "Orca couldn't say which worktrees it manages (runtime timed out), so nothing was removed: run it again",
         "result: False",
     ]
     assert_untouched(repo, worker, card_before)
@@ -527,3 +531,61 @@ def test_the_local_branchs_upstream_settings_go_with_it(repo: Fixture) -> None:
     run_clean(repo, worker, "feat-1")
 
     assert "branch.feat-1" not in git(repo.main, "config", "--list", "--local")
+
+
+def test_untracked_files_hidden_by_git_config_still_fail_the_check(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    git(repo.main, "config", "status.showUntrackedFiles", "no")
+    uncommitted_file(repo, worker)
+    card_before = (repo.ledger / "feat-1.md").read_text(encoding="utf-8")
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert "it has 1 uncommitted or untracked file" in said[1]
+    assert_untouched(repo, worker, card_before)
+
+
+def test_an_orca_that_times_out_removes_nothing_rather_than_fall_back_to_git(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    worker.orca.status_times_out = True
+    card_before = (repo.ledger / "feat-1.md").read_text(encoding="utf-8")
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[-2] == (
+        "Orca couldn't say which worktrees it manages (orca status timed out after 60s), so nothing was removed:"
+        " run it again"
+    )
+    assert_untouched(repo, worker, card_before)
+
+
+def test_a_pull_that_fails_is_said_but_the_cleanup_still_counts_as_done(repo: Fixture, tmp_path: Path) -> None:
+    origin = tmp_path / "origin.git"
+    git(repo.main, "clone", "-q", "--bare", str(repo.main), str(origin))
+    git(repo.main, "remote", "add", "origin", str(origin))
+    git(repo.main, "fetch", "-q", "origin")
+    git(repo.main, "branch", "-q", "--set-upstream-to=origin/main")
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "local only")  # main has diverged from origin
+    elsewhere = tmp_path / "elsewhere"
+    git(tmp_path, "clone", "-q", str(origin), str(elsewhere))
+    git(elsewhere, "commit", "-q", "--allow-empty", "-m", "the squash merge")
+    git(elsewhere, "push", "-q", "origin", "main")
+    worker = merged_worker(repo)
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[-1] == "result: True"
+    assert said[-2].startswith(f"git pull --ff-only in {repo.main} failed (")
+    assert said[-2].endswith("); the cleanup itself is done")
+
+
+def test_a_worktree_whose_folder_is_gone_says_how_to_forget_it(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    shutil.rmtree(worker.path)
+
+    listed = run_clean(repo, worker, every=True)
+    named = run_clean(repo, worker, "feat-1")
+
+    hint = "its folder is gone (removed outside tower): git worktree prune in the main checkout forgets it"
+    assert listed == [f"feat-1: skipped, {hint}", "no worktree has a merged PR, so nothing to clean up", "result: True"]
+    assert named == ["feat-1: left as it is, since 1 check(s) failed:", f"  - {hint}", "result: False"]

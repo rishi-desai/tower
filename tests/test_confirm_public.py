@@ -707,7 +707,15 @@ POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bo
     ("cleanup: only the exact --dry-run is a dry run", "tower clean --dry --all", None, *ASKS),
     ("cleanup: --dry-run after -- is a worktree name", "tower clean -- --dry-run", None, *ASKS),
     ("cleanup: --dry-run from a variable", 'tower clean "$FLAG" --all', None, *ASKS),
+    (
+        "cleanup: a --dry-run of another command after it",
+        "find . -exec tower clean --all \\; -exec true --dry-run \\;",
+        None,
+        *ASKS,
+    ),
+    ("cleanup: a --dry-run tower doesn't run as itself", "xargs tower clean --dry-run", None, *ASKS),
     ("local: tower clean --dry-run", f"{T} clean --dry-run --all", None, *NEVER),
+    ("local: tower clean --dry-run with uv run", "uv run tower clean --dry-run --all", None, *NEVER),
     ("local: tower clean --dry-run of one worktree", "tower clean feat-1 --dry-run", None, *NEVER),
     ("local: echo tower clean", "echo tower clean --all", None, *NEVER),
     # a stacked PR lands on its stack's base (GitHub merges every PR below it too), whatever its own base says
