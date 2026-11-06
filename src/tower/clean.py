@@ -13,16 +13,17 @@ worktree exactly as it was:
 
 Then, in this order: its terminals are closed and the worktree removed through Orca (`orca terminal close --all`,
 `orca worktree rm`, never forced), or with `git worktree remove` (never forced) when Orca isn't running or doesn't
-manage it; the local branch is deleted only if it still points at the checked commit (`git update-ref -d`); its branch
-on GitHub is deleted by tower merge's rules (merge.delete_head_branch: never while open PRs are based on it, never an
-integration branch, never once it moved, and it says why when it leaves one); its card moves to the Ledger's _archive
-folder. Live sessions are read again just before each worktree's terminals close, since a removal before it (a stacked
+manage it (Orca running but unable to list its worktrees removes nothing); its branch on GitHub is deleted by tower
+merge's rules (merge.delete_head_branch: never while open PRs are based on it, never an integration branch, never once
+it moved, and it says why when it leaves one); the local branch is deleted only if it still points at the checked
+commit (`git update-ref -d`), with its upstream settings; its card moves to the Ledger's _archive folder. Live sessions are read again just before each worktree's terminals close, since a removal before it (a stacked
 PR's branch delete waits for GitHub) takes time. When the worktree can't be removed, nothing after it runs; a branch or
 card step that fails is said and makes the run fail, but the others still run. Once every worktree is done, the main
 checkout runs `git pull --ff-only` if any was removed. Git-ignored files (.env, build output) go with the worktree:
 neither `git status --porcelain` nor `git worktree remove` counts them, so --dry-run says so.
 
---all takes every worktree but the main checkout whose branch's PR is merged, and says why each other one was left.
+--all takes every worktree but the main checkout whose branch's PR is merged, and says why each other one was left;
+one whose PR GitHub couldn't be asked about fails its check instead of being skipped.
 --dry-run runs every check and says what would be removed, touching nothing. tower clean never asks: the approval hook
 (plugin/scripts/confirm-public.py) judges it by the policy's cleanup key, so under "ask" the hub shows --dry-run's list
 and the real run asks once (docs/adr/0006-tower-clean-checks-then-removes-and-the-hook-judges-it.md).
@@ -62,11 +63,13 @@ class CleanError(Exception):
 @dataclass(frozen=True)
 class Target:
     """One worktree tower clean was asked about, with what its checks found. failures is empty when every check
-    passed. pr_number and head are the merged PR's, None when there is none."""
+    passed. pr_number and head are the merged PR's, None when there is none; pr_known is False when GitHub couldn't
+    say (so --all can't call it unfinished)."""
 
     worktree: GitWorktree
     pr_number: int | None
     head: str | None
+    pr_known: bool
     card: Path | None  # the card file, when there is one
     idle_sessions: tuple[str, ...]
     failures: tuple[str, ...]
@@ -132,10 +135,10 @@ def clean(
     ledger_folder, ledger_note = ledger_for(Path(main.path))
     targets = [check(w, gh, live, live_note, ledger_folder, ledger_note, here) for w in chosen]
     if every:
-        for target in targets:
-            if target.pr_number is None:  # not finished: say why it is left, without listing it as a failure
-                say(f"{target.label}: skipped, {target.failures[0]}")
-        targets = [t for t in targets if t.pr_number is not None]
+        unfinished = [t for t in targets if t.pr_known and t.pr_number is None]
+        for target in unfinished:  # say why each is left, without listing it as a failure
+            say(f"{target.label}: skipped, {target.failures[0]}")
+        targets = [t for t in targets if t not in unfinished]
         if not targets:
             say("no worktree has a merged PR, so nothing to clean up")
             return True
@@ -151,15 +154,19 @@ def clean(
     ready = [t for t in targets if not t.failures]
     if not ready:
         return False
-    use_orca = orca_running(orca)
+    managed, orca_error = orca_worktrees(orca)
+    if managed is None:
+        say(f"Orca is running but couldn't list its worktrees ({orca_error}), so nothing was removed: run it again")
+        return False
     if dry_run:
         for target in ready:
-            say(f"{target.label}: would {plan(target, use_orca)}")
+            say(f"{target.label}: would {plan(target, os.path.realpath(target.worktree.path) in managed)}")
         say(f"would then run git pull --ff-only in {main.path}")
         return all_passed
     worked, removed_any = True, False
     for target in ready:  # every one, even after one fails: each worktree is independent
-        removed, steps_worked = remove(target, Path(main.path), ledger_folder, use_orca, gh, orca, say, sleep, clock)
+        via_orca = os.path.realpath(target.worktree.path) in managed
+        removed, steps_worked = remove(target, Path(main.path), ledger_folder, via_orca, gh, orca, say, sleep, clock)
         worked, removed_any = worked and steps_worked, removed_any or removed
     pulled = pull_main(Path(main.path), say) if removed_any else True
     return all_passed and worked and pulled
@@ -211,7 +218,7 @@ def check(
     """Run every check on worktree (none stops the others, so every failure is said) and return what they found."""
     failures: list[str] = []
     path = Path(worktree.path)
-    pr_number, head, pr_failure = merged_pr(gh, worktree.branch)
+    pr_number, head, pr_failure, pr_known = merged_pr(gh, worktree.branch)
     if pr_failure:
         failures.append(pr_failure)
     current = git(path, "rev-parse", "HEAD")
@@ -240,21 +247,29 @@ def check(
         failures.append(f"{live_note}, so a session busy or waiting there can't be ruled out")
     else:
         for session in live.get(os.path.realpath(worktree.path), []):
-            if session.activity == "idle":
-                idle.append(session.name)
+            blocker = session_blocker(session)
+            if blocker:
+                failures.append(blocker)
             else:
-                doing = "is busy" if session.activity == "busy" else "is waiting on you"
-                failures.append(f"session {session.name} {doing} there")
+                idle.append(session.name)
     if sessions.owning_worktree(os.path.realpath(here), [os.path.realpath(worktree.path)]):
         failures.append("tower clean is running inside it: run it from the main checkout")
-    return Target(worktree, pr_number, head, card, tuple(idle), tuple(failures))
+    return Target(worktree, pr_number, head, pr_known, card, tuple(idle), tuple(failures))
 
 
-def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str]:
-    """The branch's merged PR (its number and head commit), or why there is none to go by. An open PR on the branch
-    means work goes on; of several merged ones (a reused branch), the newest counts."""
+def session_blocker(session: state.Session) -> str:
+    """Why a live session stops cleanup: it is busy or waiting on you; "" when it is idle."""
+    if session.activity == "idle":
+        return ""
+    return f"session {session.name} {'is busy' if session.activity == 'busy' else 'is waiting on you'} there"
+
+
+def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str, bool]:
+    """The branch's merged PR (its number and head commit), or why there is none to go by, and whether GitHub said
+    (False when it couldn't be read). An open PR on the branch means work goes on; of several merged ones (a reused
+    branch), the newest counts."""
     if branch is None:
-        return None, None, "it is on a detached HEAD, so it has no branch or PR"
+        return None, None, "it is on a detached HEAD, so it has no branch or PR", True
     listed = gh(
         ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,headRefOid,isCrossRepository"]
     )
@@ -263,20 +278,20 @@ def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str]:
     except ValueError:
         found = None
     if not isinstance(found, list):
-        return None, None, f"couldn't read {branch}'s PR from GitHub ({merge.gh_reason(listed)})"
+        return None, None, f"couldn't read {branch}'s PR from GitHub ({merge.gh_reason(listed)})", False
     pulls = [p for p in found if isinstance(p, dict) and isinstance(p.get("number"), int)]
     pulls = [p for p in pulls if not p.get("isCrossRepository")]  # a fork's same-named branch isn't this one
     opened = [p["number"] for p in pulls if p.get("state") == "OPEN"]
     if opened:
-        return None, None, f"PR #{opened[0]} on {branch} is open, not merged"
+        return None, None, f"PR #{opened[0]} on {branch} is open, not merged", True
     merged = sorted((p for p in pulls if p.get("state") == "MERGED"), key=lambda p: int(p["number"]))
     if not merged:
-        return None, None, f"{branch} has no merged PR"
+        return None, None, f"{branch} has no merged PR", True
     newest = merged[-1]
     head = newest.get("headRefOid")
     if not isinstance(head, str) or not state.COMMIT_ID.fullmatch(head):
-        return None, None, f"GitHub didn't give PR #{newest['number']}'s head commit"
-    return int(newest["number"]), head, ""
+        return None, None, f"GitHub didn't give PR #{newest['number']}'s head commit", False
+    return int(newest["number"]), head, "", True
 
 
 def stash_entries(path: Path, branch: str | None) -> list[str] | None:
@@ -307,10 +322,19 @@ def card_of(worktree: GitWorktree, path: Path, ledger_folder: Path | None, ledge
     return card_file, ""
 
 
-def orca_running(orca: Run) -> bool:
-    """Whether Orca's runtime answers (`orca status --json`: ok, and result.runtime.reachable)."""
-    answer, _ = orca_answer(orca(["status", "--json"]))
-    return merge.json_at(answer, "runtime", "reachable") is True
+def orca_worktrees(orca: Run) -> tuple[set[str] | None, str]:
+    """The real paths of the worktrees Orca manages: none when Orca isn't running (`orca status --json` isn't ok with
+    result.runtime.reachable), or None and Orca's error when it runs but can't list them (then removing anything with
+    git could leave its terminals open in a deleted folder)."""
+    status, _ = orca_answer(orca(["status", "--json"]))
+    if merge.json_at(status, "runtime", "reachable") is not True:
+        return set(), ""
+    answer, error = orca_answer(orca(["worktree", "list", "--json"]))
+    listed = merge.json_at(answer, "worktrees")
+    if not isinstance(listed, list):
+        return None, error or "its answer had no worktree list"
+    paths = [item.get("path") for item in listed if isinstance(item, dict)]
+    return {os.path.realpath(p) for p in paths if isinstance(p, str)}, ""
 
 
 def orca_answer(result: GhResult) -> tuple[dict[str, object] | None, str]:
@@ -323,18 +347,12 @@ def orca_answer(result: GhResult) -> tuple[dict[str, object] | None, str]:
     return None, str(message) if message else merge.gh_reason(result)
 
 
-def orca_manages(orca: Run, path: str) -> bool:
-    """Whether Orca lists path among its worktrees."""
-    answer, _ = orca_answer(orca(["worktree", "list", "--json"]))
-    listed = merge.json_at(answer, "worktrees")
-    paths = [item.get("path") for item in listed if isinstance(item, dict)] if isinstance(listed, list) else []
-    return os.path.realpath(path) in {os.path.realpath(p) for p in paths if isinstance(p, str)}
-
-
-def plan(target: Target, use_orca: bool) -> str:
-    """What removing target does, for --dry-run."""
+def plan(target: Target, via_orca: bool) -> str:
+    """What removing target does, for --dry-run: through Orca when it manages the worktree, else with git."""
     branch = target.worktree.branch
-    how = "close its terminals and remove it through Orca" if use_orca else "remove it with git worktree remove"
+    how = "close its terminals and remove it through Orca" if via_orca else "remove it with git worktree remove"
+    if target.idle_sessions and not via_orca:
+        how += f" (Orca doesn't manage it, so session(s) {', '.join(target.idle_sessions)} stay open there)"
     card = f", and archive its card {target.card.name}" if target.card else ""
     return (
         f"{how} ({target.worktree.path}, git-ignored files included), delete {branch} here and on GitHub (when"
@@ -346,19 +364,26 @@ def remove(
     target: Target,
     main: Path,
     ledger_folder: Path | None,
-    use_orca: bool,
+    via_orca: bool,
     gh: Gh,
     orca: Run,
     say: Say,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
 ) -> tuple[bool, bool]:
-    """Remove one worktree that passed every check, saying each step: whether the worktree was removed, and whether
-    every step worked. When the worktree can't be removed, nothing after it runs."""
+    """Remove one worktree that passed every check (through Orca when via_orca), saying each step: whether the
+    worktree was removed, and whether every step worked. When the worktree can't be removed, nothing after it runs."""
     label, path, branch = target.label, target.worktree.path, str(target.worktree.branch)
-    if not remove_worktree(target, main, use_orca, orca, say):
+    if not remove_worktree(target, main, via_orca, orca, say):
         return False, False
     worked = True
+    try:
+        pull = merge.find_pull(target.pr_number, gh)
+    except merge.MergeError as error:
+        say(f"{label}: left {branch} on GitHub: {error}")
+        worked = False
+    else:
+        worked = merge.delete_head_branch(pull, gh, lambda line: say(f"{label}: {line}"), sleep, clock) and worked
     tip = git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     if tip is None:
         say(f"{label}: the local branch is already gone")
@@ -366,21 +391,15 @@ def remove(
         say(f"{label}: kept the local branch {branch}: it no longer points at {str(target.head)[:7]}")
         worked = False
     else:
+        git(main, "config", "--remove-section", f"branch.{branch}")  # its upstream; fails only when it has none
         say(f"{label}: deleted the local branch {branch}")
-    try:
-        pull = merge.find_pull(target.pr_number, gh)
-    except merge.MergeError as error:
-        say(f"{label}: left {branch} on GitHub: {error}")
-        worked = False
-    else:
-        merge.delete_head_branch(pull, gh, lambda line: say(f"{label}: {line}"), sleep, clock)
     if target.card is not None and ledger_folder is not None:
         try:
             say(f"{label}: archived its card to {archive_card(target.card, ledger_folder)}")
         except OSError as error:
             say(f"{label}: couldn't archive its card {target.card} ({error.strerror or type(error).__name__})")
             worked = False
-    if target.idle_sessions and not use_orca:
+    if target.idle_sessions and not via_orca:
         say(f"{label}: session(s) {', '.join(target.idle_sessions)} still open in {path}, which is gone: close them")
     return True, worked
 
@@ -391,13 +410,11 @@ def busy_now(path: str) -> str:
     listed, live_note = sessions.read_agents()
     if listed is None:
         return f"{live_note}, so a session busy or waiting there can't be ruled out"
-    for session in state.live_sessions(listed, [os.path.realpath(path)]).get(os.path.realpath(path), []):
-        if session.activity != "idle":
-            return f"session {session.name} {'is busy' if session.activity == 'busy' else 'is waiting on you'} there"
-    return ""
+    found = state.live_sessions(listed, [os.path.realpath(path)]).get(os.path.realpath(path), [])
+    return next((blocker for blocker in map(session_blocker, found) if blocker), "")
 
 
-def remove_worktree(target: Target, main: Path, use_orca: bool, orca: Run, say: Say) -> bool:
+def remove_worktree(target: Target, main: Path, via_orca: bool, orca: Run, say: Say) -> bool:
     """Close the worktree's terminals and remove it through Orca when Orca manages it, else with git worktree
     remove; neither is forced, so either refuses a worktree that changed since the checks. True once git no longer
     lists it."""
@@ -406,7 +423,7 @@ def remove_worktree(target: Target, main: Path, use_orca: bool, orca: Run, say: 
     if busy:
         say(f"{label}: left as it is: {busy} now")
         return False
-    if use_orca and orca_manages(orca, path):
+    if via_orca:
         _, error = orca_answer(orca(["terminal", "close", "--worktree", f"path:{path}", "--all", "--json"]))
         if error:
             say(f"{label}: left as it is: Orca couldn't close its terminals ({error})")

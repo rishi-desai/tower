@@ -18,11 +18,16 @@ from tower.merge import GhResult
 
 @dataclass
 class CleanGitHub(FakeGitHub):
-    """FakeGitHub that also answers `gh pr list --head BRANCH`, as tower clean asks for a worktree's PR."""
+    """FakeGitHub that also answers `gh pr list --head BRANCH`, as tower clean asks for a worktree's PR (or fails it
+    with pr_list_error)."""
+
+    pr_list_error: str = ""
 
     def __call__(self, args: list[str]) -> GhResult:
         if args[:2] == ["pr", "list"]:
             self.calls.append(args)
+            if self.pr_list_error:
+                return GhResult(1, "", self.pr_list_error)
             head = args[args.index("--head") + 1]
             return ok(
                 [
@@ -49,6 +54,7 @@ class FakeOrca:
     reachable: bool = True
     known: bool = True  # Orca manages every worktree of the repo
     rm_error: str = ""
+    list_error: str = ""  # `orca worktree list` fails with this while Orca runs
     calls: list[list[str]] = field(default_factory=list)
 
     def __call__(self, args: list[str]) -> GhResult:
@@ -57,6 +63,8 @@ class FakeOrca:
             return ok({"ok": True, "result": {"runtime": {"reachable": self.reachable}}})
         if not self.reachable:
             return GhResult(1, "", "orca runtime isn't reachable")
+        if args[:2] == ["worktree", "list"] and self.list_error:
+            return ok({"ok": False, "error": {"code": "timeout", "message": self.list_error}})
         if args[:2] == ["worktree", "list"]:
             paths = git(self.main, "worktree", "list", "--porcelain").split("\n")
             listed = [{"path": line[len("worktree ") :]} for line in paths if line.startswith("worktree ")]
@@ -458,3 +466,64 @@ def test_a_session_that_turns_busy_after_the_checks_keeps_its_worktree(repo: Fix
     assert "feat-1: left as it is: session w1 is busy there now" in said
     assert not any("git pull" in line or "nothing was pulled" in line for line in said)  # nothing removed
     assert_untouched(repo, worker, card_before)
+
+
+def test_when_orca_runs_but_cant_list_its_worktrees_nothing_is_removed(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    worker.orca.list_error = "runtime timed out"
+    card_before = (repo.ledger / "feat-1.md").read_text(encoding="utf-8")
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[-2:] == [
+        "Orca is running but couldn't list its worktrees (runtime timed out), so nothing was removed: run it again",
+        "result: False",
+    ]
+    assert_untouched(repo, worker, card_before)
+
+
+def test_a_worktree_orca_doesnt_manage_names_its_idle_sessions_before_and_after(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    worker.orca.known = False
+    repo.sessions(interactive("w1", worker.path, "idle"))
+
+    planned = run_clean(repo, worker, "feat-1", dry_run=True)
+    said = run_clean(repo, worker, "feat-1")
+
+    assert "(Orca doesn't manage it, so session(s) w1 stay open there)" in planned[1]
+    assert f"feat-1: session(s) w1 still open in {worker.path}, which is gone: close them" in said
+
+
+def test_a_branch_github_couldnt_delete_fails_the_run_after_the_rest_is_done(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    worker.github.settings_fail = True  # so whether deleting it is safe can't be read
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[-1] == "result: False"
+    assert "feat-1" in worker.github.branches
+    assert str(worker.path) not in worktree_paths(repo) and not branch_exists(repo, "feat-1")
+    assert (repo.ledger / "_archive" / "feat-1.md").exists()
+
+
+def test_all_fails_a_worktree_whose_pr_github_couldnt_be_asked_about_instead_of_skipping_it(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    worker.github.pr_list_error = "gh: not logged in"
+
+    said = run_clean(repo, worker, every=True)
+
+    assert said[:2] == [
+        "feat-1: left as it is, since 1 check(s) failed:",
+        "  - couldn't read feat-1's PR from GitHub (gh: not logged in)",
+    ]
+    assert said[-1] == "result: False"
+
+
+def test_the_local_branchs_upstream_settings_go_with_it(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    git(repo.main, "config", "branch.feat-1.remote", "origin")
+    git(repo.main, "config", "branch.feat-1.merge", "refs/heads/feat-1")
+
+    run_clean(repo, worker, "feat-1")
+
+    assert "branch.feat-1" not in git(repo.main, "config", "--list", "--local")
