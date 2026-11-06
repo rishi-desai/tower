@@ -219,12 +219,12 @@ def gather(
     repo_dir: Path,
     with_pr: bool = False,
     now: float | None = None,
-    agents: tuple[list[object] | None, str] | None = None,
+    agents_read: tuple[list[object] | None, str] | None = None,
 ) -> Report:
     """Gather every fact about repo_dir's worktrees and decide each one's effective state.
 
-    Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR. agents is
-    sessions.read_agents()'s result when the caller already has it (`tower state --all` reads it once for every repo);
+    Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR. agents_read
+    is sessions.read_agents()'s result (the list, or None and why) when the caller already has it (`tower state --all` reads it once for every repo);
     None reads it here.
     """
     now = time.time() if now is None else now
@@ -243,7 +243,7 @@ def gather(
         notes.append(ledger_note)
 
     paths = [os.path.realpath(w.path) for w in worktrees]
-    listed, live_note = sessions.read_agents() if agents is None else agents
+    listed, live_note = sessions.read_agents() if agents_read is None else agents_read
     live = None if listed is None else live_sessions(listed, paths)
     sessions_source = "live"
     if live is None:

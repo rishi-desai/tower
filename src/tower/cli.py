@@ -69,9 +69,9 @@ def parser() -> argparse.ArgumentParser:
     tail = events_commands.add_parser("tail", help="print the last events of this month's log as JSON lines")
     tail.add_argument("-n", type=non_negative_int, default=10, help="how many events (default 10)")
     state_parser = commands.add_parser("state", help="each worktree's effective state: one truth for hub, pane and WIP")
-    which = state_parser.add_mutually_exclusive_group()
-    which.add_argument("--repo", type=Path, default=Path("."), help="any folder in the repo (default: here)")
-    which.add_argument(
+    repo_scope = state_parser.add_mutually_exclusive_group()
+    repo_scope.add_argument("--repo", type=Path, default=Path("."), help="any folder in the repo (default: here)")
+    repo_scope.add_argument(
         "--all", action="store_true", help="every repo in the event log or with a Ledger folder in the vault"
     )
     state_parser.add_argument("--json", action="store_true", help="print JSON instead of the hub's text sections")
@@ -256,10 +256,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "events" and args.events_command == "tail":
         return events_tail(args.n)
-    if args.command == "state" and args.all:
-        return show_all_states(args.json, args.pr)
     if args.command == "state":
-        return show_state(args.repo, args.json, args.pr)
+        return show_all_states(args.json, args.pr) if args.all else show_state(args.repo, args.json, args.pr)
     if args.command == "scan":
         return run_or_explain(lambda: sys.stdout.write(scan.hub_scan(Path("."), github=not args.no_github)))
     if args.command == "adopt-scan":

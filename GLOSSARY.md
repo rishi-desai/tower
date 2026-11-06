@@ -36,8 +36,9 @@ The machine-wide, append-only record of every event across all repos. Events are
 _Avoid_: history, audit log
 
 **Known repo**:
-A repo `tower state --all` covers: one with events in this machine's event log, or a Ledger folder in this machine's
-vault. A Ledger folder no logged checkout maps to is listed as cards only (what its cards claim, no worktree facts).
+A repo `tower state --all` covers: one with events in this machine's event log, the repo it runs in, or a Ledger
+folder in this machine's vault. A Ledger folder with cards that no such checkout maps to is listed as cards only (what
+its cards claim, no worktree facts).
 _Avoid_: tracked repo, project (that is the vault folder, which can be named differently)
 
 **Effective state**:

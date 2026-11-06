@@ -87,6 +87,8 @@ def test_a_repo_mapped_to_a_renamed_project_claims_that_ledger(
     only, and the repo's report reads its cards."""
     renamed = repo.ledger.parent.parent / "Renamed" / "Ledger"
     renamed.mkdir(parents=True)
+    (renamed / "feat-1.md").write_text("---\nstatus: running\n---\n", encoding="utf-8")
+    (repo.ledger / "old.md").write_text("---\nstatus: done\n---\n", encoding="utf-8")
     conf = repo.ledger.parents[2] / "tower.conf"
     conf.write_text(conf.read_text(encoding="utf-8") + "project.repo=Renamed\n", encoding="utf-8")
     log_event(repo, repo.main)
@@ -190,7 +192,7 @@ def test_with_no_log_and_no_vault_it_says_there_is_nothing(
     assert cli.main(["state", "--all"]) == 0
     out = capsys.readouterr().out
 
-    assert "(none: no repo in the event log and no Ledger folder in the vault)" in out
+    assert "(none: no repo in the event log and no Ledger folder with cards in the vault)" in out
     assert "NOTE: no projects_dir in" in out
 
 
@@ -210,3 +212,34 @@ def test_the_repo_it_runs_in_is_known_even_before_any_event(repo: Fixture, capsy
     result = state_all(capsys)
 
     assert [r["repo"] for r in listed(result, "repos")] == ["repo"]
+
+
+def test_a_needs_you_card_with_no_checkout_ranks_above_a_calm_repo_and_empty_ledgers_are_left_out(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_event(repo, repo.main)
+    work = repo.ledger.parents[1] / "work-proj" / "Ledger"
+    work.mkdir(parents=True)
+    (work / "feat__9.md").write_text("---\nstatus: needs-you\n---\n", encoding="utf-8")
+    (repo.ledger.parents[1] / "empty-proj" / "Ledger").mkdir(parents=True)
+
+    assert cli.main(["state", "--all"]) == 0
+    text = capsys.readouterr().out
+
+    summary = section(text, "== ALL REPOS")
+    assert summary[0] == f"- work-proj | cards only: 1 card, no checkout in the event log | needs-you: 1 | {work}"
+    assert summary[1].startswith("- repo | needs-you: 0 |")
+    assert "empty-proj" not in text
+    assert text.index("== CARDS ONLY: work-proj") < text.index("== REPO: repo")
+
+
+def test_an_unreadable_config_is_noted_once(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    folder_as_conf = repo.agents_json.parent / "conf-dir"
+    folder_as_conf.mkdir()
+    monkeypatch.setenv("TOWER_CONF", str(folder_as_conf))
+
+    notes = listed(state_all(capsys), "notes")
+
+    assert sum("Ledger folders weren't looked for" in note for note in notes) == 1
