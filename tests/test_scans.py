@@ -338,6 +338,15 @@ def test_one_worktree_without_a_card_isnt_a_reason_to_adopt(repo: Fixture, capsy
     assert adopt_line(capsys) == "ADOPT: no"
 
 
+def test_an_unreadable_card_isnt_a_missing_one(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """A card the vault won't hand over (permissions, an iCloud file not downloaded) is unknown, not "no card"."""
+    for branch in ("feat-1", "feat-2"):
+        repo.add_worktree(branch)
+        repo.write_card(branch, "running").chmod(0)
+
+    assert adopt_line(capsys) == "ADOPT: no"
+
+
 def test_scan_says_adopt_when_most_worktrees_have_no_card(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     repo.add_worktree("feat-1")
     repo.add_worktree("feat-2")

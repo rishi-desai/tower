@@ -84,7 +84,7 @@ def main() -> int:
     top = top.strip()
     card = run([sys.executable, "-I", RUN_TOWER, "card-path", top], top)
     if card is None:
-        return 0  # tower isn't set up here (`tower card-path` says why on its own)
+        return 0  # tower isn't set up here, or `tower card-path` failed: unsure, so quiet (see above)
     card = card.strip()
     try:
         card_written = os.stat(card).st_mtime

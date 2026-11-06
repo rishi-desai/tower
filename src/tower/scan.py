@@ -11,9 +11,9 @@ Prints, from anywhere inside the repo:
   6. BACKLOG       parked ideas waiting for a slot (only used when there's no GitHub)
 
 Sections 1, 3 and 4 are `tower state`'s report (state.py, the one place a worktree's status is decided), and section 2
-draws the same `claude agents --json` snapshot, so the hub, the pane (which parses section 1) and the WIP count always
-agree. Each GitHub call that fails prints its real error and the scan goes on. The pane runs this every 30 seconds with
-github=False (`--no-github`).
+draws the same `claude agents --json` snapshot, so the hub, the pane (which reads `tower state --json`) and the WIP count
+always agree. Each GitHub call that fails prints its real error and the scan goes on. The pane runs this only for its
+GitHub section (Refresh GitHub), never on its 30-second refresh.
 """
 
 from __future__ import annotations
@@ -59,15 +59,15 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
 def adopt_line(report: state.Report) -> str:
     """ADOPT: yes, with why, when the repo hasn't been brought under tower yet: most worktrees have no card (at least
     two: one is Housekeeping's "no card"), or the main checkout has uncommitted work or more than one interactive session
-    (the hub is one). Else ADOPT: no."""
+    (the hub is one). Else ADOPT: no. What tower couldn't read (a card, git status, sessions when agent view is
+    unreadable) is never a reason: the hub would plan from facts it doesn't have, and the NOTE lines already say so."""
     reasons: list[str] = []
     worktrees = [facts for facts, _ in report.worktrees if not facts.is_main]
-    no_card = sum(1 for facts in worktrees if facts.card is None)
+    no_card = sum(1 for facts in worktrees if facts.card is None and not facts.card_unreadable)
     if no_card >= 2 and no_card * 2 > len(worktrees):
         reasons.append(f"{no_card} of {len(worktrees)} worktrees have no card")
     roots = {os.path.realpath(facts.path) for facts, _ in report.worktrees}
-    # Same count as `tower adopt-scan`, so a folder that only holds worktrees isn't work on main (#4). Unknown (git
-    # failed) isn't a reason: the hub would plan from facts it doesn't have.
+    # Same count as `tower adopt-scan`, so a folder that only holds worktrees isn't work on main (#4).
     changes, _ = adopt.uncommitted(Path(report.main_checkout), roots)
     if changes:
         reasons.append(f"the main checkout has {state.plural(len(changes), 'uncommitted change')}")

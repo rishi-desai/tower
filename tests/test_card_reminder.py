@@ -8,9 +8,14 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
 from conftest import Fixture
 
 HOOK = Path(__file__).resolve().parent.parent / "plugin" / "scripts" / "card-reminder.py"
+
+# The hook dates a session by its transcript's creation time, which only macOS keeps (st_birthtime); elsewhere it
+# stays quiet by design, so these tests would check nothing there (CI runs on Linux).
+pytestmark = pytest.mark.skipif(not hasattr(os.stat_result, "st_birthtime"), reason="needs st_birthtime (macOS)")
 
 
 def stop(cwd: Path, transcript: Path) -> str:
