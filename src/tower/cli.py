@@ -20,7 +20,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -160,26 +160,23 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
     return 1 if failed else 0
 
 
-def show_scan(args: argparse.Namespace) -> int:
-    """Print the scan, card path or rules path the command asks for; exit 1, saying why, when the repo or the ledger
-    can't be found or the rules can't be linked safely."""
-    here = Path(".")
+def run_or_explain(action: Callable[[], object]) -> int:
+    """Run one scan-family command; exit 1, saying why, when the repo or the ledger can't be found or the rules
+    can't be linked safely (nothing is written then)."""
     try:
-        if args.command == "scan":
-            sys.stdout.write(scan.hub_scan(here, github=not args.no_github))
-        elif args.command == "adopt-scan":
-            sys.stdout.write(adopt.adopt_scan(here))
-        elif args.command == "card-path":
-            print(ledger.card_path(args.dir))
-        else:
-            rules_file, warnings = rules.link_rules(here)
-            for warning in warnings:
-                print(f"tower: {warning}", file=sys.stderr)
-            print(rules_file)
+        action()
     except (NotARepo, ledger.LedgerError, rules.RulesError) as error:
         print(f"tower: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def link_rules() -> None:
+    """Link this project's rules into this worktree and print the rules file, after any warnings."""
+    rules_file, warnings = rules.link_rules(Path("."))
+    for warning in warnings:
+        print(f"tower: {warning}", file=sys.stderr)
+    print(rules_file)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -189,8 +186,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return events_tail(args.n)
     if args.command == "state":
         return show_state(args.repo, args.json, args.pr)
-    if args.command in ("scan", "adopt-scan", "card-path", "rules"):
-        return show_scan(args)
+    if args.command == "scan":
+        return run_or_explain(lambda: sys.stdout.write(scan.hub_scan(Path("."), github=not args.no_github)))
+    if args.command == "adopt-scan":
+        return run_or_explain(lambda: sys.stdout.write(adopt.adopt_scan(Path("."))))
+    if args.command == "card-path":
+        return run_or_explain(lambda: print(ledger.card_path(args.dir)))
+    if args.command == "rules":
+        return run_or_explain(link_rules)
     if args.command == "stats":
         return stats_command(args.since, args.repo)
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable

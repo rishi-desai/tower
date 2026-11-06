@@ -17,6 +17,8 @@ from pathlib import Path
 from tower import ledger
 from tower.gitrepo import git, repo_name
 
+RULES_HOME = Path(".claude") / "tower" / "rules"  # under your home folder; created by setup.sh
+
 
 class RulesError(Exception):
     """The rules can't be linked safely; the message says why and how to fix it. Nothing was written."""
@@ -28,9 +30,9 @@ def link_rules(worktree_dir: Path) -> tuple[Path, list[str]]:
     conf = ledger.read_conf(ledger.conf_path())
     repo = repo_name(worktree_dir)
     project = ledger.project_dir(repo, conf).name  # the same project name the cards use
-    rules_dir = Path.home() / ".claude" / "tower" / "rules"  # created by setup.sh
+    rules_dir = Path.home() / RULES_HOME
     rules_file = rules_dir / f"{project}.md"
-    import_line = f"@~/.claude/tower/rules/{project}.md"
+    import_line = f"@~/{(RULES_HOME / project).as_posix()}.md"
 
     if any(c.isspace() for c in project):
         raise RulesError(

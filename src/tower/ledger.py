@@ -78,10 +78,15 @@ def card_name(branch: str | None, sha: str, repo_dir: Path) -> str:
     return branch.replace("/", "__") + ".md"
 
 
-def card_path(worktree_dir: Path) -> Path:
-    """Where the worktree holding worktree_dir keeps its card; creates the Ledger folder if needed.
-    Raises NotARepo outside a git repo and LedgerError when the ledger can't be found."""
-    ledger = project_dir(repo_name(worktree_dir), read_conf(conf_path())) / "Ledger"
-    branch = git(worktree_dir, "branch", "--show-current")  # "" on a detached HEAD
+def open_ledger(repo_dir: Path) -> Path:
+    """The Ledger folder of the repo holding repo_dir, created if needed. Raises NotARepo outside a git repo and
+    LedgerError when the ledger can't be found."""
+    ledger = project_dir(repo_name(repo_dir), read_conf(conf_path())) / "Ledger"
     ledger.mkdir(parents=True, exist_ok=True)
-    return ledger / card_name(branch, "HEAD", worktree_dir)
+    return ledger
+
+
+def card_path(worktree_dir: Path) -> Path:
+    """Where the worktree holding worktree_dir keeps its card; creates the Ledger folder if needed."""
+    branch = git(worktree_dir, "branch", "--show-current")  # "" on a detached HEAD
+    return open_ledger(worktree_dir) / card_name(branch, "HEAD", worktree_dir)

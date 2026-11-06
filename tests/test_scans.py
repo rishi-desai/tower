@@ -239,6 +239,25 @@ def test_an_untracked_file_next_to_the_nested_worktrees_still_counts(
     assert not any("note:" in row for row in rows)
 
 
+def test_an_untracked_folder_next_to_the_nested_worktrees_counts_once_as_git_shows_it(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """As `git status` shows an untracked folder: one entry, however many files it holds; ignored files don't count."""
+    messy(repo)
+    cache = repo.main / "worktrees" / "cache" / "deep"
+    cache.mkdir(parents=True)
+    for n in range(10):
+        (cache / f"{n}.bin").write_text("x\n", encoding="utf-8")
+    (repo.main / "worktrees" / "logs").mkdir()
+    (repo.main / "worktrees" / "logs" / "run.log").write_text("x\n", encoding="utf-8")
+    (repo.main / ".git" / "info" / "exclude").write_text("*.log\n", encoding="utf-8")
+
+    rows = adopt_rows(capsys)
+
+    assert rows[0].startswith("- [MAIN CHECKOUT] main | no card | uncommitted: 3 |")
+    assert rows[1:4] == ["     M a.txt", "    ?? notes.txt", "    ?? worktrees/cache/"]
+
+
 def test_adopt_scan_lists_eight_changes_and_counts_the_rest(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     for n in range(10):
         (repo.main / f"file {n}.txt").write_text("x\n", encoding="utf-8")

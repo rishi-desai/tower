@@ -32,8 +32,7 @@ def adopt_scan(repo_dir: Path) -> str:
     """The whole scan as text. Raises NotARepo outside a git repo and LedgerError when the ledger can't be found."""
     conf = ledger.read_conf(ledger.conf_path())
     name = repo_name(repo_dir)
-    folder = ledger.project_dir(name, conf) / "Ledger"
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = ledger.open_ledger(repo_dir)
     worktrees = list_worktrees(repo_dir)
     default = default_branch(repo_dir)
     # Compared with origin's copy when there is one, so "ahead" means "not yet on the remote default".
@@ -86,6 +85,8 @@ def worktree_rows(
     except OSError:
         card_state = "card: (unreadable)"
     changes, worktree_folders = uncommitted(path, roots)
+    dirty = "?" if changes is None else str(len(changes))  # git status failed: unknown, not clean
+    changes = changes or []
     counts = (git(path, "rev-list", "--left-right", "--count", f"{base}...HEAD") or "").split()
     behind, ahead = counts if len(counts) == 2 else ("?", "?")
     last = (git(path, "log", "-1", "--format=%cr: %s") or "")[:LAST_COMMIT_CHARS]
@@ -93,7 +94,7 @@ def worktree_rows(
     role = "MAIN CHECKOUT" if is_main else "worktree"
     rows = [
         (
-            f"- [{role}] {worktree.label} | {card_state} | uncommitted: {len(changes)} | ahead {ahead} / behind {behind}"
+            f"- [{role}] {worktree.label} | {card_state} | uncommitted: {dirty} | ahead {ahead} / behind {behind}"
             f" of {base} | last: {last} | ticket guess: {'#' + ticket.group() if ticket else 'none'} | {worktree.path}"
         )
     ]
@@ -108,27 +109,33 @@ def worktree_rows(
             for f in worktree_folders
         ]
     if has_gh and worktree.branch and not is_main:
-        template = "{{range .}}#{{.number}} {{.state}} {{.title}}{{end}}"
-        pr, error = try_gh(repo_dir, "pr", "list", "--head", worktree.branch, "--state", "all", "--limit", "1",
-                           "--json", "number,state,title", "--template", template)  # fmt: skip
-        rows.append(f"    PR: {pr.strip() or 'none'}" if pr is not None else f"    PR: (gh failed: {error})")
+        pr, error = branch_pr(repo_dir, worktree.branch, with_title=True)
+        rows.append(f"    PR: {pr}" if pr is not None else f"    PR: (gh failed: {error})")
     return rows
 
 
-def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str], list[str]]:
-    """The worktree's uncommitted entries as `git status --porcelain` lines (paths unquoted), and the untracked
-    folders left out because they only hold worktrees (roots: every worktree's real path).
+def branch_pr(repo_dir: Path, branch: str, with_title: bool) -> tuple[str | None, str]:
+    """The branch's newest PR as "#N STATE[ title]", "none" when it has none, or None and gh's error."""
+    fields, title = ("number,state,title", " {{.title}}") if with_title else ("number,state", "")
+    template = "{{range .}}#{{.number}} {{.state}}" + title + "{{end}}"
+    found, error = try_gh(repo_dir, "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
+                          "--json", fields, "--template", template)  # fmt: skip
+    return (None, error) if found is None else (found.strip() or "none", "")
 
-    An untracked folder that holds worktrees and other files is listed file by file instead, without the worktrees.
-    """
+
+def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str] | None, list[str]]:
+    """The worktree's uncommitted entries as `git status --porcelain` lines (paths unquoted), or None if git failed;
+    and the untracked folders left out because they only hold worktrees (roots: every worktree's real path)."""
+    entries = status_entries(worktree)
+    if entries is None:
+        return None, []
     changes: list[str] = []
     worktree_folders: list[str] = []
-    for code, path in status_entries(worktree):
+    for code, path in entries:
         if code == "??" and path.endswith("/") and holds_worktree(worktree / path, roots):
-            inside = status_entries(worktree, "--untracked-files=all", "--", path)
-            others = [(c, p) for c, p in inside if not (p.endswith("/") and is_root(worktree / p, roots))]
-            if others:
-                changes += [f"{c} {p}" for c, p in others]
+            beside = untracked_beside_worktrees(worktree, path, roots)
+            if beside:
+                changes += [f"?? {p}" for p in beside]
             else:
                 worktree_folders.append(path)
             continue
@@ -136,11 +143,31 @@ def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str], list[str]]:
     return changes, worktree_folders
 
 
-def status_entries(worktree: Path, *args: str) -> list[tuple[str, str]]:
-    """`git status --porcelain -z` as (XY code, path) pairs; a rename's path is "old -> new". Empty if git fails.
+def untracked_beside_worktrees(worktree: Path, folder: str, roots: set[str]) -> list[str]:
+    """The untracked paths in folder (relative, ending in "/") other than the worktrees in it, as git's normal
+    `git status` would show them: an untracked subfolder is one entry, and ignored files don't show."""
+    paths: list[str] = []
+    pathspecs: list[str] = []
+    for child in sorted(os.listdir(worktree / folder)):
+        inside = worktree / folder / child
+        if is_root(inside, roots):
+            continue
+        if inside.is_dir() and not inside.is_symlink() and holds_worktree(inside, roots):
+            paths += untracked_beside_worktrees(worktree, f"{folder}{child}/", roots)
+        else:
+            pathspecs.append(f"{folder}{child}")
+    if pathspecs:  # one git call: with each child as a pathspec, git groups an untracked folder per child
+        paths += [path for _, path in status_entries(worktree, "--", *pathspecs) or []]
+    return sorted(paths)
+
+
+def status_entries(worktree: Path, *args: str) -> list[tuple[str, str]] | None:
+    """`git status --porcelain -z` as (XY code, path) pairs, or None if git failed; a rename's path is "old -> new".
     Pathspecs in args are literal, so a folder named `[a]*` means only itself."""
     out = git(worktree, "--literal-pathspecs", "status", "--porcelain", "-z", *args)
-    fields = (out or "").split("\0")
+    if out is None:
+        return None
+    fields = out.split("\0")
     entries = []
     i = 0
     while i < len(fields):
@@ -180,15 +207,13 @@ def parked_branches(repo_dir: Path, skip: set[str], base: str, has_gh: bool) -> 
     for branch in (git(repo_dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/") or "").splitlines():
         if branch in skip:
             continue
-        count = git(repo_dir, "rev-list", "--count", f"{base}..{branch}") or "0"
-        if not count.isdigit() or int(count) == 0:
+        count = git(repo_dir, "rev-list", "--count", f"{base}..{branch}") or "?"  # "?": git couldn't compare it
+        if count == "0":
             continue
         pr = ""
         if has_gh:
-            template = "{{range .}}#{{.number}} {{.state}}{{end}}"
-            found, error = try_gh(repo_dir, "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-                                  "--json", "number,state", "--template", template)  # fmt: skip
-            pr = f" | PR: {found.strip() or 'none'}" if found is not None else f" | PR: gh failed: {error}"
+            found, error = branch_pr(repo_dir, branch, with_title=False)
+            pr = f" | PR: {found}" if found is not None else f" | PR: gh failed: {error}"
         last = (git(repo_dir, "log", "-1", "--format=%cr: %s", branch) or "")[:LAST_COMMIT_CHARS]
         rows.append(f"- {branch} | {count} commit(s) not on {base}{pr} | last: {last}")
     return rows

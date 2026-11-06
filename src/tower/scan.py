@@ -22,7 +22,6 @@ from pathlib import Path
 
 from tower import ledger, sessions, state
 from tower.github import try_gh
-from tower.gitrepo import repo_name
 
 PR_TEMPLATE = (
     "{{range .}}- #{{.number}} {{.title}} [{{.headRefName}}] review:"
@@ -34,9 +33,8 @@ ISSUE_TEMPLATE = '{{range .}}- #{{.number}} {{.title}}{{range .labels}} [{{.name
 def hub_scan(repo_dir: Path, github: bool = True) -> str:
     """The whole scan as text. Raises NotARepo outside a git repo and LedgerError when the ledger can't be found:
     a hub without cards would report "nothing needs you"."""
+    folder = ledger.open_ledger(repo_dir)
     conf = ledger.read_conf(ledger.conf_path())
-    folder = ledger.project_dir(repo_name(repo_dir), conf) / "Ledger"
-    folder.mkdir(parents=True, exist_ok=True)
     pr_approval = ledger.conf_get(conf, "pr_approval", "every")
     if pr_approval not in ("every", "none"):
         pr_approval = "every"  # anything else is the safe default, as the approval hook reads it

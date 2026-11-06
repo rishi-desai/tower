@@ -300,7 +300,7 @@ def test_a_pipe_in_a_card_never_splits_a_report_row(repo: Fixture, capsys: pytes
 def test_an_empty_project_mapping_falls_back_to_the_repo_name(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    """As ledger-lib.sh's tower_conf_get does: an empty value means the default."""
+    """As setup.sh reads the config (ledger.conf_get): an empty value means the default."""
     conf = tmp_path / "tower.conf"
     conf.write_text(conf.read_text(encoding="utf-8") + "project.repo=\n", encoding="utf-8")
     assert tower_state(capsys)["ledger"] == str(repo.ledger)
