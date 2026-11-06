@@ -491,3 +491,33 @@ def test_a_tower_conf_that_isnt_utf8_is_a_problem_not_a_crash(home: Path) -> Non
 
     assert gates(effective) == WORK
     assert any("isn't UTF-8" in p for p in effective.problems)
+
+
+@pytest.mark.parametrize(
+    ("conf", "policy_text", "expected"),
+    [
+        (None, None, "work"),
+        ("push_approval=every\npr_approval=every\n", None, "work"),
+        ("push_approval=none\n", None, "migrated"),
+        ("push_approval=none\n", 'default_profile = "sandbox"\n', "sandbox"),
+        (None, "[repos]\n", "work"),
+    ],
+)
+def test_current_default_says_what_setup_would_keep_without_writing(
+    home: Path, conf: str | None, policy_text: str | None, expected: str
+) -> None:
+    if conf is not None:
+        write_conf(home, conf)
+    if policy_text is not None:
+        write_policy(home, policy_text)
+
+    assert policy.current_default() == expected
+    assert (home / "policy.toml").exists() == (policy_text is not None)
+
+
+def test_available_profiles_include_migrated_only_while_it_is_pending(home: Path) -> None:
+    assert policy.available_profiles() == ["personal", "sandbox", "work"]
+    write_conf(home, "pr_approval=none\n")
+    assert policy.available_profiles() == ["migrated", "personal", "sandbox", "work"]
+    write_policy(home, '[profiles.client]\npush = "force"\n')
+    assert policy.available_profiles() == ["client", "personal", "sandbox", "work"]

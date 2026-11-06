@@ -2,17 +2,19 @@
 # setup.sh — sets up tower (parallel Claude Code agents) on THIS machine. Run once per Mac.
 #
 # Usage:
-#   ./setup.sh                    interactive: asks for the projects folder, WIP limit, push and PR approval
+#   ./setup.sh                    interactive: asks for the projects folder, WIP limit and the machine's profile
 #   ./setup.sh --dry-run          show every change it would make; change nothing
-#   ./setup.sh --projects-dir PATH --wip-limit N --push-approval every|force|none   no prompts
-#   --pr-approval every|none      ask before opening/merging PRs (default: keep the current value, else every)
+#   ./setup.sh --projects-dir PATH --wip-limit N --profile work|personal|sandbox   no prompts
+#   --profile NAME                this machine's default approval profile (work: everything asks; personal; sandbox:
+#                                 nothing asks; or one your policy file defines). Default: keep the current one
 #   --plugin-source SRC           where to install the plugin from (default: rishi-desai/tower on GitHub;
 #                                 a local path works for testing before pushing)
 #   --no-plugin                   skip step 5 (e.g. you install the plugin another way)
 #
 # The skills and the approval hook ship as a Claude Code plugin (installed under ~/.claude/plugins,
 # separate from ~/.claude/skills). This script does the per-machine parts. Safe to re-run:
-#   1. writes ~/.claude/tower.conf        projects folder, WIP limit, push and PR approval
+#   1. writes ~/.claude/tower.conf        projects folder and WIP limit
+#      and ~/.claude/tower/policy.toml   the default profile (tower.conf's old push/PR approval migrated first)
 #   2. creates ~/.claude/tower/rules/     personal per-project rules (protected by Claude Code)
 #   3. adds CLAUDE.local.md to your global git ignore, so personal rules are never committed
 #   4. refreshes the marked block in ~/.claude/CLAUDE.md (original backed up once)
@@ -24,18 +26,20 @@ here="$(cd "$(dirname "$0")" && pwd)"     # this checkout of the tower repo
 claude_dir="$HOME/.claude"                # Claude Code's global config folder
 conf="$claude_dir/tower.conf"
 rules_dir="$claude_dir/tower/rules"
+policy_file="${TOWER_DIR:-$claude_dir/tower}/policy.toml"
 
-dry_run=0; projects_dir=""; wip_limit=""; push_approval=""; pr_approval=""; plugin_source="rishi-desai/tower"; plugin=1
+dry_run=0; projects_dir=""; wip_limit=""; profile=""; plugin_source="rishi-desai/tower"; plugin=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)       dry_run=1 ;;
     --projects-dir)  projects_dir="${2:?--projects-dir needs a path}"; shift ;;
     --wip-limit)     wip_limit="${2:?--wip-limit needs a number}"; shift ;;
-    --push-approval) push_approval="${2:?--push-approval needs every, force or none}"; shift ;;
-    --pr-approval)   pr_approval="${2:?--pr-approval needs every or none}"; shift ;;
+    --profile)       profile="${2:?--profile needs work, personal, sandbox or a profile name}"; shift ;;
+    --push-approval|--pr-approval)
+                     echo "$1 was replaced by --profile work|personal|sandbox (README: Policy profiles)" >&2; exit 2 ;;
     --plugin-source) plugin_source="${2:?--plugin-source needs a GitHub repo or path}"; shift ;;
     --no-plugin)     plugin=0 ;;
-    -h|--help)       sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,21p' "$0"; exit 0 ;;
     *)               echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -65,6 +69,10 @@ conf_get() {
   python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; from tower import ledger
 print(ledger.conf_get(ledger.read_conf(Path(sys.argv[2])), sys.argv[3], sys.argv[4]))' "$here/plugin/lib" "$conf" "$1" "${2-}"
 }
+# policy ARGS... — `tower policy ARGS`, run from this checkout's plugin (src/tower/policy.py does the work).
+policy() {
+  python3 -I "$here/plugin/scripts/run-tower.py" policy "$@"
+}
 
 # Suggest the open Obsidian vault + /Projects the first time; afterwards, whatever is saved.
 default_dir="$(conf_get projects_dir)"
@@ -80,8 +88,9 @@ print(open_vaults[0] if open_vaults else "")' 2>/dev/null || true)"
   [ -n "$vault" ] && default_dir="$vault/Projects"
 fi
 default_wip="$(conf_get wip_limit 3)"
-default_push="$(conf_get push_approval every)"
-default_pr="$(conf_get pr_approval every)"
+# The profile as things stand (tower.conf's old push/PR approval count until they're migrated), read without writing.
+default_profile="$(TOWER_CONF="$conf" python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
+print(policy.current_default())' "$here/plugin/lib")"
 
 ask() {   # ask PROMPT DEFAULT -> prints the answer (or the default on Enter)
   local answer
@@ -91,15 +100,16 @@ ask() {   # ask PROMPT DEFAULT -> prints the answer (or the default on Enter)
 }
 [ -n "$projects_dir" ]  || projects_dir="$(ask "Folder holding one subfolder per project (cards go in <Project>/Ledger/)" "$default_dir")"
 [ -n "$wip_limit" ]     || wip_limit="$(ask "WIP limit: worktrees running or needing you at once" "$default_wip")"
-[ -n "$push_approval" ] || push_approval="$(ask "Ask before git push: every | force (force-push only) | none" "$default_push")"
-if [ -z "$pr_approval" ]; then   # newer than the other flags: scripted runs without it keep the current value
-  if [ -t 0 ]; then pr_approval="$(ask "Ask before opening/merging PRs: every | none (workers merge their own)" "$default_pr")"
-  else pr_approval="$default_pr"; fi
+if [ -z "$profile" ]; then   # newer than the other flags: scripted runs without it keep the current profile
+  if [ -t 0 ]; then
+    profile="$(ask "This machine's profile: work (everything asks) | personal (force pushes, merges into main and comments ask) | sandbox (nothing asks)" "$default_profile")"
+  else profile="$default_profile"; fi
 fi
 projects_dir="${projects_dir/#\~/$HOME}"                  # allow ~/... in the answer
 case "$wip_limit" in ''|*[!0-9]*) echo "WIP limit must be a whole number, got '$wip_limit'" >&2; exit 2 ;; esac
-case "$push_approval" in every|force|none) ;; *) echo "push approval must be every, force or none, got '$push_approval'" >&2; exit 2 ;; esac
-case "$pr_approval" in every|none) ;; *) echo "PR approval must be every or none, got '$pr_approval'" >&2; exit 2 ;; esac
+profiles="$(TOWER_CONF="$conf" python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
+print(" ".join(policy.available_profiles()))' "$here/plugin/lib")"
+case " $profiles " in *" $profile "*) ;; *) echo "profile must be one of: $profiles; got '$profile'" >&2; exit 2 ;; esac
 [ -n "$projects_dir" ] || { echo "a projects folder is required" >&2; exit 2; }
 
 if [ ! -d "$projects_dir" ]; then
@@ -111,7 +121,13 @@ if [ ! -d "$projects_dir" ]; then
   run mkdir -p "$projects_dir"
 fi
 
-echo "1. Config: $conf"
+echo "1. Config: $conf, and the profile in $policy_file"
+if [ ! -e "$policy_file" ] && grep -qE '^(push|pr)_approval=' "$conf" 2>/dev/null; then
+  # Before tower.conf is rewritten without them: keep what push_approval/pr_approval did, as a policy file.
+  if [ "$dry_run" -eq 1 ]; then echo "  [dry-run] migrate push_approval/pr_approval from $conf into $policy_file"
+  else TOWER_CONF="$conf" python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from tower import policy
+policy.load()' "$here/plugin/lib"; fi
+fi
 new_conf="$(mktemp)"; trap 'rm -f "$new_conf"' EXIT
 {
   echo "# Per-machine settings for tower. Written by setup.sh; safe to edit."
@@ -119,16 +135,15 @@ new_conf="$(mktemp)"; trap 'rm -f "$new_conf"' EXIT
   echo "projects_dir=$projects_dir"
   echo "# Max worktrees in running or needs-you before the hub suggests parking new ideas."
   echo "wip_limit=$wip_limit"
-  echo "# When git push needs your approval: every | force (force-push/delete only) | none."
-  echo "push_approval=$push_approval"
-  echo "# When opening/editing/merging a PR needs your approval: every | none (workers merge their own PRs)."
-  echo "# Comments, reviews, issue changes and rule-file edits always ask, whatever these say."
-  echo "pr_approval=$pr_approval"
+  echo "# What asks before an agent pushes, merges or writes to GitHub is the profile in $policy_file"
+  echo "# (\`tower policy\` shows it; \`tower policy use <profile>\` changes it). A profile can set its own wip_limit."
   echo "# Optional: map a repo folder name to a differently named project folder, e.g."
   echo "# project.poot=Poot"
   [ -f "$conf" ] && grep '^project\.' "$conf" || true    # keep your existing mappings
 } > "$new_conf"
 if [ "$dry_run" -eq 1 ]; then sed 's/^/  [dry-run] | /' "$new_conf"; else mkdir -p "$claude_dir"; cp "$new_conf" "$conf"; fi
+if [ "$dry_run" -eq 1 ]; then echo "  [dry-run] tower policy use $profile"
+else TOWER_CONF="$conf" policy use "$profile" | sed 's/^/  /'; fi
 
 # ---------- 2. personal rules folder ----------
 echo "2. Rules folder: $rules_dir"

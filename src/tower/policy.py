@@ -223,10 +223,11 @@ class Policy:
         return make_effective(STRICTEST, why, dict(STRICTEST_VALUES), self.machine_wip, self.problems)
 
 
-def load(path: Path | None = None) -> Policy:
+def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
     """Read the policy file (default: policy_path()) and tower.conf. Never raises: what can't be read is a problem.
 
-    With no policy file, tower.conf's old push_approval/pr_approval are migrated into a new one first (see migrate()).
+    With no policy file, tower.conf's old push_approval/pr_approval are migrated into a new one first (see migrate()),
+    unless migrate_conf is False (setup.sh's dry run): then the file counts as missing.
     """
     path = policy_path() if path is None else path
     problems: list[str] = []
@@ -244,7 +245,7 @@ def load(path: Path | None = None) -> Policy:
     try:
         text: str | None = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        text = migrate(path, conf, problems)
+        text = migrate(path, conf, problems) if migrate_conf else None
     except (OSError, UnicodeDecodeError) as error:
         return Policy(path, True, problems=(*problems, f"can't read {shown(path)}"), broken=reason(error))
     if text is None:
@@ -489,14 +490,50 @@ REPOS_EXAMPLE = """
 """
 
 
-def migration_text(conf: dict[str, str], today: date) -> str | None:
-    """A policy file that does exactly what tower.conf's push_approval and pr_approval did, or None if it has
-    neither. Before profiles, comments, reviews and issue writes always asked; an unknown value meant every."""
+def legacy_modes(conf: dict[str, str]) -> tuple[str, str] | None:
+    """tower.conf's old (push_approval, pr_approval), as the approval hook read them (stripped; unknown or missing
+    meant every), or None if it has neither."""
     push, pr = conf.get("push_approval"), conf.get("pr_approval")
     if push is None and pr is None:
         return None
     push_mode = push.strip() if push is not None and push.strip() in LEGACY_PUSH else "every"
     pr_mode = pr.strip() if pr is not None and pr.strip() in LEGACY_PR else "every"
+    return push_mode, pr_mode
+
+
+def current_default() -> str:
+    """This machine's default profile as things stand, without writing anything (for setup.sh's question): the
+    policy file's default_profile; with no file, what migrating tower.conf would make it (work or migrated); else
+    work."""
+    loaded = load(migrate_conf=False)
+    if loaded.exists:
+        return loaded.default_profile or STRICTEST
+    return "migrated" if pending_migration() else STRICTEST
+
+
+def available_profiles() -> list[str]:
+    """Every profile setup.sh may make the default, without writing anything: the built-ins, the policy file's own,
+    and `migrated` when tower.conf's old approvals are still to be migrated into one."""
+    loaded = load(migrate_conf=False)
+    return sorted(set(loaded.profiles) | ({"migrated"} if not loaded.exists and pending_migration() else set()))
+
+
+def pending_migration() -> bool:
+    """Whether tower.conf's old approvals would migrate into a `migrated` profile (anything but every/every)."""
+    try:
+        modes = legacy_modes(ledger.read_conf(ledger.conf_path()))
+    except (ledger.LedgerError, UnicodeDecodeError):
+        return False
+    return modes is not None and modes != ("every", "every")
+
+
+def migration_text(conf: dict[str, str], today: date) -> str | None:
+    """A policy file that does exactly what tower.conf's push_approval and pr_approval did, or None if it has
+    neither. Before profiles, comments, reviews and issue writes always asked; an unknown value meant every."""
+    modes = legacy_modes(conf)
+    if modes is None:
+        return None
+    push_mode, pr_mode = modes
     origin = f"from {shown(ledger.conf_path())}: push_approval={push_mode}, pr_approval={pr_mode}"
     lines = [FILE_HEADER.rstrip("\n"), f"# Migrated on {today.isoformat()} {origin}.", ""]
     if (push_mode, pr_mode) == ("every", "every"):  # that is the built-in work profile exactly
