@@ -80,13 +80,13 @@ def main() -> int:
     top = top.strip()
     card = run(["bash", CARD_PATH_SCRIPT, top], top)
     if card is None:
-        return 0                                       # tower isn't set up here (card-path.sh says why on its own)
+        return 0  # tower isn't set up here (card-path.sh says why on its own)
     card = card.strip()
     try:
         with open(card, encoding="utf-8") as handle:
             text = handle.read()
     except OSError:
-        return 0                                       # no card yet
+        return 0  # no card yet
     updated = resumed(text, time.strftime("%Y-%m-%dT%H:%M"))
     if updated is None:
         return 0
@@ -94,17 +94,21 @@ def main() -> int:
         write_atomically(card, updated)
     except OSError as error:
         print(f"tower: couldn't mark the card running ({card}): {error}", file=sys.stderr)
-        return 0                                       # never block the user's answer over a card
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": event.get("hook_event_name", "UserPromptSubmit"),
-            "additionalContext": (
-                f"tower: the user just answered, so this worktree's status card ({card}) was switched from "
-                "needs-you to running. Its Needs you section still holds the old question: rewrite the card "
-                "with the status-card skill when you next stop."
-            ),
-        }
-    }))
+        return 0  # never block the user's answer over a card
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": event.get("hook_event_name", "UserPromptSubmit"),
+                    "additionalContext": (
+                        f"tower: the user just answered, so this worktree's status card ({card}) was switched from "
+                        "needs-you to running. Its Needs you section still holds the old question: rewrite the card "
+                        "with the status-card skill when you next stop."
+                    ),
+                }
+            }
+        )
+    )
     return 0
 
 

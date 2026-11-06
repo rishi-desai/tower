@@ -36,8 +36,33 @@ import sys
 CONF = os.environ.get("TOWER_CONF", os.path.expanduser("~/.claude/tower.conf"))
 
 GH_WRITE_SUBCOMMANDS = {
-    "pr": {"comment", "review", "create", "edit", "merge", "close", "reopen", "ready", "lock", "unlock", "update-branch"},
-    "issue": {"comment", "create", "edit", "close", "reopen", "delete", "lock", "unlock", "pin", "unpin", "transfer", "develop"},
+    "pr": {
+        "comment",
+        "review",
+        "create",
+        "edit",
+        "merge",
+        "close",
+        "reopen",
+        "ready",
+        "lock",
+        "unlock",
+        "update-branch",
+    },
+    "issue": {
+        "comment",
+        "create",
+        "edit",
+        "close",
+        "reopen",
+        "delete",
+        "lock",
+        "unlock",
+        "pin",
+        "unpin",
+        "transfer",
+        "develop",
+    },
     "release": {"create", "edit", "delete", "upload", "delete-asset"},
     "label": {"create", "edit", "delete", "clone"},
 }
@@ -47,7 +72,9 @@ PR_SELF_SERVE = {"create", "edit", "ready", "merge", "close", "reopen", "update-
 WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 FIELD_FLAGS = re.compile(r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=|$)")
 METHOD_FLAG = re.compile(r"(?:^|\s)(?:-X|--method)(?:\s+|=)['\"]?([A-Za-z]+)")
-FORCE_PUSH = re.compile(r"(?:^|\s)(?:--force\b|--force-with-lease\b|--force-if-includes\b|--mirror\b|--delete\b|-[A-Za-z]*[fd][A-Za-z]*\b|\+\S+|:\S+)")
+FORCE_PUSH = re.compile(
+    r"(?:^|\s)(?:--force\b|--force-with-lease\b|--force-if-includes\b|--mirror\b|--delete\b|-[A-Za-z]*[fd][A-Za-z]*\b|\+\S+|:\S+)"
+)
 
 
 def conf_mode(key: str, allowed: set[str]) -> str:
@@ -115,7 +142,11 @@ def check_push(segment: str, mode: str) -> str | None:
         return None
     is_force = bool(FORCE_PUSH.search(match.group(1)))
     if mode == "every":
-        return "git push" + (" (force/delete: rewrites or removes remote history)" if is_force else "") + " (push_approval=every)"
+        return (
+            "git push"
+            + (" (force/delete: rewrites or removes remote history)" if is_force else "")
+            + " (push_approval=every)"
+        )
     if is_force:
         return "force push or branch delete rewrites or removes remote history (push_approval=force)"
     return None
@@ -133,13 +164,17 @@ def check_rule_edit(file_path: str) -> str | None:
 
 
 def ask(reasons: list[str], prefix: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "ask",
-            "permissionDecisionReason": prefix + "; ".join(reasons),
-        }
-    }))
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": prefix + "; ".join(reasons),
+                }
+            }
+        )
+    )
 
 
 def main() -> int:
