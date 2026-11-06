@@ -123,6 +123,20 @@ def test_sections_are_rendered_in_the_cards_order_whatever_order_they_arrive_in(
     assert rendered == "\n" + NARRATIVE + "\n## Words used\n- FDE: forward deployed engineer\n"
 
 
+def test_a_heading_inside_a_code_block_is_code_and_files_touched_is_kept(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo.add_worktree("feat-7")
+    fake_prs(tmp_path, [])
+    monkeypatch.chdir(repo.main / "worktrees" / "feat-7")
+    fenced = NARRATIVE.replace("- `npm test` passes.", "```\n## not a heading: a shell comment\nnpm test\n```")
+    narrative = fenced + "\n## Files touched\n- src/search.ts\n"
+
+    assert write(capsys, monkeypatch, stdin=narrative)[0] == 0
+
+    assert body(repo.ledger / "feat-7.md") == "\n" + narrative
+
+
 def test_an_open_pr_makes_the_card_waiting_on_ci(
     repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -172,9 +186,61 @@ def test_a_card_can_say_done_only_when_its_pr_merged(
     assert frontmatter(card)[0] == "status: done"
     assert 'pr: "#57"' in frontmatter(card)
 
-    # done isn't something an agent can ask for: only a merged PR says it.
+    # waiting-ci isn't something an agent can ask for: only an open PR says it.
     with pytest.raises(SystemExit):
-        write(capsys, monkeypatch, "--status", "done")
+        write(capsys, monkeypatch, "--status", "waiting-ci")
+
+
+def test_done_can_be_asked_for_only_with_an_open_pr_waiting_on_the_users_merge(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-42-search")
+    head = git(path, "rev-parse", "HEAD").strip()
+    monkeypatch.chdir(path)
+    card = repo.ledger / "feat-42-search.md"
+
+    for prs in ([], [{"number": 50, "state": "CLOSED", "baseRefName": "main", "headRefOid": head}], None):
+        fake_prs(tmp_path, prs)
+        code, out, err = write(capsys, monkeypatch, "--status", "done")
+        assert (code, out) == (1, "")
+        assert err.startswith("tower: done needs a PR, and ")
+        assert not card.exists()
+
+    fake_prs(tmp_path, [{"number": 57, "state": "OPEN", "baseRefName": "main", "headRefOid": head}])
+    code, out, _ = write(capsys, monkeypatch, "--status", "done")
+    assert (code, out) == (0, f"{card}\nstatus: done (you asked for it; PR #57 is open)\n")
+
+
+def test_a_closed_pr_is_named_but_the_card_is_running_and_a_detached_head_has_no_branch(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-42-search")
+    head = git(path, "rev-parse", "HEAD").strip()
+    fake_prs(tmp_path, [{"number": 50, "state": "CLOSED", "baseRefName": "main", "headRefOid": head}])
+    monkeypatch.chdir(path)
+
+    assert write(capsys, monkeypatch)[1].endswith("status: running (PR #50 was closed without merging)\n")
+    assert 'pr: "#50"' in frontmatter(repo.ledger / "feat-42-search.md")
+
+    git(path, "checkout", "-q", "--detach")
+    short = git(path, "rev-parse", "--short", "HEAD").strip()
+    code, out, _ = write(capsys, monkeypatch)
+    fields = frontmatter(repo.ledger / f"detached-{short}.md")
+    assert (code, out.splitlines()[1]) == (0, "status: running (no PR yet)")  # gh isn't asked without a branch
+    assert ("branch: none", 'base: "main"') == (fields[3], fields[5])
+
+
+def test_a_merged_pr_whose_head_is_ahead_of_this_worktree_is_still_this_work(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-42-search")
+    git(path, "commit", "-q", "--allow-empty", "-m", "pushed from elsewhere")
+    pr_head = git(path, "rev-parse", "HEAD").strip()
+    git(path, "reset", "-q", "--hard", "HEAD~1")  # this worktree is behind the PR's head, not past it
+    fake_prs(tmp_path, [{"number": 57, "state": "MERGED", "baseRefName": "main", "headRefOid": pr_head}])
+    monkeypatch.chdir(path)
+
+    assert write(capsys, monkeypatch)[1].endswith("status: done (PR #57 is merged)\n")
 
 
 def test_a_merged_pr_from_an_earlier_use_of_the_branch_isnt_this_work(
@@ -218,7 +284,7 @@ def test_needs_you_and_blocked_need_a_reason_which_the_card_keeps(
         ("---\nstatus: done\n---\n" + NARRATIVE, "send only the sections"),
         ("Hello\n" + NARRATIVE, "text before the first ## heading"),
         (NARRATIVE.replace("## Verify\n- `npm test` passes.\n", ""), "missing section: Verify"),
-        (NARRATIVE + "\n## Files touched\n- a.py\n", "unknown section 'Files touched'"),
+        (NARRATIVE + "\n## Notes\n- a.py\n", "unknown section 'Notes'"),
         (NARRATIVE + "\n## Done\n- again\n", "section Done appears twice"),
         (NARRATIVE.replace("- Nothing.", ""), "section Needs you is empty"),
     ],

@@ -19,7 +19,7 @@ _Avoid_: control session, dashboard (that is a separate view)
 **Card**:
 A worker's short Markdown note in the vault saying where its worktree stands: status, ticket, PR, what's done, the
 one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
-the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done before its PR merges.
+the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
 _Avoid_: status file, report
 
 **Ledger**:

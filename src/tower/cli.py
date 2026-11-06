@@ -76,7 +76,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("adopt-scan", help="read-only facts for bringing an in-flight repo under tower")
     card_parser = commands.add_parser("card-path", help="where this worktree's status card lives")
     card_parser.add_argument("dir", nargs="?", type=Path, default=Path("."), help="a folder in the worktree")
-    card_write_parser(commands)
+    add_card_parser(commands)
     commands.add_parser("rules", help="link this project's personal rules file into this worktree")
     stats_parser = commands.add_parser("stats", help="metrics per merged PR, from the event log and GitHub")
     stats_parser.add_argument(
@@ -88,8 +88,8 @@ def parser() -> argparse.ArgumentParser:
     return top
 
 
-def card_write_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """The `card write` subcommand's parser, under commands."""
+def add_card_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Add the `card` command and its `write` subcommand to commands."""
     card_parser = commands.add_parser("card", help="this worktree's status card, rendered by the core")
     card_commands = card_parser.add_subparsers(dest="card_command", required=True)
     write = card_commands.add_parser(
@@ -111,9 +111,14 @@ def card_write_parser(commands: argparse._SubParsersAction[argparse.ArgumentPars
     )
 
 
-def write_card(args: argparse.Namespace) -> int:
+def run_card_write(args: argparse.Namespace) -> int:
     """Run `tower card write`: print the card's path and status, warnings on stderr. Exit 1 (writing nothing) when the
-    narrative, a flag, the repo or the ledger is wrong; 3 when --if-absent finds a card."""
+    narrative, a flag, the repo or the ledger is wrong, or the card can't be written; 3 when --if-absent finds a card."""
+    if sys.stdin.isatty():
+        print(
+            "tower: pipe the card's sections (## Done, ## Why it matters, ...) into tower card write", file=sys.stderr
+        )
+        return 1
     try:
         written = card.write_card(
             args.dir, sys.stdin.read(), args.status, args.reason, args.ticket, if_absent=args.if_absent
@@ -123,6 +128,12 @@ def write_card(args: argparse.Namespace) -> int:
         return 3
     except (NotARepo, ledger.LedgerError, card.CardError) as error:
         print(f"tower: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(
+            f"tower: couldn't write the card ({error.strerror or type(error).__name__}: {error.filename})",
+            file=sys.stderr,
+        )
         return 1
     for warning in written.warnings:
         print(f"tower: {warning}", file=sys.stderr)
@@ -239,7 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "card-path":
         return run_or_explain(lambda: print(ledger.card_path(args.dir)))
     if args.command == "card" and args.card_command == "write":
-        return write_card(args)
+        return run_card_write(args)
     if args.command == "rules":
         return run_or_explain(link_rules)
     if args.command == "stats":

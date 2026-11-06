@@ -10,7 +10,8 @@ as an event by record-event.py, the next hook in the same list; this one has tow
 so the card's Needs you section keeps the old question until the session rewrites the card itself.
 
 Stays quiet (exit 0, no output) whenever there's nothing to do or it can't tell: not a git repo, tower not set up on
-this machine, no card, a card that doesn't say needs-you, or a core that won't import.
+this machine, no card, or a card that doesn't say needs-you. A core that won't import, or a card it can't write, is
+said on stderr (Claude Code's debug log), still with exit 0, so the user's answer always goes through.
 """
 
 from __future__ import annotations

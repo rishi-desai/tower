@@ -7,12 +7,13 @@ The agent sends only the narrative sections (`tower card write`, on stdin):
     ## Needs you        required ("Nothing." when nothing)
     ## Verify           required ("Verify it yourself" is read as Verify)
     ## Words used       optional
+    ## Files touched    optional (a main-checkout session lists which uncommitted files are its own here)
 
 and the core writes the frontmatter, so no model ever writes YAML (an unquoted `ticket: #42` was a YAML comment):
 
     status    from facts: done when this branch's PR merged, waiting-ci while it's open, else running. The agent may
-              ask for needs-you or blocked, with a reason, or for running while it fixes an open PR; never for done
-              or waiting-ci, which only the PR can say
+              ask for needs-you or blocked, with a reason; for running while it fixes an open PR; or for done when its
+              PR is open and only waits on the user's merge. No PR, no done; waiting-ci only comes from the PR
     ticket    --ticket, else the last card's, else guessed from the branch (feat-42-x, fix/42-x), else none
     updated   now, local time, to the minute (the pane counts the card's age from it)
     branch    git's; none on a detached HEAD
@@ -41,12 +42,13 @@ from tower import ledger, state
 from tower.github import try_gh
 from tower.gitrepo import git, list_worktrees
 
-SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used")
-REQUIRED = SECTIONS[:4]
+SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
+REQUIRED = ("Done", "Why it matters", "Needs you", "Verify")
 ALIASES = {"verify it yourself": "Verify"}
-REQUESTS = ("running", "needs-you", "blocked")
+REQUESTS = ("running", "needs-you", "blocked", "done")
 NEEDS_REASON = ("needs-you", "blocked")
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")
+FENCE = re.compile(r"^\s*(```|~~~)")
 TICKET = re.compile(r"#?(\d+)")
 # A ticket guess needs a known type before the number (feat-42-x, fix/42-x, or just 42-x), so release-2026-11 isn't #2026.
 BRANCH_TICKET = re.compile(
@@ -106,8 +108,11 @@ def parse_sections(text: str) -> dict[str, str]:
         raise CardError("the core writes the frontmatter: send only the sections (## Done, ## Why it matters, ...)")
     found: dict[str, list[str]] = {}
     current: list[str] | None = None
+    fenced = False  # inside a ``` block, a "## " line is code (a shell comment, a snippet), not a section
     for line in text.splitlines():
-        heading = HEADING.match(line)
+        if FENCE.match(line):
+            fenced = not fenced
+        heading = None if fenced else HEADING.match(line)
         if heading:
             name = canonical(heading.group(1))
             if name in found:
@@ -190,16 +195,20 @@ def guess_ticket(branch: str) -> str:
 
 def choose_status(requested: str | None, pr: BranchPr | None, pr_known: bool) -> tuple[str, str, list[str]]:
     """(status, why, warnings) from the agent's request and this branch's PR. needs-you and blocked are honoured as
-    asked; a merged PR is done whatever else is asked; an open PR is waiting-ci unless the agent says it's running."""
+    asked; a merged PR is done whatever else is asked; an open PR is waiting-ci unless the agent says it's running, or
+    done (ready for the user to merge). CardError when done is asked for without an open or merged PR."""
     if requested in NEEDS_REASON:
         return str(requested), "you asked for it", []
     if pr is not None and pr.state == "MERGED":
         warnings = [f"PR #{pr.number} is merged, so the card says done, not running"] if requested == "running" else []
         return "done", f"PR #{pr.number} is merged", warnings
     if pr is not None and pr.state == "OPEN":
-        if requested == "running":
-            return "running", f"you asked for it; PR #{pr.number} is open", []
+        if requested in ("running", "done"):
+            return str(requested), f"you asked for it; PR #{pr.number} is open", []
         return "waiting-ci", f"PR #{pr.number} is open", []
+    if requested == "done":
+        has = "GitHub couldn't be asked about one" if not pr_known else "this branch has no open or merged PR"
+        raise CardError(f"done needs a PR, and {has}")
     if not pr_known:
         return "running", "GitHub couldn't be asked about a PR", []
     if pr is not None:
@@ -297,7 +306,7 @@ def write_card(
     """Render and write the card of the worktree holding worktree. Raises NotARepo, LedgerError, CardError (bad
     narrative or flags; nothing written) or CardExists (if_absent and there is a card already)."""
     if requested is not None and requested not in REQUESTS:
-        raise CardError(f"--status can be {', '.join(REQUESTS)}; done and waiting-ci come from the PR")
+        raise CardError(f"--status can be {', '.join(REQUESTS)}; waiting-ci comes from the PR")
     reason = " ".join(reason.split())
     if requested in NEEDS_REASON and not reason:
         raise CardError("needs-you and blocked need --reason")
@@ -347,14 +356,14 @@ def previous_ticket(path: Path) -> str | None:
 
 
 def resume(worktree: Path) -> Path | None:
-    """Re-render the worktree's card as running if it says needs-you (the user just answered), keeping its body and
-    every other property, and dropping the reason. The card's path if it changed, else None. No GitHub call: this
+    """Re-render the worktree's card as running if it says needs-you (the user just answered), keeping its body,
+    ticket, pr and base, taking the branch from git, and dropping the reason. The card's path if it changed, else None. No GitHub call: this
     runs on every prompt. Raises NotARepo or LedgerError when there's no card to find."""
     path = ledger.card_path(worktree)
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
+    except (FileNotFoundError, UnicodeDecodeError):
+        return None  # no card, or one that isn't UTF-8: re-rendering it would mangle its body
     fields = read_frontmatter(text)
     if fields is None or fields.get("status") != "needs-you":
         return None
@@ -362,12 +371,30 @@ def resume(worktree: Path) -> Path | None:
         status="running",
         ticket=fields.get("ticket") or "none",
         updated=time.strftime(TIME_FORMAT),
-        branch=fields.get("branch") or "none",
+        branch=git(worktree, "branch", "--show-current") or "none",
         pr=fields.get("pr") or "none",
         base=fields.get("base") or repo_base(worktree),
     )
     write_atomically(path, render(front, card_body(text)), if_absent=False)
     return path
+
+
+def create_new(tmp: str, path: Path, text: str) -> None:
+    """Give the written tmp file the name path only if path doesn't exist: a hard link, else (a synced folder that
+    has no hard links) an exclusive create, which a reader can briefly see half-written."""
+    try:
+        os.link(tmp, path)
+        return
+    except FileExistsError:
+        raise CardExists(f"{path} already exists, so nothing was written") from None
+    except OSError:
+        pass  # no hard links here
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        raise CardExists(f"{path} already exists, so nothing was written") from None
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
 
 
 def write_atomically(path: Path, text: str, if_absent: bool) -> None:
@@ -378,10 +405,7 @@ def write_atomically(path: Path, text: str, if_absent: bool) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
         if if_absent:
-            try:
-                os.link(tmp, path)
-            except FileExistsError:
-                raise CardExists(f"{path} already exists, so nothing was written") from None
+            create_new(tmp, path, text)
         else:
             os.replace(tmp, path)
     finally:

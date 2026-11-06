@@ -13,7 +13,7 @@ Every worktree keeps one short card describing where its work stands. A separate
 You write only the prose. tower's core fills in the rest (status, ticket, branch, PR, base branch, time) from git and GitHub and writes the card into the user's notes vault, outside the repo. Pipe the sections into the core, from inside the repo; `<plugin>` is two folders up from this skill's base directory (use its absolute path):
 
 ```
-python3 -I <plugin>/scripts/run-tower.py card write [--status needs-you|blocked --reason "<one line>"] <<'EOF'
+python3 -I <plugin>/scripts/run-tower.py card write [--status done|running|needs-you|blocked] [--reason "<one line>"] <<'EOF'
 ## Done
 - Up to 3 bullets in plain English: what now works that didn't before.
 
@@ -37,7 +37,8 @@ It prints the card's path and the status it chose, with why. If it exits 1, it w
 
 ## Status
 
-- Without `--status`, the core decides from this branch's PR: no PR → `running`, open → `waiting-ci`, merged → `done`. You can't claim `done`; merging is what makes a card done.
+- Without `--status`, the core decides from this branch's PR: no PR → `running`, open → `waiting-ci`, merged → `done`.
+- `--status done` when the PR is open and only waits on the user's merge, with nothing left for you. Without a PR it refuses.
 - `--status needs-you --reason "..."` only when work truly cannot continue without the user. Then ask the question with the AskUserQuestion tool (the pop-up), recommended option first and labelled "(Recommended)". Don't leave it only in your final text: the user answers in the pop-up, and the tower pane shows the card meanwhile. When they answer, a hook switches the card back to `running`.
 - `--status blocked --reason "..."` when waiting on something other than the user or your own PR (another ticket, a teammate, an outage).
 - `--status running` while you fix a failed check or review on an open PR, so the card doesn't say `waiting-ci` while you work.
