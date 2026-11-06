@@ -1,0 +1,9 @@
+# The approval hook splits commands with its own small parser, not shlex
+
+The approval hook (`plugin/scripts/confirm-public.py`) must find every `git push` and GitHub write in a Bash command line, and it runs under macOS's stdlib-only `python3 -I`, so no third-party shell parser is available. T04 (#21) planned `shlex` tokenising, but `shlex` doesn't know heredocs, `$( )` or backticks. It merges a heredoc body with the commands after it, which hid a `gh pr comment` that the old regexes caught. It also raises on Claude Code's own `git commit -m "$(cat <<'EOF' ... EOF)"` pattern whenever the body has an odd number of double quotes, and "can't tokenise, so ask" would then prompt on ordinary commits and `gh pr create --body` calls, which stalls unattended workers. So the hook has a small parser (`CommandSplitter`) that splits a command line into simple commands the way bash and zsh do. It handles quotes, escapes, comments, heredocs, `$( )`, backticks, `<( )`, case statements and arithmetic. When it can't split a command, or the command is too big to check within a fixed work budget, it asks.
+
+## Considered options
+
+- **`shlex` with "unparseable asks"**: fewer lines, but the heredoc merge is a bypass the regexes didn't have, and the commit-pattern errors would prompt constantly.
+- **Keep the regexes and add more of them**: every fix would need another regex for another quoting or ordering case, and quoted text that merely mentions `git push` would keep prompting.
+- **Ask bash itself** (`bash -n`, or a `bash -c` parse hook): bash has no machine-readable parse output, and zsh, which this machine's Bash tool runs commands in, differs in places.

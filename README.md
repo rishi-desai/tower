@@ -317,7 +317,8 @@ another way.
 | `gh pr` comment, review; `gh issue` comment, create, edit, close, reopen, … | `every` (default): every `git push` |
 | `gh release` / `gh label` writes | `force`: only force pushes, `+refspec`, branch deletes |
 | `gh api` writes: GraphQL mutations, `-X POST/PATCH/PUT/DELETE`, or fields without `-X GET` (gh defaults to POST) | `none`: pushes never ask |
-| Any edit to a `CLAUDE.local.md` or `~/.claude/tower/rules/*`, and Bash commands naming them | |
+| Any edit to a `CLAUDE.local.md`, `tower.conf` or anything under `~/.claude/tower/`; Bash commands naming a rule file, or naming `tower.conf` or the event log other than to read them (`cat`, `grep`, `tail`) | |
+| Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs), a git/gh subcommand from a variable | |
 
 `gh pr` create, edit, ready, merge, close, reopen and update-branch depend on `pr_approval`: `every` (default)
 asks, `none` lets a worker open and merge its own PR. Missing or unknown values count as `every`.
@@ -328,8 +329,15 @@ next command) or by re-running `setup.sh`. Reads (`gh pr view`, `gh pr checks`, 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
 
+The hook reads a command the way the shell would: quotes, `&&`/`;`/`|`/newlines, `$( )`, heredocs, global options
+(`git -C <path>`, `gh pr -R owner/repo`), attached flags (`gh api -XPOST`), and wrappers (`bash -c`, `env`,
+`xargs`, `eval`, `sudo`, `ssh`, `watch`, ...). Text that only mentions a command (`git commit -m "fix git push"`) doesn't ask.
+Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-splits-commands-itself.md`.
+
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
-script calling the GitHub API directly isn't caught. `pr-wait` itself only reads.
+script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
+`$CMD push`), git/gh aliases, or deliberately disguised names. The full list is in `confirm-public.py`'s docstring.
+`pr-wait` itself only reads.
 
 ## Security model
 
@@ -406,8 +414,8 @@ tower/
 `claude plugin validate --strict` on the marketplace and both plugins, and the pane's tests (`claude plugin test pane`,
 which needs no login). Run `mise install` once first.
 
-- **The approval hook's tests** live in `tests/test_confirm_public.py`. Known bypasses are `xfail` tests: pytest
-  fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
+- **The approval hook's tests** live in `tests/test_confirm_public.py`. A known bypass goes in as an `xfail` test:
+  pytest fails the run as soon as one starts passing, so whoever fixes a bypass removes its marker.
 - **The pane's type check isn't in `ci`.** Its type stubs (`pane/.claude-plugin/types/`) are written by Claude Code
   only when a logged-in session loads the pane, which CI can't do. Start `claude --plugin-dir pane` once, then run
   `mise run pane-typecheck`.
