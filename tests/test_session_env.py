@@ -48,6 +48,7 @@ def context(proc: subprocess.CompletedProcess[str]) -> str:
 
 
 def write_config(repo: Fixture, text: str) -> None:
+    """The project's runtime config, where the hook looks for it."""
     path = repo.tower_dir / "projects" / "repo.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

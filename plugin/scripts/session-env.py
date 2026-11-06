@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -25,11 +26,14 @@ PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def main() -> int:
+    """Set the session's runtime variables and tell Claude about them; always exit 0."""
     try:
         event = json.load(sys.stdin)
-    except ValueError:
+    except ValueError as error:
+        print(f"tower: session-env got hook input that isn't JSON ({error})", file=sys.stderr)
         return 0
     if not isinstance(event, dict):
+        print("tower: session-env got hook input that isn't a JSON object", file=sys.stderr)
         return 0
     sys.path.insert(0, os.path.join(PLUGIN_ROOT, "lib"))
     try:
@@ -39,7 +43,7 @@ def main() -> int:
         print(f"tower: session-env can't import tower's core: {error}", file=sys.stderr)
         return 0
     try:
-        env, config = runtime.worktree_env(Path(event.get("cwd") or os.getcwd()))
+        env, config = runtime.worktree_env(Path(str(event.get("cwd") or os.getcwd())))
     except NotARepo:
         return 0
     except ledger.LedgerError as error:
@@ -51,9 +55,12 @@ def main() -> int:
         tell(f"tower: couldn't set this worktree's runtime variables: {error}. Dev servers may clash on ports with "
              "other worktrees; tell the user.", event)  # fmt: skip
         return 0
+    except Exception as error:  # noqa: BLE001 - a bug in the core must not stop the session; it's logged, not hidden
+        print(f"tower: session-env failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 0
     if env is None:
         return 0
-    assignments = " ".join(f"{name}={value}" for name, value in env.variables)
+    assignments = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.variables)
     env_file = os.environ.get("CLAUDE_ENV_FILE")
     written = False
     if env_file:

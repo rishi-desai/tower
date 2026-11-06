@@ -40,11 +40,10 @@ import json
 import os
 import re
 import shlex
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tower import events, ledger
+from tower import card, events, ledger
 from tower.gitrepo import NotARepo, git, list_worktrees, repo_name
 
 MAX_PORT = 65535
@@ -214,7 +213,7 @@ def fill(template: str, setting: str, values: dict[str, object]) -> str:
         raise RuntimeConfigError(
             f"{setting}: unknown placeholder {{{name}}} (use {{slot}}, {{port}}, {{main}} or {{worktree}})"
         ) from error
-    except (ValueError, IndexError, AttributeError) as error:
+    except (ValueError, IndexError, AttributeError, TypeError) as error:
         raise RuntimeConfigError(f"{setting}: can't fill in {template!r} ({error}); write {{{{ for a brace") from error
 
 
@@ -236,7 +235,7 @@ def allocate_slot(project: str, worktree: str) -> int:
                 slot = next(n for n in range(1, len(live) + 2) if n not in taken)
                 live[worktree] = slot
             if live != held:
-                write_atomically(path, json.dumps(live, indent=2, sort_keys=True) + "\n")
+                card.write_atomically(path, json.dumps(live, indent=2, sort_keys=True) + "\n", if_absent=False)
             return slot
     except OSError as error:
         raise RuntimeConfigError(
@@ -259,21 +258,6 @@ def read_slots(path: Path) -> dict[str, int]:
             f"the runtime slots file {path} is damaged; fix or delete it (runtime slots are then handed out again)"
         )
     return {str(p): int(s) for p, s in held.items()}
-
-
-def write_atomically(path: Path, text: str) -> None:
-    """Replace path with text in one step (a temporary file beside it, then a rename)."""
-    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as out:
-            out.write(text)
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass  # the error being raised matters more than a leftover hidden temporary file
-        raise
 
 
 def render_exports(env: WorktreeEnv) -> str:

@@ -6,6 +6,7 @@ worktrees that changed the same file is reported, with the files, under Housekee
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -136,3 +137,31 @@ def test_the_main_checkout_is_never_compared(repo: Fixture, capsys: pytest.Captu
     (repo.main / "app.py").write_text("uncommitted on main\n", encoding="utf-8")
 
     assert tower_state(capsys)["overlaps"] == []
+
+
+def test_a_squash_merged_worktree_doesnt_overlap_work_started_after_the_merge(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    merged = repo.add_worktree("feat-1", commits=0)
+    commit_file(merged, "app.py", "feat-1's version\n")
+    git(repo.main, "merge", "-q", "--squash", "feat-1")
+    git(repo.main, "commit", "-q", "-m", "feat-1 (squashed)")
+    later = repo.add_worktree("feat-2", commits=0)  # cut from main after the merge
+    commit_file(later, "app.py", "feat-2 builds on it\n")
+
+    assert tower_state(capsys)["overlaps"] == []
+
+
+def test_a_worktree_whose_folder_is_gone_is_skipped(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    one = repo.add_worktree("feat-1", commits=0)
+    two = repo.add_worktree("feat-2", commits=0)
+    commit_file(one, "app.py")
+    commit_file(two, "app.py", "y\n")
+    shutil.rmtree(two)  # deleted by hand; git still lists it until `git worktree prune`
+
+    result = tower_state(capsys)
+
+    assert result["overlaps"] == []
+    notes = result["notes"]
+    assert isinstance(notes, list)
+    assert not [note for note in notes if "overlap" in note]

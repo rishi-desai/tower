@@ -398,8 +398,10 @@ API_URL = "http://localhost:{port}/api"
 
 - **Runtime slot**: each worktree's stable number, 0 for the main checkout and the smallest free one (1, 2, …) for
   every other worktree. It's kept in `~/.claude/tower/runtime-slots/<Project>.json` for as long as the worktree's folder
-  exists, so a worker's port never changes under it; removing a worktree frees its slot. Not to be confused with an
-  execution slot, which is what the WIP limit counts.
+  exists, so a worker's port never changes under it; removing a worktree frees its slot, and the next new worktree
+  takes it, with the same `DB_NAME` (drop or reset that database if the old worker's data shouldn't carry over). Not
+  to be confused with an execution slot, which is what the WIP limit counts. In a bare-repo layout, the bare folder
+  counts as the main checkout (as everywhere in tower), so no worktree gets slot 0.
 - **In every Claude session**, the plugin's SessionStart hook (`session-env.py`) sets `TOWER_SLOT`, `PORT` and the
   rest for all of that session's Bash commands, and tells Claude its port and the seed command. Nothing to put in the
   kickoff.
