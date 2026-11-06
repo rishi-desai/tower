@@ -1,0 +1,46 @@
+# Tool versions and the checks CI runs. GitHub calls rishi-desai/ci's shared workflow, which runs
+# `mise run ci` with these tools, so a local `mise run ci` gives the same result as CI.
+# ruff, mypy and pytest are pinned in pyproject.toml's dev group (locked in uv.lock), not here.
+
+[tools]
+python = "3.12"
+# Only for `mise run pane-typecheck` (npx typescript); CI installs it too but never runs it.
+node = "24"
+uv = "0.13.4"
+shellcheck = "0.11.0"
+gitleaks = "8.30.1"
+# Claude Code's CLI, for `claude plugin validate` and the pane's `claude plugin test`. Neither needs a login.
+"aqua:anthropics/claude-code" = "2.1.304"
+
+[env]
+# uv uses the Python above instead of downloading its own, so local and CI run the same interpreter.
+UV_PYTHON_DOWNLOADS = "never"
+
+[tasks.ci]
+description = "Run the same checks as CI"
+run = [
+  "uv sync --locked",
+  "uv run ruff check",
+  "uv run ruff format --check",
+  "uv run mypy",
+  "uv run pytest",
+  "git ls-files -z '*.sh' | xargs -0 shellcheck",
+  # The files as checked out (git-ignored ones skipped), so local and CI scan the same tree; CI's checkout has
+  # no history. Secrets in pushed history are GitHub push protection's job (T03, #20).
+  "gitleaks dir --redact --no-banner .",
+  "claude plugin validate --strict .",
+  "claude plugin validate --strict plugin",
+  "claude plugin test plugin",
+]
+
+# Not part of `ci`: the pane's type stubs are written only when a logged-in Claude Code session loads the
+# plugin (`claude --plugin-dir plugin`), so CI can't run this. See "Checks and CI" in README.md.
+[tasks.pane-typecheck]
+description = "Type-check the pane against the stubs Claude Code wrote when it last loaded it"
+run = """
+if [ ! -f plugin/.claude-plugin/types/tsconfig.json ]; then
+  echo "pane-typecheck: no type stubs in plugin/.claude-plugin/types/; start 'claude --plugin-dir plugin' once to write them" >&2
+  exit 1
+fi
+npx --yes --package typescript@5.9.3 tsc -p plugin
+"""

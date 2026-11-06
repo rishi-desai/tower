@@ -23,14 +23,14 @@ import subprocess
 import sys
 
 PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CARD_PATH_SCRIPT = os.path.join(PLUGIN_ROOT, "skills", "status-card", "scripts", "card-path.sh")
+RUN_TOWER = os.path.join(PLUGIN_ROOT, "scripts", "run-tower.py")
 MAX_PATHS = 5000  # stop stat-ing after this many changed files; enough to find "something changed"
 
 
 def run(cmd: list[str], cwd: str) -> str | None:
     """Run cmd in cwd; its stdout, or None if it failed."""
     try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=10)
+        proc = subprocess.run(cmd, check=False, cwd=cwd, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.stdout if proc.returncode == 0 else None
@@ -61,11 +61,11 @@ def newest_change(top: str) -> float:
             continue
         code, path = entry[:2], entry[3:]
         if "R" in code or "C" in code:
-            i += 1                                     # renames/copies carry the old path as the next entry
+            i += 1  # renames/copies carry the old path as the next entry
         try:
             newest = max(newest, os.stat(os.path.join(top, path)).st_mtime)
         except OSError:
-            pass                                       # deleted files have no mtime; nothing to compare
+            pass  # deleted files have no mtime; nothing to compare
     return newest
 
 
@@ -75,34 +75,38 @@ def main() -> int:
     except ValueError:
         return 0
     if event.get("stop_hook_active"):
-        return 0                                       # we already sent Claude back once; let it stop
+        return 0  # we already sent Claude back once; let it stop
     cwd = event.get("cwd") or os.getcwd()
     started = session_start(event.get("transcript_path", ""))
     top = run(["git", "rev-parse", "--show-toplevel"], cwd)
     if started is None or top is None:
         return 0
     top = top.strip()
-    card = run(["bash", CARD_PATH_SCRIPT, top], top)
+    card = run([sys.executable, "-I", RUN_TOWER, "card-path", top], top)
     if card is None:
-        return 0                                       # tower isn't set up here (card-path.sh says why on its own)
+        return 0  # tower isn't set up here, or `tower card-path` failed: unsure, so quiet (see above)
     card = card.strip()
     try:
         card_written = os.stat(card).st_mtime
     except OSError:
-        card_written = 0.0                             # no card yet
+        card_written = 0.0  # no card yet
     changed = newest_change(top)
     if changed <= max(started, card_written):
         return 0
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "Stop",
-            "additionalContext": (
-                f"tower: files in this worktree changed after its status card was last written ({card}). "
-                "Use the status-card skill to update the card before stopping. "
-                "If nothing this turn is worth reporting to the hub, say so in one line and stop."
-            ),
-        }
-    }))
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "Stop",
+                    "additionalContext": (
+                        f"tower: files in this worktree changed after its status card was last written ({card}). "
+                        "Use the status-card skill to update the card before stopping. "
+                        "If nothing this turn is worth reporting to the hub, say so in one line and stop."
+                    ),
+                }
+            }
+        )
+    )
     return 0
 
 

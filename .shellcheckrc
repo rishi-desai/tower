@@ -1,0 +1,4 @@
+# Follow sourced files: a script that names one with `# shellcheck source=` relative to its own folder is checked
+# together with it, which SCRIPTDIR makes shellcheck resolve.
+external-sources=true
+source-path=SCRIPTDIR

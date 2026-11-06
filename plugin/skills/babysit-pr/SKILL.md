@@ -13,9 +13,18 @@ right.
 
 - **Approval before anything public.** Before you post, reply to, or resolve a
   comment, edit/close/merge the PR, or push: show the user the exact text or
-  change in chat, and set the status card to `needs-you` with that draft.
+  change in chat, and write the status card with `--status needs-you --reason
+  "approve: <action>"` and that draft under Needs you.
   Then run the command; a hook makes Claude Code ask the user to approve it.
   If they decline, don't retry it a different way; ask what they want instead.
+- **Merge with `tower merge`.** When the user asked you to merge, run
+  `python3 -I <plugin>/scripts/run-tower.py merge <pr>` on its own, nothing
+  chained before it (`<plugin>` is two folders up from this skill's directory,
+  as an absolute path). It picks the method (a merge commit for stacked,
+  chained and integration-branch PRs, else a squash), deletes the branch when
+  that's safe,
+  and merges PRs in a GitHub stack (bottom first, one per run), which
+  `gh pr merge` can't. Exit 3 means GitHub is still merging: run it again.
 - **Wait with `--until green`** (the default here). It waits on the repo's own
   required checks. Use `--until ready` only if the repo has the Greptile or
   Macroscope review bots; without them `ready` never finishes.

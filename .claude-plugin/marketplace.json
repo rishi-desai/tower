@@ -6,12 +6,7 @@
     {
       "name": "tower",
       "source": "./plugin",
-      "description": "Run many Claude Code agents in parallel: status cards, a hub, PR babysitting, and approval before anything public."
-    },
-    {
-      "name": "tower-pane",
-      "source": "./pane",
-      "description": "tower's hub as a live pane beside the chat: what needs you, jump to a session in Orca, answer its pop-up questions in place."
+      "description": "Run many Claude Code agents in parallel: status cards, a hub and its live pane beside the chat, PR babysitting, and approval before anything public."
     }
   ]
 }

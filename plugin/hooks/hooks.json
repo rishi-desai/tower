@@ -1,5 +1,6 @@
 {
-  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you",
+  "description": "Ask before public GitHub actions, pushes, and edits to personal rule files, as this repo's tower policy says; tell each session its policy when it starts; remind sessions to update their status card; mark a card running again once the user answers; notify when a session needs you; record each session's events in tower's event log; give each session its worktree's runtime variables (PORT and the rest); and the pane mod (register.tsx), tower's hub beside the chat",
+  "modules": ["./register.tsx"],
   "hooks": {
     "PreToolUse": [
       {
@@ -19,6 +20,11 @@
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-reminder.py\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -31,6 +37,11 @@
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/notify-needs-you.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
           }
         ]
       }
@@ -41,6 +52,11 @@
           {
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-resume.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
             "timeout": 10
           }
         ]
@@ -53,6 +69,43 @@
           {
             "type": "command",
             "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/card-resume.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/session-env.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/policy-context.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/record-event.py\"",
             "timeout": 10
           }
         ]

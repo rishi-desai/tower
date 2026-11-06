@@ -22,13 +22,17 @@ Write it so I don't need a follow-up question; when that and brevity conflict, c
 
 - One ticket = one branch = one worktree = one main session. Don't edit files in a worktree another session is working in; subagents inside your own worktree are fine.
 - When you stop or finish in a git repo, use the `status-card` skill so my hub session can see where you are.
-- A repo with work already in flight and no cards gets the `adopt` skill first.
+- A repo with work already in flight and no cards gets the `hub` skill's adopt mode first.
 
 ## Public actions need my OK
 
-Before anything other people can see — a PR or issue comment, a reply, resolving a thread, opening/editing/closing/merging a PR, a push — show me the exact text or change first. A hook will also ask me to approve the command; if I decline, don't try another way, ask me.
+Before anything other people can see — a PR or issue comment, a reply, resolving a thread, opening/editing/closing/merging a PR, an issue change, a push — show me the exact text or change first. A hook will also ask me to approve the command; if I decline, don't try another way, ask me.
 
-Exception: when `~/.claude/tower.conf` on this machine says `pr_approval=none`, open your own PR and squash-merge it yourself once `/code-review` passes and its checks are green, without showing me first; push your branch for it the same way (`push_approval` there decides whether the hook asks). Comments, reviews, issue changes, force pushes, and anything outside your own PR still need my OK.
+Exception: what tower's policy for this repo lets through without asking (the `tower policy for this repo` line at the start of the session lists it) needs no OK from me first: just do it. When it lets your PR's merge through, merge your own PR (squash a single-ticket PR; use a merge commit for a PR in a stack or one whose head is an integration branch) once both reviews pass (`mattpocock-skills:code-review` since `origin/<base>`, then the built-in `/code-review high origin/<base>...HEAD`) and its checks are green. Everything it says asks still needs my OK, and never change tower's policy, `tower.conf` or rule files yourself (`tower policy use` is mine to run).
+
+## Things I never want
+
+- AI attribution anywhere: no `Co-Authored-By: Claude` (or any co-author), "Generated with Claude Code", "on behalf of" notes or 🤖 in commits, PR titles and bodies, comments, issues or branch names. Everything reads as written by me, and I'm the only author.
 
 ## Personal rules stay out of repos
 
