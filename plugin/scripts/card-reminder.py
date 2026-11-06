@@ -30,7 +30,7 @@ MAX_PATHS = 5000  # stop stat-ing after this many changed files; enough to find 
 def run(cmd: list[str], cwd: str) -> str | None:
     """Run cmd in cwd; its stdout, or None if it failed."""
     try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=10)
+        proc = subprocess.run(cmd, check=False, cwd=cwd, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.stdout if proc.returncode == 0 else None

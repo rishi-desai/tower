@@ -20,7 +20,7 @@ import sys
 def git(cwd: str, *args: str) -> str:
     """Run one git command in cwd and return its trimmed stdout, or "" if it fails."""
     try:
-        proc = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=5)
+        proc = subprocess.run(["git", "-C", cwd, *args], check=False, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return proc.stdout.strip() if proc.returncode == 0 else ""
@@ -47,7 +47,7 @@ def notify(title: str, subtitle: str, message: str) -> None:
         "-e", "end run",
     ]
     try:
-        proc = subprocess.run(["osascript", *script, title, subtitle, message], capture_output=True, text=True, timeout=5)
+        proc = subprocess.run(["osascript", *script, title, subtitle, message], check=False, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired) as err:
         print(f"notify-needs-you: osascript failed: {err}", file=sys.stderr)
         return
