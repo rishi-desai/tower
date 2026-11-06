@@ -71,10 +71,15 @@ Terms used below:
    With the repo's "Automatically delete head branches" on, GitHub's own delete retargets them instead, both for a
    stack (#6 moved to `main`, open) and for chained PRs (#9 moved to `main`, open, head unchanged).
 
-6. **gh api prints GitHub's error body on stdout** and its own one-line summary on stderr (`gh: ... (HTTP 403)`),
+6. **`merge_action=default` works without a merge queue**: `PUT .../merge-async` with `merge_method=merge` and
+   `merge_action=default` on #14 gave a merge commit (`Merge pull request #14 from rishi-desai/t3`). With a queue it
+   queues the PR (untested: queues need an organization's repo). A second request for a merged PR answers
+   `{"status":"merged","details":{"message":"Pull request is already merged.",...}}` with exit 0.
+
+7. **gh api prints GitHub's error body on stdout** and its own one-line summary on stderr (`gh: ... (HTTP 403)`),
    with exit 1. `tower merge` reads GitHub's message from stdout.
 
-7. **A merged stacked PR keeps its `stack` field**, so a rerun of `tower merge` still knows to wait for GitHub's
+8. **A merged stacked PR keeps its `stack` field**, so a rerun of `tower merge` still knows to wait for GitHub's
    retarget before deleting the branch.
 
 ## What `tower merge` does with it
@@ -97,6 +102,8 @@ Terms used below:
   says how to move the PRs above (`gh pr edit 11 --base main`); a rerun then deletes it (checked). An integration
   branch is always kept. A branch that moved since the merge is kept. A repo that deletes head branches itself is
   left to do it.
+- **"Merged" only when GitHub says so:** a PR that is queued (a merge queue, or auto-merge armed by `gh pr merge`),
+  still pending, or can't be read back exits 3 ("may still merge; run it again"), never 1 ("nothing merged").
 - **No CI wait:** `tower merge` never waits for CI between merges. GitHub enforces the repo's branch protection; if
   it refuses a merge, `tower merge` exits 1 with GitHub's message.
 - **The approval hook:** under `personal` (merge_to_main ask, merge_to_branch auto), against this repo's real
@@ -106,15 +113,17 @@ Terms used below:
 
 ## Observed practice: a 16-PR work stack
 
-From the user's work repo on github.com, not this run. A 16-PR stack was merged bottom-up, one PR at a time, about 20
-seconds apart (8 minutes in all), into a non-default base branch (`customer-spike`). Each PR got a merge commit, and
-each merge commit's first parent is the previous merge. CI didn't run again between merges: each PR's checks had run
-against its stacked base, and since every PR holds the one below it, the final tree equals the tested top of the
-stack.
+From the user's work repo on github.com, not this run. The PRs were in a GitHub stack (the repo owner added them to
+one), with `delete_branch_on_merge` false. The 16 were merged bottom-up, one PR at a time, about 20 seconds apart
+(8 minutes in all), into a non-default base branch (`customer-spike`). Each PR got a merge commit, and each merge
+commit's first parent is the previous merge. GitHub moved the next PR's base to `customer-spike` within 2-3 seconds of
+each merge. CI didn't run again between merges, and no merge waited on checks: each PR's checks had run against its
+stacked base, and since every PR holds the one below it, the final tree equals the tested top of the stack.
 
-That fits chained PRs retargeted by GitHub's own branch delete, which keeps the PR's head (point 5). For a GitHub
-stack, GitHub rebases the PRs above after each merge (point 4), so their heads are new commits. Whether required
-checks then have to pass again before the next merge is **untested** (see below).
+This matches point 4: GitHub retargets the PR above a merged one by itself. Here GitHub also gave the upper PRs new
+head commits, yet in that repo the next merges didn't wait for fresh checks. Why isn't known: GitHub may carry check
+results across its own rebase, or the repo may require no checks on those heads. It is consistent with `tower merge`
+never waiting for CI.
 
 ## The drafted issue's questions
 
@@ -135,7 +144,12 @@ checks then have to pass again before the next merge is **untested** (see below)
     chain);
   - by hand, only once no open PR is based on the branch: deleting it earlier closes them (observed). `tower merge`
     does this and waits for GitHub's retarget on a stack.
-- **`gh pr merge --auto` on a stacked PR, and `merge_action=merge_queue|default`.** **Untested** beyond this: with
+
+  The setting applies to every merged head branch, so in a repo with an integration branch it would also delete
+  `integration/a-plus` once that merges into `main` (`tower merge` keeps such a branch, but can't stop GitHub). Keep it
+  off there; a GitHub stack doesn't need it, since GitHub retargets the PR above by itself (the work stack above ran
+  with it off).
+- **`gh pr merge --auto` on a stacked PR, and merge-async through a merge queue.** **Untested** beyond this: with
   nothing pending, `gh pr merge 4 --auto --squash` tried a direct merge and got the same stack refusal. A private repo
   on this plan can't turn on auto-merge or branch protection (`Upgrade to GitHub Pro or make this repository public`),
   so auto-merge with pending checks wasn't tried. GitHub's stacked-PR GA changelog (October 6) says auto-merge for
@@ -144,9 +158,11 @@ checks then have to pass again before the next merge is **untested** (see below)
 
 ## Untested
 
-- Whether required checks must pass again on the rebased upper PRs of a GitHub stack before the next merge (needs
-  required checks: GitHub Pro, a public repo, or an organization).
-- Auto-merge on a stacked PR with pending checks, and merge queues (`merge_action=merge_queue|default`).
+- Whether required checks must pass again on the rebased upper PRs of a GitHub stack before the next merge, in a
+  repo that requires them (the work stack's merges didn't wait; needs GitHub Pro, a public repo, or an organization
+  to check here).
+- Auto-merge on a stacked PR with pending checks, and merge queues (`merge_action=default` on a base with one, as
+  `tower merge` sends, or `merge_queue`).
 - The 409 "merge already pending" answer, which `tower merge` picks up (covered by unit tests only).
 - The rebase fallback when a repo allows neither merge commits nor squashes.
 - GitHub Enterprise Server hosts.

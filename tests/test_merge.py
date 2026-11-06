@@ -44,7 +44,12 @@ class FakeGitHub:
     pending_merge: str = ""  # a merge-async already pending: a second request gets a 409 with this uuid
     local_cleanup_fails: bool = False  # gh pr merge merges, then fails to switch the worktree off the branch
     queued: bool = False  # the PR is already in a merge queue: GitHub answers the merge request with enqueued
-    allow_merge_commit: bool = True  # the repo's setting; squash is always allowed here
+    allow_merge_commit: bool = True  # the repo's settings
+    allow_squash_merge: bool = True
+    gh_queues: bool = False  # gh pr merge exits 0 after only queueing the PR (a merge queue, or auto-merge)
+    pr_merge_error: str = ""  # gh pr merge fails with this, merging nothing
+    reads_fail_after_merge: bool = False  # reading a PR fails once gh pr merge has run
+    put_unreachable: bool = False  # the merge-async request never reaches GitHub (no body)
     list_fails: bool = False  # listing PRs by base fails
     poll_fails: bool = False  # reading a merge-async's status fails
     settings_fail: bool = False  # reading the repo's settings fails
@@ -59,9 +64,11 @@ class FakeGitHub:
         self.branches = {"main": "mainsha", **{p.head: p.sha for p in self.pulls}, **self.branches}
 
     def pull(self, number: int) -> FakePull:
+        """The fake PR numbered number."""
         return next(p for p in self.pulls if p.number == number)
 
     def __call__(self, args: list[str]) -> GhResult:
+        """Answer one gh command line the way gh and GitHub would: pr view, pr merge, or gh api."""
         self.calls.append(args)
         if args[:2] == ["pr", "view"]:
             number = int(args[2]) if args[2:3] and args[2].isdigit() else self.current
@@ -74,12 +81,19 @@ class FakeGitHub:
         return self.api(args[3:])
 
     def gh_pr_merge(self, args: list[str]) -> GhResult:
+        """`gh pr merge N ...`: refused for a stacked PR, as on GitHub; otherwise merges (or only queues) the PR."""
         pull = self.pull(int(args[0]))
+        if self.pr_merge_error:
+            return GhResult(1, "", self.pr_merge_error)
         if pull.stack_base is not None:
             return GhResult(1, "", "GraphQL: This pull request is part of a stack and must be merged using the"
                             " asynchronous merge REST API.")  # fmt: skip
         assert "--match-head-commit" in args and args[args.index("--match-head-commit") + 1] == pull.sha
         self.methods += [flag[2:] for flag in args if flag in ("--merge", "--squash", "--rebase")]
+        if self.gh_queues:
+            return GhResult(
+                0, "", f"! Pull request {REPO}#{pull.number} will be automatically merged when all requirements are met"
+            )
         self.land(pull)
         if "--delete-branch" in args:  # gh deletes it through the API at once: the PRs based on it close
             self.delete_branch(pull.head)
@@ -88,6 +102,7 @@ class FakeGitHub:
         return GhResult(0, "", f"✓ Squashed and merged pull request {REPO}#{pull.number}")
 
     def api(self, args: list[str]) -> GhResult:
+        """`gh api [-X METHOD] repos/acme/widget/... [-f key=value]...`: the endpoints merge.py reads and writes."""
         method = args[args.index("-X") + 1] if "-X" in args else "GET"
         fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
         endpoint = next(
@@ -99,8 +114,8 @@ class FakeGitHub:
         if not rest and self.settings_fail:
             return GhResult(1, '{"message":"Server Error"}', "gh: Server Error (HTTP 502)")
         if not rest:
-            settings = {"delete_branch_on_merge": self.delete_on_merge, "allow_merge_commit": self.allow_merge_commit}
-            return ok({"full_name": REPO, "allow_squash_merge": True, **settings})
+            allowed = {"allow_merge_commit": self.allow_merge_commit, "allow_squash_merge": self.allow_squash_merge}
+            return ok({"full_name": REPO, "delete_branch_on_merge": self.delete_on_merge, **allowed})
         if rest[0] == "pulls" and len(rest) == 1 and self.list_fails:
             return GhResult(1, '{"message":"Server Error"}', "gh: Server Error (HTTP 502)")
         if rest[0] == "pulls" and len(rest) == 1 and fields["state"] == "closed":  # by base, or by head (owner:branch)
@@ -111,7 +126,8 @@ class FakeGitHub:
             else:
                 closed = [p for p in closed if p.base == fields["base"]]
             merged_at = "2026-11-06T10:00:00Z"
-            return ok([{"number": p.number, "base": {"ref": p.base}, "merged_at": merged_at if p.merged else None}
+            return ok([{"number": p.number, "base": {"ref": p.base}, "head": {"ref": p.head, "sha": p.sha},
+                        "merged_at": merged_at if p.merged else None}
                        for p in closed])  # fmt: skip
         if rest[0] == "pulls" and len(rest) == 1:
             assert method == "GET" and fields["state"] == "open"
@@ -123,6 +139,8 @@ class FakeGitHub:
                         pull.base = pull.stack_base or "main"
             return ok([{"number": p.number} for p in self.pulls if p.state == "open" and p.base == fields["base"]])
         if rest[0] == "pulls" and len(rest) == 2:
+            if self.reads_fail_after_merge and any(call[:2] == ["pr", "merge"] for call in self.calls):
+                return GhResult(1, "", "gh: connection reset")
             return ok(self.pull_json(self.pull(int(rest[1]))))
         if rest[0] == "pulls" and rest[2] == "merge-async":
             return self.merge_async(self.pull(int(rest[1])), method, fields, rest[3:])
@@ -139,6 +157,7 @@ class FakeGitHub:
         raise AssertionError(f"unexpected gh api call: {args}")
 
     def pull_json(self, pull: FakePull) -> dict[str, object]:
+        """The REST pull request object for pull, with only the fields merge.py reads."""
         stack = None
         if pull.stack_base is not None:
             stack = {
@@ -158,6 +177,7 @@ class FakeGitHub:
         }
 
     def merge_async(self, pull: FakePull, method: str, fields: dict[str, str], rest: list[str]) -> GhResult:
+        """PUT .../merge-async (accepted: pending with a uuid; 409 with the pending one's uuid) and GET .../{uuid}."""
         if rest and self.poll_fails:
             return GhResult(1, '{"message":"Server Error"}', "gh: Server Error (HTTP 502)")
         if rest:  # GET .../merge-async/{uuid}: the merge's status
@@ -170,14 +190,16 @@ class FakeGitHub:
             return ok({"status": "merged", "details": {"message": "merged", "sha": "mergesha"}})
         assert method == "PUT", method
         assert {key: fields[key] for key in ("merge_action", "sha")} == {
-            "merge_action": "direct_merge",
+            "merge_action": "default",
             "sha": pull.sha,
         }
         self.methods.append(fields["merge_method"])
         if self.queued:
             return ok({"status": "enqueued", "details": {"message": "already in the merge queue"}})
-        if self.pending_merge:
-            body = {"status": "pending", "details": {"uuid": self.pending_merge, "message": "already pending"}}
+        if self.put_unreachable:
+            return GhResult(1, "", "gh merge-async didn't run (TimeoutExpired)")
+        if self.pending_merge:  # GitHub documents no 409 body beyond "that request's UUID and merge options"
+            body = {"details": {"uuid": self.pending_merge, "merge_method": "merge"}}
             return GhResult(1, json.dumps(body), "gh: A merge request is already pending (HTTP 409)")
         return ok({"status": "pending", "details": {"uuid": "uuid-1", "message": "accepted"}})
 
@@ -388,13 +410,13 @@ def test_with_no_number_it_merges_this_branchs_pr() -> None:
     assert github.pull(1).merged
 
 
-def test_a_pr_already_in_a_merge_queue_is_reported_and_its_branch_kept_for_the_queue() -> None:
+def test_a_stacked_pr_put_in_the_merge_queue_is_still_merging_and_keeps_its_branch() -> None:
     github = FakeGitHub(stack(), queued=True)
 
-    said = run(github)
+    with pytest.raises(merge.StillMerging, match="PR #1 is in the merge queue"):
+        run(github)
 
     assert "feat1" in github.branches and not github.pull(1).merged
-    assert any("PR #1 is in the merge queue" in line for line in said)
 
 
 def chain() -> list[FakePull]:
@@ -411,7 +433,8 @@ def test_an_unstacked_pr_with_a_pr_based_on_it_keeps_its_branch_since_deleting_i
     assert github.pull(1).merged and github.methods == ["merge"]
     assert "feat1" in github.branches
     assert (github.pull(2).state, github.pull(2).base) == ("open", "feat1")
-    assert any("left feat1 on GitHub: open PRs are still based on it (#2)" in line and "gh pr edit 2 --base main" in line
+    based = "left feat1 on GitHub: open PRs are still based on it (#2)"
+    assert any(based in line and "gh pr edit 2 --base main" in line
                for line in said)  # fmt: skip
 
 
@@ -512,3 +535,67 @@ def test_nothing_is_merged_when_the_repos_settings_cant_be_read() -> None:
         run(github)
 
     assert not github.pull(1).merged
+
+
+def test_gh_pr_merge_that_only_queues_the_pr_is_still_merging_not_merged() -> None:
+    github = FakeGitHub([FakePull(1, base="main", head="feat")], gh_queues=True)
+    said: list[str] = []
+
+    with pytest.raises(merge.StillMerging, match="isn't merged yet.*merge queue or turned on auto-merge"):
+        merge.merge_pr(1, github, said.append)
+
+    assert not any(line.startswith("merged PR") for line in said)
+
+
+def test_a_failed_gh_pr_merge_whose_pr_cant_be_read_back_is_still_merging_with_ghs_reason() -> None:
+    github = FakeGitHub([FakePull(1, base="main", head="feat")], pr_merge_error="HTTP 502", reads_fail_after_merge=True)
+
+    with pytest.raises(merge.StillMerging, match=r"gh pr merge failed \(HTTP 502\).*couldn't be read back"):
+        run(github)
+
+
+def test_a_merge_request_that_never_reached_github_is_still_merging_not_refused() -> None:
+    github = FakeGitHub(stack(), put_unreachable=True)
+
+    with pytest.raises(merge.StillMerging, match="couldn't ask GitHub to merge PR #1"):
+        run(github)
+
+
+def test_a_fork_pr_is_squashed_though_this_repo_has_a_same_named_branch_with_prs_on_it() -> None:
+    github = FakeGitHub(
+        [FakePull(1, base="main", head="feat", head_repo="someone/widget"), FakePull(2, base="feat", head="other")]
+    )
+
+    run(github)
+
+    assert github.pull(1).merged and github.methods == ["squash"]
+
+
+def test_a_repo_without_squash_merges_gets_a_merge_commit_for_a_ticket_pr() -> None:
+    github = FakeGitHub([FakePull(1, base="main", head="feat")], allow_squash_merge=False)
+
+    said = run(github)
+
+    assert github.methods == ["merge"]
+    assert any("allows no squash merges" in line for line in said)
+
+
+def test_a_pr_outside_the_stack_based_on_the_merged_branch_gets_the_gh_pr_edit_advice() -> None:
+    """GitHub moves the stack's next PR, never the hand-opened #9, so running again alone can't help."""
+    github = FakeGitHub([*stack(), FakePull(9, base="feat1", head="side")])
+
+    said = run(github)
+
+    assert "feat1" in github.branches and github.pull(9).state == "open"
+    assert any("open PRs are still based on it (#9)" in line and "gh pr edit 9 --base main" in line for line in said)
+
+
+def test_a_pr_into_a_chained_branch_that_moved_on_after_its_merge_is_merged() -> None:
+    """A long-lived branch merged once, then given new commits, is a base like any other."""
+    pulls = chain()
+    pulls[0].merged, pulls[0].state = True, "closed"
+    github = FakeGitHub(pulls, branches={"feat1": "newer-commit"})
+
+    run(github, pr=2)
+
+    assert github.pull(2).merged

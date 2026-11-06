@@ -54,8 +54,8 @@ case) starts an invocation to check, so wrappers like env, command, xargs, nohup
 no special case; so does every word naming tower (or the plugin's run-tower.py) followed by `merge`.
 git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and gh's command
 words are found the way gh itself finds them, so -R/--repo can come anywhere. In code for
-python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is checked, and code naming
-both tower and merge counts as a tower merge.
+python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is checked, and inline code (-c,
+-e, --eval) that names tower and merge, in the code or the arguments after it, counts as a tower merge.
 
 When unsure, we ask: a command that can't be split (an unclosed quote, $( or backtick, a heredoc
 delimiter with $, a ${ cmd; } substitution), a shell reading code it can't see (from a pipe, <( ), a
@@ -178,8 +178,11 @@ PR_NUMBER = re.compile(r"[1-9][0-9]*")
 TOWER_PROGRAMS = {"tower", "run-tower.py"}
 # Python's own switches, which change nothing about which script runs or where (the -I in python3 -I run-tower.py).
 PYTHON_SWITCHES = re.compile(r"-[IEsSBuqbOP]+")
-# Interpreter code (python3 -c '...') that may run `tower merge`: it names both.
-TOWER_MERGE_CODE = re.compile(r"\btower\b.*\bmerge\b|\bmerge\b.*\btower\b", re.DOTALL)
+# An interpreter option giving it code to run: python -c, node/perl/ruby/osascript -e, php -r, node --eval/--print.
+CODE_OPTION = re.compile(r"-[A-Za-z]*[cerE]|--(?:eval|print)\b")
+# Inline code (and the arguments after it) that may run `tower merge` names both words; two searches, each linear.
+TOWER_WORD = re.compile(r"\btower\b")
+MERGE_WORD = re.compile(r"\bmerge\b")
 # What a merge's PR lookup (`gh api repos/OWNER/REPO/pulls/N`) prints, on one line: the PR's base, its repo's default
 # branch and, for a PR in a GitHub stack, the stack's base (null otherwise).
 PR_LOOKUP_JQ = "[.base.ref, .base.repo.default_branch, .stack.base.ref] | @json"
@@ -842,7 +845,7 @@ class CommandChecker:
         name = program_name(command.words[index])
         is_language = bool(LANGUAGE_RUNNER.fullmatch(name))
         is_git_dashed = name.startswith("git-") and runs_as_program(command.words, index)  # not `man git-push`
-        if name in TOWER_PROGRAMS:  # tower merge is judged at the end, like gh pr merge
+        if name in TOWER_PROGRAMS and runs_tower(command.words, index):  # judged at the end, like gh pr merge
             self.note_tower_merge(command.words, index, depth == 0)
             return []
         if name not in INVOKERS and not is_git_dashed and not is_language:
@@ -862,8 +865,10 @@ class CommandChecker:
         if name in CODE_STRING_RUNNERS:  # each argument with spaces or operators may be a command line
             return [r for arg in args if re.search(r"[\s;|&]", arg.text) for r in self.check(arg.text, depth + 1)]
         if is_language:  # code in another language: check the git/gh commands and tower merges written inside it
-            if any(re.search(r"\s", arg.text) and TOWER_MERGE_CODE.search(arg.text) for arg in args):
-                self.merges.append(PendingMerge("tower merge (in interpreter code)", self.tower_gates(), False))
+            if gives_code(args):  # the code and the arguments after it (sys.argv) together
+                joined = " ".join(arg.text for arg in args)
+                if TOWER_WORD.search(joined) and MERGE_WORD.search(joined):
+                    self.merges.append(PendingMerge("tower merge (in interpreter code)", self.tower_gates(), False))
             return [
                 r for arg in args for m in EMBEDDED_COMMAND.finditer(arg.text) for r in self.check(m.group(), depth + 1)
             ]
@@ -1196,6 +1201,21 @@ def gh_lookup(argv: list[str], cwd: str) -> str | None:
         return None
     out = proc.stdout.strip()
     return out if proc.returncode == 0 and out and "\n" not in out else None
+
+
+def runs_tower(words: list[Word], index: int) -> bool:
+    """Whether word INDEX (naming tower or run-tower.py) is what its command runs: the program itself (or after a
+    wrapper like env or sudo), or an argument of any program but git and those that only print or read
+    (python3 run-tower.py, uv run tower), so `git -C ~/code/tower merge` and `echo tower merge` aren't tower merges."""
+    if runs_as_program(words, index):
+        return True
+    first = program_position(words)
+    return first < index and program_name(words[first]) not in READ_ONLY_PROGRAMS | {"git"}
+
+
+def gives_code(args: list[Word]) -> bool:
+    """Whether an interpreter's ARGS give it inline code to run (-c, -e, --eval, ...), not only a script file."""
+    return any(not arg.dynamic and CODE_OPTION.match(arg.text) for arg in args) or any(arg.dynamic for arg in args)
 
 
 def program_name(word: Word) -> str:

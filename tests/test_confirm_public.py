@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 
@@ -651,6 +652,11 @@ RUN_TOWER = "/Users/x/.claude/plugins/tower/plugin/scripts/run-tower.py"
 T = f"python3 -I {RUN_TOWER}"
 M = MERGE_ASYNC = "repos/acme/widget/pulls/5/merge-async"
 ASKS = (True, True, False)  # asks in work and personal, not sandbox
+NEVER = (False, False, False)
+# tower merge from interpreter code: the subcommand from argv, run-tower.py through runpy, code with no spaces
+ARGV_CODE = "python3 -c 'from tower import cli; import sys; cli.main(sys.argv[1:])' merge 5"
+RUNPY_CODE = """python3 -I -c 'import runpy; runpy.run_path("/x/scripts/run-tower.py", run_name="__main__")' merge 5"""
+TIGHT_CODE = "python3 -c \"__import__('tower.cli').cli.main(['merge','5'])\""
 POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bool]] = [
     # (id, command, base gh reports for a merge (with its stack's base for a stacked PR) or None, asks in work,
     # personal, sandbox)
@@ -681,6 +687,18 @@ POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bo
     ("merge: tower merge of a PR from a variable", f'{T} merge "$PR"', "feat-base", True, True, False),
     ("merge: tower with a subcommand from a variable", 'tower "$CMD" 5', "feat-base", True, True, False),
     ("merge: tower merge in python code", "python3 -c 'from tower import cli; cli.main([\"merge\"])'", "x", *ASKS),
+    ("merge: tower merge in python code, merge from argv", ARGV_CODE, "x", *ASKS),
+    ("merge: run-tower.py through runpy", RUNPY_CODE, "x", *ASKS),
+    ("merge: tower merge in python code with no spaces", TIGHT_CODE, "x", *ASKS),
+    # words that only name tower and merge run no tower merge
+    ("local: git merge in a folder named tower", "git -C /code/tower merge --ff-only origin/main", None, *NEVER),
+    ("local: echo tower merge", "echo tower merge", None, *NEVER),
+    (
+        "local: a card whose reason names tower merge",
+        f'{T} card write --reason "approve: tower merge 57"',
+        None,
+        *NEVER,
+    ),
     # a stacked PR lands on its stack's base (GitHub merges every PR below it too), whatever its own base says
     ("merge_to_main: a stacked PR", f"{T} merge 5", ("feat1", "main"), True, True, False),
     ("merge_to_main: gh pr merge of a stacked PR", "gh pr merge 5 --auto -s", ("feat1", "main"), True, True, False),
@@ -1159,3 +1177,11 @@ def test_the_prompt_names_a_stricter_profile_reached_in_another_repo(fork: Path)
     assert str(decision["permissionDecisionReason"]).startswith(
         "Public action or rule change (tower policy: personal; it reaches another repo: personal+work) — approve? "
     )
+
+
+def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
+    """The tower-merge check on interpreter code stays linear: a quadratic one ran 45 s on this, past the timeout."""
+    code = "tower " * 40_000
+    start = time.monotonic()
+    run_hook(tmp_path, bash(f"python3 -c '{code}' merge 5"), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10

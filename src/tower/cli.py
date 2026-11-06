@@ -17,8 +17,9 @@ tower stats [--since 14d] [--repo [PATH]]
                            metrics per PR merged in the window, from the event log and GitHub (see stats.py);
                            every repo in the log, or only PATH's (default: this one) with --repo
 tower merge [PR]           merge PR (default: this branch's), stacked or not, by the method its shape calls for, and
-                           delete its head branch when that's safe; exit 1 when nothing was merged, 3 when GitHub is
-                           still merging (see merge.py)
+                           delete its head branch when that's safe; exit 1 when nothing was merged, 3 when it isn't
+                           merged yet but may be: GitHub still merging, a merge queue, or GitHub unreachable (see
+                           merge.py)
 tower policy               the approval profile for this repo, why it applies, and what each key says (see policy.py)
 tower policy use PROFILE [--repo]
                            make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
@@ -292,8 +293,8 @@ def stats_command(since: timedelta, repo_path: str | None) -> int:
 
 
 def merge_command(pr: int | None) -> int:
-    """Run `tower merge`: say each step on stdout; exit 1 (saying why) when nothing was merged, 3 when GitHub accepted
-    the merge but hasn't finished it."""
+    """Run `tower merge`: say each step on stdout; exit 1 (saying why) when nothing was merged, 3 when the PR isn't
+    merged yet but may be (still merging, queued, or GitHub couldn't be asked)."""
     try:
         merge.merge_pr(pr, merge.run_gh(Path(".")), lambda line: print(f"tower: {line}", flush=True))
     except merge.MergeError as error:

@@ -220,12 +220,13 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_GH_LOG"], "a") as log:
     log.write(json.dumps(args) + "\\n")
 stacked = os.environ.get("FAKE_GH_STACK") == "1"
+merged = any(json.loads(line)[:2] == ["pr", "merge"] for line in open(os.environ["FAKE_GH_LOG"]))  # once gh merged it
 if args[:3] == ["pr", "view", "5"]:
     print(json.dumps({{"url": "https://github.com/acme/widget/pull/5"}}))
 elif args[:2] == ["pr", "view"]:
     sys.exit("no pull requests found for branch \\"feat\\"")
 elif args[:4] == ["api", "--hostname", "github.com", "repos/acme/widget/pulls/5"]:
-    print(json.dumps({{"number": 5, "state": "open", "merged": False, "base": {{"ref": "main", "repo": {{"default_branch": "main"}}}},
+    print(json.dumps({{"number": 5, "state": "closed" if merged else "open", "merged": merged, "base": {{"ref": "main", "repo": {{"default_branch": "main"}}}},
                       "head": {{"ref": "feat", "sha": "abc", "repo": {{"full_name": "acme/widget"}}}},
                       "stack": {{"base": {{"ref": "main"}}, "position": 1, "size": 2}} if stacked else None}}))
 elif args[-6:-2] == ["-f", "state=open", "-f", "base=feat"] or args[-6:-2] == ["-f", "state=closed", "-f", "base=feat"]:
@@ -263,7 +264,9 @@ def test_merge_squash_merges_the_pr_with_gh_and_relays_what_gh_said(
     out = capsys.readouterr().out
     assert out == "tower: Squashed and merged pull request acme/widget#5\ntower: merged PR #5 into main with a squash\n"
     calls = [json.loads(line) for line in merge_gh.read_text(encoding="utf-8").splitlines()]
-    assert calls[-1] == ["pr", "merge", "5", "--squash", "--delete-branch", "--match-head-commit", "abc"]
+    merges = [call for call in calls if call[:2] == ["pr", "merge"]]
+    assert merges == [["pr", "merge", "5", "--squash", "--delete-branch", "--match-head-commit", "abc"]]
+    assert calls[-1][:4] == ["api", "--hostname", "github.com", "repos/acme/widget/pulls/5"]  # read back: merged?
 
 
 def test_merge_exits_1_with_the_reason_when_nothing_was_merged(

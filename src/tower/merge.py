@@ -7,8 +7,9 @@ base. So:
 
 - A stacked PR is merged only from the bottom of its stack (its base is the stack's base), one PR per call, so a
   merge lands exactly one PR and one approval covers exactly that. It goes through `PUT .../pulls/{n}/merge-async`
-  (a direct merge, pinned to the head just read), then `GET .../merge-async/{uuid}` is polled every POLL_SECONDS
-  until GitHub says merged or failed, or MERGE_TIMEOUT_SECONDS pass.
+  (merge_action=default: a direct merge, or through the merge queue if its base has one; pinned to the head just
+  read), then `GET .../merge-async/{uuid}` is polled every POLL_SECONDS until GitHub says merged or failed, or
+  MERGE_TIMEOUT_SECONDS pass.
 - Any other PR is merged with `gh pr merge N`, as before, pinned to the head just read (--match-head-commit).
 - The method (merge_method()): a merge commit for a stacked PR, for chained PRs (open PRs are based on its head)
   and for one whose head other PRs were merged into (an integration branch, like integration/a-plus -> main), so
@@ -22,8 +23,10 @@ base. So:
   --delete-branch` delete it, on GitHub and locally; otherwise the local branch is left (`git-spice repo sync`
   removes it).
 
-Run it again after a timeout or a branch left behind: a pending merge is picked up (GitHub answers a second request
-with the first one's uuid), and an already merged PR only gets its branch deleted.
+"Merged" is only said once GitHub says the PR merged: a PR that is queued (a merge queue, auto-merge), still pending,
+or whose state can't be read is StillMerging (exit 3), never "nothing merged". Run it again then: a pending merge is
+picked up (GitHub answers a second request with the first one's uuid), and an already merged PR only gets its branch
+deleted.
 
 The approval hook (plugin/scripts/confirm-public.py) judges `tower merge` like `gh pr merge`, since the gh calls here
 are out of its sight: by merge_to_main or merge_to_branch for the branch the PR lands on (for a stacked PR, the
@@ -69,7 +72,8 @@ class MergeError(Exception):
 
 
 class StillMerging(Exception):
-    """GitHub accepted the merge but hadn't finished it by MERGE_TIMEOUT_SECONDS."""
+    """The PR isn't merged yet but may be: GitHub hasn't finished the merge, queued it (a merge queue or auto-merge),
+    or couldn't be asked. Running tower merge again picks it up or says where it stands."""
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,11 @@ class Pull:
     def stacked(self) -> bool:
         """Whether the PR is in a GitHub stack."""
         return self.stack_base is not None
+
+    @property
+    def head_is_here(self) -> bool:
+        """Whether the PR's head branch is in its own repo (not a fork's)."""
+        return self.head_repo is not None and self.head_repo.lower() == self.repo.lower()
 
     def api(self, *args: str) -> list[str]:
         """A gh api command line for this PR's host."""
@@ -137,7 +146,8 @@ def merge_pr(
         delete_head_branch(pull, gh, say, sleep, clock)
         return
     refuse_misplaced(pull, gh)
-    above, merged_in = based_on(pull, gh), merged_into(pull, pull.head, gh)
+    # A fork's branch isn't this repo's: a same-named branch here says nothing about this PR
+    above, merged_in = (based_on(pull, gh), merged_into(pull, pull.head, gh)) if pull.head_is_here else ([], [])
     if above is None or merged_in is None:
         raise MergeError(f"couldn't list the PRs based on {pull.head}, so nothing was merged; run it again")
     settings = gh(pull.api(f"repos/{pull.repo}"))
@@ -149,8 +159,8 @@ def merge_pr(
     if why:
         say(f"merging PR #{pull.number} with {METHOD_NAMES[method]}: {why}")
     if pull.stacked:
-        if merge_async(pull, method, gh, say, sleep, clock):
-            delete_head_branch(pull, gh, say, sleep, clock)
+        merge_async(pull, method, gh, say, sleep, clock)
+        delete_head_branch(pull, gh, say, sleep, clock)
         return
     # gh deletes the branch through the API at once, which would close the PRs based on it
     gh_deletes = not above and not merged_in
@@ -162,8 +172,8 @@ def merge_pr(
 def refuse_misplaced(pull: Pull, gh: Gh) -> None:
     """Raise MergeError, merging nothing, for a PR that isn't open or whose merge wouldn't land where it should: an
     upper PR of a GitHub stack (GitHub would merge every PR below it too), or a PR based on a chained branch whose own
-    PR already merged (its commits would stay on that branch). A branch that PRs were merged into is an integration
-    branch, which stays a fine base after it merges."""
+    PR already merged and that hasn't moved since (its commits would stay on that branch). A branch that PRs were
+    merged into (an integration branch) or that moved on after its merge stays a fine base."""
     if pull.state != "open":
         raise MergeError(f"PR #{pull.number} is {pull.state}, not open")
     if pull.stacked and pull.base != pull.stack_base:
@@ -178,7 +188,12 @@ def refuse_misplaced(pull: Pull, gh: Gh) -> None:
     if merged_from is None or merged_in is None:
         raise MergeError(f"couldn't list the PRs from and into {pull.base}, so nothing was merged; run it again")
     if merged_from and not merged_in:
-        number, landed = merged_from[0]
+        number, landed, merged_head = merged_from[0]
+        tip = gh(pull.api(f"repos/{pull.repo}/git/ref/heads/{quote(pull.base, safe='/')}"))
+        if tip.code != 0 and "HTTP 404" not in tip.err:
+            raise MergeError(f"couldn't read {pull.base} ({gh_reason(tip)}), so nothing was merged; run it again")
+        if tip.code == 0 and json_at(json_body(tip), "object", "sha") != merged_head:
+            return  # it moved on after its PR merged: a long-lived branch, still a fine base
         raise MergeError(
             f"PR #{pull.number} is based on {pull.base}, whose PR #{number} is already merged into {landed}: merging"
             f" it would leave its commits on {pull.base}. Move it first (gh pr edit {pull.number} --base {landed}),"
@@ -199,6 +214,9 @@ def merge_method(pull: Pull, above: list[int], merged_in: list[int], settings: d
         why = f"other PRs were merged into its head branch {pull.head} ({pr_list(merged_in)})"
     elif above:
         why = f"open PRs are based on its head branch {pull.head} ({pr_list(above)})"
+    elif settings.get("allow_squash_merge") is False:
+        fallback = "merge" if settings.get("allow_merge_commit") is not False else "rebase"
+        return fallback, f"{pull.repo} allows no squash merges"
     else:
         return "squash", ""
     if settings.get("allow_merge_commit") is not False:
@@ -214,7 +232,7 @@ def merge_method(pull: Pull, above: list[int], merged_in: list[int], settings: d
 
 
 def find_pull(pr: int | None, gh: Gh) -> Pull:
-    """The PR numbered pr (None: this branch's), found the way gh pr merge finds it, then read from GitHub's REST API."""
+    """The PR numbered pr (None: this branch's), found the way gh pr merge finds it, then read from the REST API."""
     found = gh(["pr", "view", *([str(pr)] if pr is not None else []), "--json", "url"])
     url = PR_URL.fullmatch(str(json_body(found).get("url", ""))) if found.code == 0 else None
     if url is None:
@@ -247,62 +265,84 @@ def find_pull(pr: int | None, gh: Gh) -> Pull:
 
 def merge_unstacked(pull: Pull, method: str, gh: Gh, say: Say, delete_branch: bool) -> None:
     """Merge a PR outside any stack with gh pr merge, as workers always have, by method; with delete_branch, gh
-    deletes its head branch too, on GitHub and locally."""
+    deletes its head branch too, on GitHub and locally. Whatever gh's exit code, GitHub is asked afterwards whether
+    the PR merged: gh exits 0 after only queueing it or turning on auto-merge, and fails after merging when its local
+    cleanup does."""
     flags = [f"--{method}", *(["--delete-branch"] if delete_branch else []), "--match-head-commit", pull.head_sha]
     merged = gh(["pr", "merge", str(pull.number), *flags])
     if merged.code == 0:
         for line in (merged.out + "\n" + merged.err).splitlines():
             if line.strip():
                 say(line.strip())
+    try:
+        now = find_pull(pull.number, gh)
+    except MergeError as error:
+        raise StillMerging(
+            f"gh pr merge {'finished' if merged.code == 0 else f'failed ({gh_reason(merged)})'}, but PR"
+            f" #{pull.number} couldn't be read back ({error}); run tower merge {pull.number} again to see where it"
+            " stands"
+        ) from None
+    if now.merged and merged.code == 0:
         say(f"merged PR #{pull.number} into {pull.base} with {METHOD_NAMES[method]}")
-        return
-    # gh merges first and cleans up after (deletes the branches, switches the worktree), so a failure may come late
-    if not find_pull(pull.number, gh).merged:
+    elif now.merged:
+        say(f"PR #{pull.number} is merged, but gh pr merge also said: {gh_reason(merged)}")
+    elif merged.code == 0:
+        raise StillMerging(
+            f"PR #{pull.number} isn't merged yet: gh pr merge put it in the merge queue or turned on auto-merge, so"
+            f" GitHub merges it once its checks pass; run tower merge {pull.number} again then to delete its branch"
+        )
+    else:
         raise MergeError(f"gh pr merge didn't merge PR #{pull.number}: {gh_reason(merged)}")
-    say(f"PR #{pull.number} is merged, but gh pr merge also said: {gh_reason(merged)}")
 
 
 def merge_async(
     pull: Pull, method: str, gh: Gh, say: Say, sleep: Callable[[float], None], clock: Callable[[], float]
-) -> bool:
-    """Merge a stacked PR with the asynchronous merge API and wait until GitHub says it merged (True) or put it in the
-    merge queue (False). Raises MergeError if GitHub refuses or fails it, StillMerging if it is still pending at
-    MERGE_TIMEOUT_SECONDS."""
+) -> None:
+    """Merge a stacked PR with the asynchronous merge API (merge_action=default: through the merge queue if its base
+    has one) and wait until GitHub says it merged. Raises MergeError if GitHub refuses or fails it, StillMerging if it
+    is queued, still pending at MERGE_TIMEOUT_SECONDS, or GitHub can't be asked."""
     endpoint = f"repos/{pull.repo}/pulls/{pull.number}/merge-async"
     say(f"PR #{pull.number} is in a GitHub stack on {pull.stack_base}: merging it with GitHub's asynchronous merge API")
-    fields = ["-f", f"merge_method={method}", "-f", "merge_action=direct_merge", "-f", f"sha={pull.head_sha}"]
+    fields = ["-f", f"merge_method={method}", "-f", "merge_action=default", "-f", f"sha={pull.head_sha}"]
     asked = gh(pull.api("-X", "PUT", endpoint, *fields))
     answer = json_body(asked)
     uuid = json_at(answer, "details", "uuid")
+    rerun = f"run tower merge {pull.number} again"
     if asked.code != 0 and not uuid:
-        raise MergeError(f"GitHub refused to merge PR #{pull.number}: {gh_reason(asked)}")
+        if answer.get("message"):  # GitHub answered: a refusal
+            raise MergeError(f"GitHub refused to merge PR #{pull.number}: {gh_reason(asked)}")
+        raise StillMerging(f"couldn't ask GitHub to merge PR #{pull.number} ({gh_reason(asked)}); {rerun}")
+    status = answer.get("status")
     if asked.code != 0:  # 409: a merge of this PR is already pending, and GitHub gave its uuid
         say(f"a merge of PR #{pull.number} was already pending ({uuid}); waiting for it")
-    status = answer.get("status")
+        status = "pending"
     deadline = clock() + MERGE_TIMEOUT_SECONDS
     while status == "pending":
+        if not uuid:
+            raise StillMerging(f"GitHub says PR #{pull.number}'s merge is pending but gave no uuid to follow; {rerun}")
         if clock() >= deadline:
             raise StillMerging(
-                f"GitHub is still merging PR #{pull.number} after {MERGE_TIMEOUT_SECONDS // 60} minutes; run tower"
-                f" merge {pull.number} again to keep waiting (it picks up this merge, {uuid})"
+                f"GitHub is still merging PR #{pull.number} after {MERGE_TIMEOUT_SECONDS // 60} minutes; {rerun} to"
+                f" keep waiting (it picks up this merge, {uuid})"
             )
         sleep(POLL_SECONDS)
         polled = gh(pull.api(f"{endpoint}/{uuid}"))
         if polled.code != 0:
             raise StillMerging(
-                f"couldn't read the status of PR #{pull.number}'s merge ({gh_reason(polled)}); run tower merge"
-                f" {pull.number} again: it picks up this merge, {uuid}"
+                f"couldn't read the status of PR #{pull.number}'s merge ({gh_reason(polled)}); {rerun}: it picks up"
+                f" this merge, {uuid}"
             )
         answer = json_body(polled)
         status = answer.get("status")
     if status == "enqueued":
-        say(f"PR #{pull.number} is in the merge queue: GitHub merges it once the queue's checks pass")
-        return False
+        raise StillMerging(
+            f"PR #{pull.number} is in the merge queue: GitHub merges it once the queue's checks pass; {rerun} then to"
+            " delete its branch"
+        )
     if status != "merged":
         message = json_at(answer, "details", "message")
         raise MergeError(f"GitHub didn't merge PR #{pull.number}: {message or f'its merge says {status!r}'}")
     say(f"merged PR #{pull.number} into {pull.stack_base} with {METHOD_NAMES[method]}")
-    return True
 
 
 def delete_head_branch(
@@ -312,7 +352,7 @@ def delete_head_branch(
     stays: the branch is in pull's repo, isn't an integration branch, isn't deleted by the repo itself, has no open
     PR based on it (an API delete closes them) and still points at the PR's head. GitHub moves the PRs above a stacked
     PR by itself, so for one it waits up to RETARGET_TIMEOUT_SECONDS. The local branch is never touched."""
-    if pull.head_repo is None or pull.head_repo.lower() != pull.repo.lower():
+    if not pull.head_is_here:
         say(f"left {pull.head}: it is in {pull.head_repo or 'a deleted fork'}, not {pull.repo}")
         return
     merged_in = merged_into(pull, pull.head, gh)
@@ -330,21 +370,17 @@ def delete_head_branch(
         above = based_on(pull, gh)
     if above is None or merged_in is None or settings.code != 0:
         say(
-            f"left {pull.head} on GitHub: couldn't read whether deleting it is safe; run tower merge {pull.number} again"
+            f"left {pull.head} on GitHub: couldn't read whether deleting it is safe; run tower merge"
+            f" {pull.number} again"
         )
         return
     if above:
-        if pull.stacked:
-            next_step = f"run tower merge {pull.number} again in a minute to delete it"
-        else:
-            moves = " and ".join(f"gh pr edit {n} --base {pull.base}" for n in above)
-            next_step = (
-                f"GitHub moves them only when it deletes a merged branch itself, so move them ({moves}) or turn on"
-                f" the repo's automatic head branch deletion, then run tower merge {pull.number} again to delete it"
-            )
+        moves = " and ".join(f"gh pr edit {n} --base {pull.base}" for n in above)
         say(
             f"left {pull.head} on GitHub: open PRs are still based on it ({pr_list(above)}), and deleting it would"
-            f" close them; {next_step}"
+            " close them. GitHub moves a stack's next PR by itself, but any other PR only when it deletes a merged"
+            f" branch itself: move those ({moves}) or turn on the repo's automatic head branch deletion, then run"
+            f" tower merge {pull.number} again to delete it"
         )
         return
     ref = quote(pull.head, safe="/")
@@ -379,17 +415,18 @@ def merged_into(pull: Pull, branch: str, gh: Gh) -> list[int] | None:
     return None if listed is None else pr_numbers([item for item in listed if json_at(item, "merged_at")])
 
 
-def merged_out_of(pull: Pull, branch: str, gh: Gh) -> list[tuple[int, str]] | None:
-    """The PRs in pull's repo merged from branch (their head was it), each with the branch it was merged into; None
-    if GitHub can't say."""
+def merged_out_of(pull: Pull, branch: str, gh: Gh) -> list[tuple[int, str, str]] | None:
+    """The PRs in pull's repo merged from branch (their head was it), each with the branch it was merged into and its
+    head SHA when it merged; None if GitHub can't say."""
     listed = listed_pulls(pull, gh, "closed", "head", f"{pull.repo.split('/')[0]}:{branch}")
     if listed is None:
         return None
     merged = [item for item in listed if json_at(item, "merged_at")]
-    numbers, bases = pr_numbers(merged), [json_at(item, "base", "ref") for item in merged]
-    if numbers is None or not all(isinstance(base, str) for base in bases):
+    numbers = pr_numbers(merged)
+    bases, heads = [json_at(item, "base", "ref") for item in merged], [json_at(item, "head", "sha") for item in merged]
+    if numbers is None or not all(isinstance(text, str) for text in (*bases, *heads)):
         return None
-    return [(number, str(base)) for number, base in zip(numbers, bases)]
+    return [(number, str(base), str(head)) for number, base, head in zip(numbers, bases, heads)]
 
 
 def listed_pulls(pull: Pull, gh: Gh, state: str, by: str, branch: str) -> list[object] | None:
