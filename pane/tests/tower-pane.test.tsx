@@ -117,8 +117,12 @@ test('the pane lists what needs you, and the status line counts it', async ($, o
 })
 
 test('a needs-you card whose session is working again is shown as running, not as needing you', async ($, on) => {
-  // rolly-polly's card still says needs-you, but its session is busy: the user already answered.
-  const resumed = REPORT.replace('- copilot | 1 open: copilot-1(int:waiting) waiting for: approve Bash', '- rolly-polly | 1 open: rolly-ad(int:busy)')
+  // rolly-polly's card still says needs-you, but its session is busy: hub-scan.sh's section 1 already says running.
+  const resumed = REPORT.replace(
+    '- rolly-polly | status: needs-you |',
+    '- rolly-polly | status: running | card: needs-you |',
+  ).replace('updated: 2026-11-05T10:00 |', 'updated: 2026-11-05T10:00 | reason: the card says needs-you but session rolly-ad is busy: you already answered |')
+    .replace('- copilot | 1 open: copilot-1(int:waiting) waiting for: approve Bash', '- rolly-polly | 1 open: rolly-ad(int:busy)')
   const w = world(on, resumed)
   await $.command.run({ command: 'tower' })
   expect(w.statuses.at(-1)).toBe('tower WIP 2/3')
@@ -126,8 +130,77 @@ test('a needs-you card whose session is working again is shown as running, not a
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /Nothing needs you right now/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /still says needs you · busy session rolly-ad/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /you already answered · busy session rolly-ad/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /NEEDS YOU/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a report from tower before 0.9.0 still shows a resumed needs-you card as running', async ($, on) => {
+  // REPORT's rows have no card field, as hub-scan.sh printed them before tower state decided the status.
+  const w = world(on, REPORT.replace('- copilot | 1 open: copilot-1(int:waiting) waiting for: approve Bash', '- rolly-polly | 1 open: rolly-ad(int:busy)'))
+  await $.command.run({ command: 'tower' })
+  expect(w.statuses.at(-1)).toBe('tower WIP 2/3')
+})
+
+// hub-scan.sh's real output for the fixture in tests/test_state.py, which checks it byte for byte: three workers the
+// hub and the pane used to disagree on (busy with no card; busy with a stale needs-you card; waiting with a running
+// card). The hub reports from its GROUPS section; this test shows the pane draws the same status for each.
+const HUB_AND_PANE = `REPO: repo
+LEDGER: /vault/repo/Ledger
+
+== WORKTREES ==
+- main | status: main | main checkout (no card expected) | reason: the main checkout | /p
+- feat-1 | status: running | card: none | ticket: none | updated: ? | reason: no card yet, but session w1 is busy | /p/worktrees/feat-1
+- feat-7 | status: running | card: needs-you | ticket: #7 | updated: 2026-11-06T09:00 | reason: the card says needs-you but session w7 is busy: you already answered | /p/worktrees/feat-7
+- feat-8 | status: needs-you | card: running | ticket: #8 | updated: 2026-11-06T09:00 | reason: session w8 is waiting on you (approve Bash); the card says running | /p/worktrees/feat-8
+WIP: 3 of 3 (execution slots: running + needs-you, main excluded) — AT LIMIT
+UNSHIPPED: feat-1 (1 commit), feat-7 (1 commit), feat-8 (1 commit) not on main
+PR approval: every
+
+== LIVE SESSIONS (agent view) ==
+- main | 1 open: hub-1(int:idle)
+- feat-1 | 1 open: w1(int:busy)
+- feat-7 | 1 open: w7(int:busy)
+- feat-8 | 1 open: w8(int:waiting) waiting for: approve Bash
+
+== ORPHAN CARDS (worktree gone) ==
+(none)
+
+== GROUPS (report in this order) ==
+NEEDS YOU
+- feat-8 | ticket: #8 | session w8 is waiting on you (approve Bash); the card says running
+BLOCKED
+(none)
+RUNNING
+- feat-1 | ticket: none | no card yet, but session w1 is busy
+- feat-7 | ticket: #7 | the card says needs-you but session w7 is busy: you already answered
+WAITING ON CI OR REVIEW
+(none)
+DONE
+(none)
+HOUSEKEEPING
+- feat-1 | no card
+
+== GITHUB ==
+(skipped: --no-github)
+
+== BACKLOG (parked ideas) ==
+(empty)
+`
+
+test('the pane shows the hub\'s status for every worktree of the shared fixture', async ($, on) => {
+  const w = world(on, HUB_AND_PANE)
+  await $.command.run({ command: 'tower' })
+  expect(w.statuses.at(-1)).toBe('tower WIP 3/3 · 1 needs you') // the hub: WIP 3 of 3, one row under NEEDS YOU
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // NEEDS YOU: feat-8 only. RUNNING: feat-1 and feat-7, as in the hub's GROUPS.
+  expect((await ui.findAll({ type: 'Text', text: /^ NEEDS YOU\s*$/ })).length).toBe(1)
+  expect((await ui.findAll({ type: 'Text', text: /^ RUNNING\s*$/ })).length).toBe(2)
+  expect(await ui.find({ type: 'Text', text: /^card just updated · w8 waiting: approve Bash$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^card just updated, the card says needs-you but session w7 is busy: you already answered · busy session w7$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^busy session w1$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /feat-1: no card yet/ })).toBeTruthy()
   await ui.unmount()
 })
 

@@ -41,8 +41,11 @@ function rowBranch(line: string): string {
 /** Everything that needs the user, one label each for toasts: the same rows as the pane's Needs you. */
 export function needsYou(text: string): string[] {
   const { needCards, waiting } = needRows(parseReport(text))
+  const hasWaiting = (branch: string) => waiting.some(w => w.branch === branch)
   return [
-    ...needCards.map(card => `${card.branch}: card needs you`),
+    ...needCards.filter(w => w.card === 'needs-you').map(w => `${w.branch}: card needs you`),
+    // Needs you for a reason LIVE SESSIONS can't show (e.g. sessions read from the event log): say so once.
+    ...needCards.filter(w => w.card !== 'needs-you' && !hasWaiting(w.branch)).map(w => `${w.branch}: needs you`),
     ...waiting.map(w => `${w.branch}: session ${w.session.name} is waiting`),
   ]
 }
@@ -53,7 +56,12 @@ export function wipOf(text: string): string {
   return match?.[1] ?? ''
 }
 
-export type Worktree = { branch: string; path: string; isMain: boolean; status: string; ticket: string; updated: string; isStale: boolean }
+/**
+ * One WORKTREES row. status is the worktree's effective state, decided once by tower's core (`tower state`) for the
+ * hub, the pane and the WIP count alike; card is what the card itself says ('none' without one, '' on the main
+ * checkout's row); reason says why status is what it is.
+ */
+export type Worktree = { branch: string; path: string; isMain: boolean; status: string; card: string; reason: string; ticket: string; updated: string; isStale: boolean }
 export type Session = { name: string; state: string; waitingFor: string }
 export type Github = { prs: string[]; readyIssues: string[]; otherIssues: number; note: string }
 export type Report = {
@@ -70,16 +78,20 @@ export type Report = {
 
 /** The report as rows: one worktree per row, sessions grouped by worktree. */
 export function parseReport(text: string): Report {
-  const worktrees = sectionLines(text, 'WORKTREES')
+  const legacy = new Set<string>() // rows from hub-scan.sh before tower 0.9.0, whose status is the card's own
+  const rows = sectionLines(text, 'WORKTREES')
     .filter(line => line.startsWith('- '))
     .map((line, index): Worktree => {
       const parts = line.slice(2).split(' | ')
       const field = (name: string) => parts.find(p => p.startsWith(`${name}: `))?.slice(name.length + 2) ?? ''
       const isMain = index === 0
-      let status = field('status')
-      if (parts.some(p => p.startsWith('main checkout'))) status = 'main'
+      let status = (field('status') || (parts.some(p => p.startsWith('main checkout')) ? 'main' : '')).toLowerCase()
+      if (status === 'no card') status = 'no-card' // a report from hub-scan.sh before tower 0.9.0
+      // Rows from before tower 0.9.0 have no card field: there, status was the card's own.
+      if (!parts.some(p => p.startsWith('card: '))) legacy.add(parts[0] ?? '')
+      const card = legacy.has(parts[0] ?? '') ? (isMain ? '' : status === 'no-card' ? 'none' : status) : field('card')
       const path = [...parts].reverse().find(p => p.startsWith('/')) ?? '' // the row's last field; never drawn, only handed to Orca
-      return { branch: parts[0] ?? '', path, isMain, status: status.toLowerCase(), ticket: field('ticket'), updated: field('updated'), isStale: parts.some(p => p.startsWith('STALE')) }
+      return { branch: parts[0] ?? '', path, isMain, status, card, reason: field('reason'), ticket: field('ticket'), updated: field('updated'), isStale: parts.some(p => p.startsWith('STALE')) }
     })
   const sessions: Record<string, Session[]> = {}
   const shared: Record<string, number> = {}
@@ -92,6 +104,14 @@ export function parseReport(text: string): Report {
     const many = line.match(/<-- (\d+) interactive/)
     if (many?.[1]) shared[branch] = Number(many[1])
   }
+  // A legacy needs-you row whose session is working again, and none waiting: the user already answered. Newer
+  // reports arrive with this decided (tower state); remove once no tower older than 0.9.0 is installed.
+  const worktrees = rows.map(w => {
+    const list = sessions[w.branch] ?? []
+    const isResumed = legacy.has(w.branch) && w.status === 'needs-you' && list.some(s => s.state === 'busy')
+      && !list.some(s => s.state === 'waiting' || s.state === 'blocked')
+    return isResumed ? { ...w, status: 'running', reason: 'the card says needs-you but its session is busy: you already answered' } : w
+  })
   return {
     repo: text.match(/^REPO: (.+)$/m)?.[1] ?? '',
     ledger: text.match(/^LEDGER: (.+)$/m)?.[1] ?? '',
@@ -122,23 +142,13 @@ export function parseGithub(lines: string[]): Github {
 }
 
 /**
- * A needs-you card whose worktree has a session working again and none waiting: the user already
- * answered, and the card only catches up when that session next stops. The live state wins.
- */
-export function isResumed(report: Report, worktree: Worktree): boolean {
-  const list = report.sessions[worktree.branch] ?? []
-  return worktree.status === 'needs-you'
-    && list.some(s => s.state === 'busy')
-    && !list.some(s => s.state === 'waiting' || s.state === 'blocked')
-}
-
-/**
- * The rows under "Needs you": each needs-you card (with its waiting session, if any) that isn't
- * resumed, then each waiting session whose worktree has no such card. The pane, the status line and
- * the toasts all count these.
+ * The rows under "Needs you": each worktree whose effective state is needs-you (with its waiting
+ * session, if any), then each waiting session whose worktree isn't one of them. The pane, the status
+ * line and the toasts all count these. The pane doesn't weigh cards against sessions itself: section 1's
+ * status already has (a needs-you card whose session is busy again arrives as running).
  */
 export function needRows(report: Report) {
-  const needCards = report.worktrees.filter(w => w.status === 'needs-you' && !isResumed(report, w))
+  const needCards = report.worktrees.filter(w => w.status === 'needs-you')
   const waiting = Object.entries(report.sessions).flatMap(([branch, list]) =>
     list.filter(s => s.state === 'waiting' || s.state === 'blocked').map(s => ({ branch, session: s })))
   const loneWaiting = waiting.filter(w => !needCards.some(c => c.branch === w.branch))
@@ -182,7 +192,9 @@ function badgeOf(status: string, isStale: boolean): { label: string; color: stri
     case 'waiting': return { label: 'WAITING', color: 'warning' }
     case 'blocked': return { label: 'BLOCKED', color: 'error' }
     case 'running': return { label: 'RUNNING', color: 'suggestion' }
+    case 'waiting-ci': return { label: 'WAITING CI', color: 'inactive' }
     case 'done': return { label: 'DONE', color: 'success' }
+    case 'ready-to-clean': return { label: 'CLEAN UP', color: 'success' }
     case 'main': return { label: 'MAIN', color: 'inactive' }
     default: return { label: 'NO CARD', color: 'inactive' }
   }
@@ -547,6 +559,8 @@ export const register: Register = on => {
       return age === '' ? 'card' : age === 'now' ? 'card just updated' : `card ${age} ago`
     }
     const ticketOf = (w: { ticket: string }) => (w.ticket && w.ticket !== 'none' ? w.ticket : '')
+    const hasCard = (w: Worktree) => !w.isMain && w.card !== 'none' && w.card !== ''
+    const hasNoCard = (w: Worktree) => !w.isMain && w.card === 'none'
 
     const { needCards, waiting, loneWaiting } = needRows(report)
     const others = report.worktrees.filter(w => !needCards.includes(w))
@@ -560,7 +574,8 @@ export const register: Register = on => {
     const housekeeping = [
       ...Object.entries(report.shared).map(([branch, n]) => `${branch}: ${n} sessions share one worktree (rule: one each)`),
       ...report.worktrees.filter(w => w.isStale).map(w => `${w.branch}: card not updated in over a day`),
-      ...report.worktrees.filter(w => w.status === 'no card').map(w => `${w.branch}: no card yet`),
+      ...report.worktrees.filter(hasNoCard).map(w => `${w.branch}: no card yet`),
+      ...report.worktrees.filter(w => w.status === 'ready-to-clean').map(w => `${w.branch}: ready to clean up (${w.reason})`),
       ...report.orphans.map(o => `${o}: card left over from a removed worktree`),
     ]
     const worktreeAt = (cwd: string) =>
@@ -618,8 +633,8 @@ export const register: Register = on => {
         ))}
         {needCards.map(card => {
           const session = waiting.find(w => w.branch === card.branch)?.session
-          const detail = `${cardAge(card.updated)}${session ? ` · ${session.name} waiting${session.waitingFor ? `: ${session.waitingFor}` : ''}` : ''}`
-          const top = [orcaName(`orca-${card.branch}`, card.branch, nextHotkey()), ticketOf(card) ? <Text>{ticketOf(card)}</Text> : null, cardLink(card.branch)]
+          const detail = `${hasCard(card) ? cardAge(card.updated) : card.isMain ? 'main checkout' : 'no card'}${session ? ` · ${session.name} waiting${session.waitingFor ? `: ${session.waitingFor}` : ''}` : ''}`
+          const top = [orcaName(`orca-${card.branch}`, card.branch, nextHotkey()), ticketOf(card) ? <Text>{ticketOf(card)}</Text> : null, hasCard(card) ? cardLink(card.branch) : null]
           return row(`need-${card.branch}`, 'needs-you', false, top, detail)
         })}
         {loneWaiting.map(w => row(
@@ -632,18 +647,18 @@ export const register: Register = on => {
 
         {title('Worktrees')}
         {others.map(w => {
-          const hasCard = w.status !== 'no card' && w.status !== 'main'
-          const canNudge = (w.isStale || w.status === 'no card') && namesIn(w.branch).length > 0
+          const canNudge = (w.isStale || hasNoCard(w)) && namesIn(w.branch).length > 0
           const top = [
             orcaName(`orca-${w.branch}`, w.branch),
             ticketOf(w) ? <Text>{ticketOf(w)}</Text> : null,
-            hasCard ? cardLink(w.branch) : null,
+            hasCard(w) ? cardLink(w.branch) : null,
             canNudge ? <Button key={`nudge-${w.branch}`} plain dimColor label="nudge" onPress={() => void nudge($, namesIn(w.branch))} /> : null,
           ]
-          const resumed = isResumed(report, w)
-          const age = hasCard ? (resumed ? `${cardAge(w.updated)}, still says needs you` : cardAge(w.updated)) : ''
+          // When the effective state isn't what the card says, say why (e.g. "...busy: you already answered").
+          const overruled = hasCard(w) && w.card !== w.status && w.reason !== ''
+          const age = hasCard(w) ? (overruled ? `${cardAge(w.updated)}, ${w.reason}` : cardAge(w.updated)) : ''
           const detail = [age, sessionsOf(w.branch)].filter(Boolean).join(' · ')
-          return row(`wt-${w.branch}`, resumed ? 'running' : w.status, w.isStale, top, detail)
+          return row(`wt-${w.branch}`, w.status, w.isStale, top, detail)
         })}
 
         {housekeeping.length > 0 && gap()}

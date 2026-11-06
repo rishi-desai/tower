@@ -4,13 +4,16 @@
 # Usage: hub-scan.sh [--no-github]   (--no-github skips section 5, for frequent refreshes like the tower pane)
 #
 # Prints:
-#   1. WORKTREES     — every worktree, its branch, and its card's status; then the WIP count
+#   1. WORKTREES     — every worktree with its effective state (tower state), the WIP count, unshipped work
 #   2. LIVE SESSIONS — Claude sessions open in each worktree right now (from agent view)
 #   3. ORPHAN CARDS  — cards whose worktree no longer exists (finished or deleted work)
-#   4. GROUPS        — sections 1-3 sorted into the hub's report order (Needs you, Blocked, Running, Done,
-#                      Housekeeping), with card-vs-session mismatches called out, so the hub never regroups
+#   4. GROUPS        — every worktree sorted into the hub's report order (Needs you, Blocked, Running, Waiting on
+#                      CI or review, Done, Housekeeping), each with the reason for its state, so the hub never regroups
 #   5. GITHUB        — your open PRs, and open issues (all of them on your own repo, assigned to you otherwise)
 #   6. BACKLOG       — parked ideas waiting for a slot (only used when there's no GitHub)
+#
+# Sections 1, 3 and 4 come from one run of `tower state` (tower's core, src/tower/state.py), the one place a
+# worktree's status is decided, so the hub, the pane (which parses section 1) and the WIP count always agree.
 
 set -uo pipefail    # unset variables and pipe failures are errors; NOT -e, so one failing
                     # section (e.g. no GitHub remote) doesn't kill the rest of the report
@@ -25,151 +28,74 @@ repo="$(ledger_repo_name)" || exit 1
 project_dir="$(ledger_project_dir)" || exit 1              # prints why if config is missing
 ledger="$project_dir/Ledger"
 mkdir -p "$ledger"
-wip_limit="$(tower_conf_get wip_limit 3)"
 pr_approval="$(tower_conf_get pr_approval every)"          # every | none; anything else is every
 case "$pr_approval" in every|none) ;; *) pr_approval=every ;; esac
-stale_minutes=$((24 * 60))                                 # a `running` card untouched this long is suspect
 
 echo "REPO: $repo"
 echo "LEDGER: $ledger"
 echo
 
-# ---------- 1. WORKTREES ----------
-echo "== WORKTREES =="
-seen_cards=""        # space-separated card names that matched a live worktree
-session_args=()      # BRANCH=PATH pairs for sessions.py
-wip_count=0          # worktrees whose card says running or needs-you
-is_first=1           # git lists the main checkout first
-row_label=(); row_status=(); row_ticket=()   # one entry per worktree, for section 4; status is the card's,
-                                             # or NO CARD / MAIN (the main checkout, which needs none)
+state_out="$(mktemp)"   # tower state's report: sections 1, 3 and 4, printed in their places below
+agents="$(mktemp)"      # the `claude agents --json` snapshot tower state decided from, redrawn by section 2
+gh_err="$(mktemp)"      # each failing command's stderr, so failures show their real reason
+trap 'rm -f "$state_out" "$agents" "$gh_err"' EXIT
+state_failed=""         # why tower state didn't run; sections 1, 3 and 4 say so instead of guessing
+if ! command -v python3 >/dev/null 2>&1; then
+  state_failed="python3 not found"
+elif ! python3 -I "$here/../../../scripts/run-tower.py" state --save-agents "$agents" >"$state_out" 2>"$gh_err"; then
+  state_failed="tower state failed: $(tail -n1 "$gh_err")"
+fi
 
-# `git worktree list --porcelain` prints a stable, machine-readable block per worktree:
-#   worktree /path/to/folder
-#   HEAD <sha>
-#   branch refs/heads/<name>      (or "detached")
-#   <blank line>
-# We read it line by line and print one summary row each time a block ends.
+# state_section NAME — print one "== NAME ..." section of tower state's report, header included, up to its blank line.
+state_section() {
+  if [ -n "$state_failed" ]; then
+    echo "== $1 =="
+    echo "($state_failed)"
+  else
+    awk -v name="== $1" 'index($0, name) == 1 { p = 1 } p && $0 == "" { exit } p { print }' "$state_out"
+  fi
+}
+
+# ---------- 1. WORKTREES ----------
+state_section WORKTREES
+echo "PR approval: $pr_approval"
+echo
+
+# ---------- 2. LIVE SESSIONS ----------
+echo "== LIVE SESSIONS (agent view) =="
+# One BRANCH=PATH pair per worktree for sessions.py, labelled the way tower state labels them (a detached HEAD is
+# "(detached <short sha>)"), so the pane can match sessions to section 1's rows. `git worktree list --porcelain`
+# prints one block per worktree: "worktree <path>", "HEAD <sha>", "branch refs/heads/<name>" or "detached", blank line.
+session_args=()
 path=""; branch=""; sha=""
 while IFS= read -r line; do
   case "$line" in
     "worktree "*) path="${line#worktree }" ;;
     "HEAD "*)     sha="${line#HEAD }" ;;
     "branch "*)   branch="${line#branch refs/heads/}" ;;
-    "detached")   branch="" ;;                                            # the lib names it detached-<sha>
-    "")                                                                   # blank line = end of one block
-      if [ -n "$path" ]; then
-        label="${branch:-(detached ${sha:0:7})}"
-        session_args+=("$label=$path")
-        card_name="$(ledger_card_name "$branch" "$sha")"                  # same rule card-path.sh uses
-        card="$ledger/$card_name"
-        if [ -f "$card" ]; then
-          status="$(grep -m1 '^status:' "$card" | sed 's/^status:[[:space:]]*//')"
-          ticket="$(grep -m1 '^ticket:' "$card" | sed 's/^ticket:[[:space:]]*//; s/^"\(.*\)"$/\1/')"
-          updated="$(grep -m1 '^updated:' "$card" | sed 's/^updated:[[:space:]]*//')"
-          stale=""
-          if [ "$status" = "running" ] && [ -n "$(find "$card" -mmin +"$stale_minutes" 2>/dev/null)" ]; then
-            stale=" | STALE: not updated in over 24h"
-          fi
-          case "$status" in running|needs-you) wip_count=$((wip_count + 1)) ;; esac
-          echo "- $label | status: ${status:-?} | ticket: ${ticket:-none} | updated: ${updated:-?}$stale | $path"
-          seen_cards="$seen_cards $card_name"
-          [ -n "$stale" ] && status="$status STALE"
-          row_status+=("${status:-?}"); row_ticket+=("${ticket:-none}")
-        elif [ "$is_first" -eq 1 ]; then
-          echo "- $label | main checkout (no card expected) | $path"
-          row_status+=("MAIN"); row_ticket+=("none")
-        else
-          echo "- $label | status: NO CARD | $path"                       # a worktree that never reported
-          row_status+=("NO CARD"); row_ticket+=("none")
-        fi
-        row_label+=("$label")
-        is_first=0
-      fi
+    "")
+      [ -n "$path" ] && session_args+=("${branch:-(detached ${sha:0:7})}=$path")
       path=""; branch=""; sha=""
       ;;
   esac
 done < <(git worktree list --porcelain; echo)   # trailing echo guarantees a final blank line
-if [ "$wip_count" -ge "$wip_limit" ]; then
-  echo "WIP: $wip_count of $wip_limit (running + needs-you) — AT LIMIT"
-else
-  echo "WIP: $wip_count of $wip_limit (running + needs-you)"
-fi
-echo "PR approval: $pr_approval"
-echo
-
-# ---------- 2. LIVE SESSIONS ----------
-echo "== LIVE SESSIONS (agent view) =="
-states="$(mktemp)"   # sessions.py's per-worktree waiting/interactive counts, read by section 4
-gh_err="$(mktemp)"   # each gh call's stderr (section 5), so failures show their real reason
-trap 'rm -f "$states" "$gh_err"' EXIT
 if command -v python3 >/dev/null 2>&1; then
-  python3 -I "$here/sessions.py" --states-file "$states" "${session_args[@]}"
+  if [ -z "$state_failed" ]; then
+    python3 -I "$here/sessions.py" --agents-json "$agents" "${session_args[@]}"
+  else
+    python3 -I "$here/sessions.py" "${session_args[@]}"     # tower state didn't run: ask agent view directly
+  fi
 else
   echo "(python3 not found; skipping live sessions)"
 fi
 echo
 
 # ---------- 3. ORPHAN CARDS ----------
-echo "== ORPHAN CARDS (worktree gone) =="
-found_orphan=0
-orphans_txt=""       # one line per orphan, repeated under Housekeeping in section 4
-for card in "$ledger"/*.md; do
-  [ -e "$card" ] || continue                       # glob matched nothing -> skip
-  name="$(basename "$card")"
-  [ "$name" = "_backlog.md" ] && continue          # the backlog isn't a card
-  case " $seen_cards " in
-    *" $name "*) ;;                                # matched a live worktree above -> not an orphan
-    *)
-      status="$(grep -m1 '^status:' "$card" | sed 's/^status:[[:space:]]*//')"
-      echo "- ${name%.md} | status: ${status:-?} | $card"
-      orphans_txt+="- ${name%.md} | orphan card (worktree gone), status: ${status:-?}"$'\n'
-      found_orphan=1
-      ;;
-  esac
-done
-[ "$found_orphan" -eq 0 ] && echo "(none)"
+state_section "ORPHAN CARDS"
 echo
 
 # ---------- 4. GROUPS ----------
-# Sorting here, not in the hub's head, makes the report the same every time. A live session waiting on
-# the user beats whatever its card says, because cards go stale and session status doesn't.
-echo "== GROUPS (report in this order) =="
-needs_txt=""; blocked_txt=""; running_txt=""; done_txt=""; house_txt="$orphans_txt"
-i=0
-while [ "$i" -lt "${#row_label[@]}" ]; do
-  label="${row_label[$i]}"; status="${row_status[$i]}"; ticket="${row_ticket[$i]}"
-  waiting=""; interactive=0
-  IFS=$'\t' read -r _ interactive waiting < <(awk -F'\t' -v b="$label" '$1 == b' "$states") || true
-  row="- $label | ticket: $ticket"
-  if [ -n "$waiting" ]; then
-    case "$status" in
-      needs-you*) needs_txt+="$row | card: needs-you | session waiting: $waiting"$'\n' ;;
-      MAIN)       needs_txt+="- $label (main checkout) | session waiting: $waiting"$'\n' ;;
-      *)          needs_txt+="$row | session waiting: $waiting, but card says ${status} (card may be out of date)"$'\n' ;;
-    esac
-  else
-    case "$status" in
-      needs-you*) needs_txt+="$row | card: needs-you (no session waiting on this machine)"$'\n' ;;
-      blocked*)   blocked_txt+="$row"$'\n' ;;
-      running*)   running_txt+="$row"$'\n' ;;
-      done*)      done_txt+="$row"$'\n' ;;
-      MAIN)       ;;
-      "NO CARD")  house_txt+="- $label | no card"$'\n' ;;
-      *)          house_txt+="- $label | unknown card status: $status"$'\n' ;;
-    esac
-  fi
-  case "$status" in *STALE) house_txt+="- $label | STALE: running card not updated in over 24h"$'\n' ;; esac
-  if [ "${interactive:-0}" -gt 1 ]; then
-    house_txt+="- $label | $interactive interactive sessions share this worktree (in the main checkout, one is the hub)"$'\n'
-  fi
-  i=$((i + 1))
-done
-[ -s "$states" ] || echo "(no live session data: grouped from cards alone)"
-for group in "NEEDS YOU:$needs_txt" "BLOCKED:$blocked_txt" "RUNNING:$running_txt" "DONE:$done_txt" "HOUSEKEEPING:$house_txt"; do
-  echo "${group%%:*}"
-  body="${group#*:}"
-  if [ -n "$body" ]; then printf '%s' "$body"; else echo "(none)"; fi
-done
+state_section GROUPS
 echo
 
 # ---------- 5. GITHUB ----------
@@ -221,4 +147,10 @@ if [ -s "$ledger/_backlog.md" ]; then   # -s = file exists and isn't empty
   cat "$ledger/_backlog.md"
 else
   echo "(empty)"
+fi
+
+# Without tower state the report has no statuses: fail, so the pane shows the reason instead of "nothing needs you".
+if [ -n "$state_failed" ]; then
+  echo "hub-scan: $state_failed" >&2
+  exit 1
 fi

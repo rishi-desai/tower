@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """sessions.py: which Claude Code sessions are open in each worktree, and what state they're in.
 
-  sessions.py [--states-file FILE] BRANCH=PATH [BRANCH=PATH ...]
+  sessions.py [--agents-json FILE] BRANCH=PATH [BRANCH=PATH ...]
 
---states-file also writes one tab-separated line per worktree with sessions, for hub-scan.sh to group by:
-  BRANCH <tab> interactive count <tab> names of sessions waiting on the user (comma-separated, may be empty)
-The possibly-empty field is last because bash's `read` merges adjacent tabs, which would shift the fields.
+--agents-json reads the list `tower state --save-agents` saved instead of running `claude agents --json` again, so
+this section draws the same snapshot the statuses were decided from. An empty or missing FILE means tower couldn't
+read agent view; the WORKTREES section's NOTE lines say why.
+
+This only draws hub-scan.sh's LIVE SESSIONS section. Which state each worktree is in, using these same sessions, is
+decided by tower's core (src/tower/state.py), not here.
 
 Reads `claude agents --json` (agent view's machine-readable list). That list includes interactive
 sessions (terminal panes, Orca panes) as well as background ones, each with its working folder and
@@ -83,22 +86,30 @@ def describe(session: dict[str, Any]) -> str:
     return label
 
 
-def is_waiting(session: dict[str, Any]) -> bool:
-    """True when the session is stopped on the user: status/state `waiting`, or it says what it waits for."""
-    return (session.get("status") or session.get("state")) == "waiting" or bool(session.get("waitingFor"))
+def saved_sessions(path: str) -> list[dict[str, Any]] | None:
+    """The list tower state saved at path. Returns None (after printing why) if there's none or it isn't a list."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            sessions = json.load(handle)
+    except (OSError, ValueError):
+        sessions = None
+    if not isinstance(sessions, list):
+        print("(no live sessions: tower couldn't read agent view; see the NOTE lines under WORKTREES)")
+        return None
+    return sessions
 
 
 def main(argv: list[str]) -> int:
-    states_file = None
-    if argv[:1] == ["--states-file"] and len(argv) > 1:
-        states_file, argv = argv[1], argv[2:]
+    agents_json = None
+    if argv[:1] == ["--agents-json"] and len(argv) > 1:
+        agents_json, argv = argv[1], argv[2:]
     worktrees: dict[str, str] = {}  # real path -> branch label
     for arg in argv:
         branch, _, path = arg.partition("=")
         if path:
             worktrees[os.path.realpath(path)] = branch
 
-    sessions = load_sessions()
+    sessions = saved_sessions(agents_json) if agents_json else load_sessions()
     if sessions is None:
         return 0
 
@@ -118,7 +129,6 @@ def main(argv: list[str]) -> int:
         print("(no open sessions in this repo)")
         return 0
 
-    state_lines = []
     for path, branch in worktrees.items():
         found = by_worktree.get(path, [])
         if not found:
@@ -126,11 +136,6 @@ def main(argv: list[str]) -> int:
         interactive = sum(1 for s in found if s.get("kind") == "interactive")
         flag = f"  <-- {interactive} interactive sessions share this worktree" if interactive > 1 else ""
         print(f"- {branch} | {len(found)} open: {', '.join(describe(s) for s in found)}{flag}")
-        waiting = ",".join(str(s.get("name") or s.get("id") or "?") for s in found if is_waiting(s))
-        state_lines.append(f"{branch}\t{interactive}\t{waiting}\n")
-    if states_file:
-        with open(states_file, "w") as out:
-            out.writelines(state_lines)
     return 0
 
 
