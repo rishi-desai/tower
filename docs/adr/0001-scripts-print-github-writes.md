@@ -7,4 +7,4 @@ Tower's approval hook (`plugin/scripts/confirm-public.py`) only sees the command
 - **The script creates the labels itself**: one step fewer, but it skips the approval prompt, which tower's safety model depends on.
 - **The hub works it out in prose** (`gh label list`, compare, create): no code, but no test, and it misses that `gh label list` returns only 30 labels by default.
 
-Exception: `tower merge` merges by itself, since the hook recognises and judges it (ADR 0005).
+Exceptions: `tower merge` merges by itself, since the hook recognises and judges it (ADR 0005), and `tower clean` deletes a finished worker's branch on GitHub by itself, under the same rules, judged by the cleanup key (ADR 0006).

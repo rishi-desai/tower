@@ -25,9 +25,19 @@ Always in this order, skipping empty groups. The scan's GROUPS section has alrea
 3. **Running** — one line each.
 4. **Waiting on CI or review** — finished work only waiting on CI, a review or a merge, one line each with PR number. These don't hold a WIP slot.
 5. **Done** — one line each with PR number.
-6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged with no commits past the PR's head, or every commit on main, with nothing uncommitted: suggest removing the worktree, never do it), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, any worktree where several interactive sessions share one checkout (rule: one main session per worktree), and overlaps: two worktrees changing the same files (`changes the same file(s) as <other>: <files>`, from git, not cards). For an overlap, name both worktrees and what each is for, and suggest who goes first: usually the one closer to merging, while the other waits or rebases after it. Never tell a worker to stop on your own.
+6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged with no commits past the PR's head, or every commit on main, with nothing uncommitted: offer to clean them up, below), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, any worktree where several interactive sessions share one checkout (rule: one main session per worktree), and overlaps: two worktrees changing the same files (`changes the same file(s) as <other>: <files>`, from git, not cards). For an overlap, name both worktrees and what each is for, and suggest who goes first: usually the one closer to merging, while the other waits or rebases after it. Never tell a worker to stop on your own.
 
 End with **one** suggested next action, not a list.
+
+### Cleaning up finished workers
+
+Offer cleanup for `ready-to-clean` rows, and for Done rows whose PR the GITHUB section shows merged (the scan's statuses don't read PR state, so a squash-merged worker often shows as Done). Run it only after the user says yes, from the main checkout, through `python3 -I <plugin>/scripts/run-tower.py clean` (`<plugin>` as in section 1), naming the worktrees by branch (`clean <branch> <branch>`) or `--all` (every worktree whose PR is merged). Before removing anything it checks, for each worktree, that its PR is merged at the worktree's HEAD, nothing is uncommitted or stashed on its branch, its card doesn't say work goes on, and no live session there is busy or waiting; a worktree that fails any check is left exactly as it was, with every failed check said. Then it closes the worktree's terminals, removes it (through Orca when Orca manages it), deletes its branch locally and on GitHub (when no open PR is based on it), archives its card to the Ledger's `_archive` folder, and runs `git pull --ff-only` in the main checkout.
+
+By the scan's `Policy:` line, `cleanup`:
+- `ask`: run it with `--dry-run` first (it only checks, touching nothing, and never asks), show the user what it says would go and what failed, and on their yes run the same command without `--dry-run`. The approval hook asks once; that prompt is their yes, so don't ask twice.
+- `auto`: run it straight away once the user wants it cleaned up.
+
+Show each failed check as it says it, with what would fix it (commit or remove the stray file, drop the stash, wait for the busy session). Exit 1 means a check failed or a step didn't work: say which, and never retry with git or Orca commands of your own.
 
 ### Across every repo
 
@@ -171,6 +181,6 @@ Never write `/effort <level>` for the user to paste: a level typed after `/effor
 - LIVE SESSIONS only covers this machine, and its format isn't a documented contract. If it prints a "skipping" line, the WORKTREES section's `NOTE:` lines say what tower used instead (the event log's last 24h, or cards alone): report from GROUPS as usual and mention it once.
 - The scan's statuses never use PR state (`tower scan` doesn't pass `--pr`), so the pane's 30-second refresh and your report always agree. Don't re-decide a status from the GITHUB section; if an open PR looks merged or a Done worktree looks finished, say so as a Housekeeping suggestion.
 - If context is getting long, tell the user to `/clear` and run the hub again — all state is on disk, nothing is lost.
-- Never delete worktrees, branches or cards on your own; suggest it and wait for a yes.
+- Never delete worktrees, branches or cards on your own; suggest it and wait for a yes. Clean up only through `tower clean` (above), never with `git worktree remove`, `orca worktree rm` or `git branch -D` yourself: they skip its checks.
 - Creating a parked-idea issue is a public GitHub write, so it triggers an approval prompt here too unless the repo's policy has `issue_writes: auto`. That's expected.
 - When Orca keeps worktrees inside the repo (its workspace folder set to `./worktrees`), main shows `worktrees/` as untracked. That isn't uncommitted work, and the `ADOPT:` line doesn't count it; suggest adding `worktrees/` to main's `.git/info/exclude` (local only), never to the repo's `.gitignore`. New worktrees belong in the one global folder instead: `worktrees_dir` in `~/.claude/tower.conf`, which re-running `setup.sh` asks for and which Orca's Workspace Directory should match.
