@@ -41,7 +41,7 @@ PreToolUse hook that forces an approval prompt for GitHub writes and pushes (see
 
 - **Push** fixes for real CI failures and review findings, and **rebase + push** when the branch falls behind.
 - **Reply to and resolve** review-bot comments it judges not worth fixing, with a written reason.
-  `leaving-pr-comments` keeps each one short and checks it for secrets; nothing marks it as written by an agent.
+  `leaving-pr-comments` keeps each one short and direct and checks it for secrets.
 - **Merge only if you explicitly asked**; otherwise it reports "ready". Asks before closing an obsolete PR.
 
 On the work repo, those replies and pushes are visible to your team. With the approval hook installed, each one

@@ -8,7 +8,7 @@ description: Use whenever leaving comments on GitHub.
 Before posting, check the entire comment, including quoted text and
 attachments, for secrets and private details.
 
-Write the comment itself in a direct style:
+Write the comment in a direct style:
 
 - Lead with the conclusion.
 - Cite the relevant code, behavior, check, or reproduction.
