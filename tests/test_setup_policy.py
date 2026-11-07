@@ -31,9 +31,9 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return fake
 
 
-def setup(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run setup.sh --no-plugin with ARGS in the fake HOME, with no terminal."""
-    env = {"HOME": str(home), "PATH": os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1"}
+def setup(home: Path, *args: str, path: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run setup.sh --no-plugin with ARGS in the fake HOME, with no terminal; PATH is this process's unless given."""
+    env = {"HOME": str(home), "PATH": path or os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.run(
         ["bash", str(SETUP), "--no-plugin", "--projects-dir", str(home / "vault"), "--wip-limit", "4", *args],
         env=env,
@@ -216,3 +216,13 @@ def read_until(fd: int, wanted: bytes, timeout: float = 20) -> bytes:
             return out
         out += chunk
     return out
+
+
+def test_setup_ends_with_tower_doctor_and_a_problem_it_finds_does_not_fail_setup(home: Path) -> None:
+    # Only the system's tools, so doctor asks no real orca, gh or claude: the plugin check fails (no claude).
+    proc = setup(home, "--profile", "personal", path="/usr/bin:/bin")
+
+    assert proc.returncode == 0, proc.stderr
+    report = proc.stdout.split("6. tower doctor", 1)[1]
+    assert "FAIL  plugin" in report and "fix: " in report
+    assert "Fix the problems above" in report

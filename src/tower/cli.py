@@ -28,6 +28,9 @@ tower policy               the approval profile for this repo, why it applies, a
 tower policy use PROFILE [--repo]
                            make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
                            terminal (the approval hook asks before an agent runs it)
+tower doctor               check each thing tower depends on (Orca, gh, the vault, the plugin, git-spice, mise, the
+                           policy, `claude agents --json`, the hooks), naming the fix for each problem; exit 1 when a
+                           check fails, 0 when there are only warnings (see doctor.py)
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from tower import (
     adopt,
     card,
     clean,
+    doctor,
     events,
     github,
     hook_events,
@@ -141,6 +145,7 @@ def parser() -> argparse.ArgumentParser:
     clean_parser.add_argument("worktrees", nargs="*", help="a worktree's path, branch or folder name")
     clean_parser.add_argument("--all", action="store_true", help="every worktree whose PR is merged")
     clean_parser.add_argument("--dry-run", action="store_true", help="only check, and say what would be removed")
+    commands.add_parser("doctor", help="check each thing tower depends on, and name the fix for each problem")
     policy_parser = commands.add_parser("policy", help="the approval profile for this repo, and why it applies")
     policy_commands = policy_parser.add_subparsers(dest="policy_command")
     use = policy_commands.add_parser("use", help="switch the default profile, or this repo's (run it yourself)")
@@ -338,6 +343,13 @@ def clean_command(names: list[str], every: bool, dry_run: bool) -> int:
     return 0 if done else 1
 
 
+def run_doctor() -> int:
+    """Print `tower doctor`'s report; exit 1 when a check failed, 0 when every check passed or only warned."""
+    checks = doctor.run_all(Path("."), datetime.now(timezone.utc))
+    sys.stdout.write(doctor.render(checks))
+    return 1 if doctor.failed(checks) else 0
+
+
 def show_policy() -> int:
     """Print the policy for the repo holding the current folder."""
     loaded = policy.load()
@@ -407,6 +419,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return merge_command(args.pr)
     if args.command == "clean":
         return clean_command(args.worktrees, args.all, args.dry_run)
+    if args.command == "doctor":
+        return run_doctor()
     if args.command == "policy":
         return use_profile(args.profile, args.repo) if args.policy_command == "use" else show_policy()
     raise AssertionError(f"unhandled command: {args}")  # argparse's required subcommands make this unreachable

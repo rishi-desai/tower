@@ -172,3 +172,16 @@ _Avoid_: mode, level, preset
 What asks in every profile, sandbox included: an agent's change to the policy file, tower.conf, a rule file or a
 CLAUDE.local.md, or running `tower policy use`. It is how an agent is kept from loosening its own rules.
 _Avoid_: hard rule, override
+
+## Health
+
+**Doctor check**:
+One thing tower depends on, checked by `tower doctor` and reported with the fix when it isn't right. A failing check
+is a **problem** (tower can't work as it should); one is only a **warning** when the hub has a fallback (Orca down) or
+the fact can't be known for sure (no event in the last hour, no policy file).
+_Avoid_: health check, test, diagnostic
+
+**Right account**:
+The GitHub account gh is logged in as, when it can push to the repo's origin: the one workers push, open PRs and
+merge as.
+_Avoid_: active account (gh's word: active can still be the wrong one), user
