@@ -354,6 +354,23 @@ def test_each_row_names_the_card_file_the_core_writes(
     assert row["card_file"] == written.name
 
 
+def test_a_detached_text_row_names_the_card_file_the_core_writes(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hub opens a card by the text row's card_file, never by rebuilding it from the label (#89): git's short sha
+    can be longer than the label's 7 characters (an ambiguous prefix in a big repo; core.abbrev here)."""
+    git(repo.main, "config", "core.abbrev", "12")
+    path = repo.add_worktree("feat-1")
+    git(path, "checkout", "-q", "--detach")
+    written = ledger.card_path(path)
+    assert len(written.stem) > len("detached-") + 7  # else this test can't catch a name rebuilt from the label
+
+    assert cli.main(["state"]) == 0
+    (row,) = [line for line in capsys.readouterr().out.splitlines() if line.endswith(f" | {path}")]
+
+    assert f" | card_file: {written.name} | " in row
+
+
 def shared_fixture(repo: Fixture) -> None:
     """The repo both the hub and the pane are tested on: one worker for each way a status can be decided.
 
@@ -472,7 +489,7 @@ def test_a_pipe_in_a_card_never_splits_a_report_row(repo: Fixture, capsys: pytes
 
     fields = row.split(" | ")
     assert fields[1:3] == ["status: no-card", "card: running / needs-you / waiting-ci / blocked / done"]
-    assert len(fields) == 7  # label, status, card, ticket, updated, reason, path
+    assert len(fields) == 8  # label, status, card, ticket, updated, card_file, reason, path
 
 
 def test_an_empty_project_mapping_falls_back_to_the_repo_name(
