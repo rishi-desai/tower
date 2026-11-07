@@ -46,6 +46,6 @@ Run the scan again (SKILL.md section 1) and give the usual report (section 2), s
 - You run in the main checkout yourself; LIVE SESSIONS counts you there.
 - Ahead/behind compares with `origin/<default>` when it exists, so "ahead" means "not yet on the remote".
 - "Commits not on main" doesn't prove the work is missing from main: it may have been squash-merged (the scan shows the PR state) or landed another way. Before suggesting a branch is unshipped, run `git diff --stat origin/<default>...<branch>` and say whether its changes are already present; ask the user either way.
-- A ticket guess is just the first number in the branch name. Confirm it against the PR or issue before writing it to a card.
+- A ticket guess is the branch-name guess `tower card write` falls back to (`feat-42-x` → #42; `release-2026-11` → none), so it can still be wrong. Confirm it against the PR or issue before writing it to a card.
 - Draft cards are the user's call; never mark adopted work `running` or `done` yourself.
 - Git-ignored data folders (Poot's `data/`) exist only in the main checkout; a new worktree won't have them. Mention it when moving work that needs them.

@@ -18,7 +18,7 @@ Keys, strictest value first:
     comments         ask | auto             PR and issue comments and reviews
     issue_writes     ask | auto             creating, editing, closing, reopening (and so on) issues
     pr_writes        ask | auto             opening, editing, readying, closing and reopening PRs
-    cleanup          ask | auto             removing finished worktrees (`tower clean`, T10)
+    cleanup          ask | auto             removing finished worktrees (`tower clean`, clean.py)
     wip_limit        a whole number, 1+     the WIP limit; when the profile doesn't set it, tower.conf's (else 3)
 A PR lands on its base, but a PR in a GitHub stack lands on the stack's base: merging it merges every PR below it.
 

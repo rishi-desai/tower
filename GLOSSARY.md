@@ -34,6 +34,13 @@ of work its own worktree and card, run one approved step at a time. The hub swit
 `ADOPT: yes` (most worktrees, at least two, have no card, or the main checkout has uncommitted work or other sessions).
 _Avoid_: onboarding, the adopt skill (it is part of the hub since T19)
 
+**Cleanup**:
+Removing a finished worker once every check proves nothing would be lost: its PR merged at the worktree's HEAD,
+nothing uncommitted or stashed, no session busy or waiting there. It closes the worktree's terminals, removes the
+worktree and its branch (locally and on GitHub) and archives its card. A worktree that fails a check is left exactly
+as it was.
+_Avoid_: prune, teardown, delete (alone: the card is archived, not deleted)
+
 ## State
 
 **Card**:
@@ -41,6 +48,16 @@ A worker's short Markdown note in the vault saying where its worktree stands: st
 one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
 the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
 _Avoid_: status file, report
+
+**Ticket guess**:
+The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess wherever tower shows it. It can miss or
+be wrong, so it is a guess, never a fact.
+_Avoid_: ticket number (a branch can have digits that aren't one)
+
+**Worktree's PR**:
+A PR from this repo whose head branch has the worktree's branch name. A fork's PR is never it, even with the same
+branch name (a stranger's patch-1 isn't this work).
+_Avoid_: PR by branch name (a fork's PR can have the same branch name)
 
 **Ledger**:
 The vault folder holding a project's cards and its backlog of parked ideas.
@@ -51,6 +68,11 @@ This machine's own settings, written by setup.sh: where the vault's projects liv
 to, the worktrees folder, the WIP limit. One that can't be read, or isn't UTF-8 text, is broken, never mistaken for a
 machine that was never set up: tower says why wherever it needed it.
 _Avoid_: config (alone: it reads as runtime config), settings
+
+**Archived card**:
+The card of a worktree that cleanup removed, kept in the Ledger's `_archive` folder so the history stays. It is no
+longer any worktree's card and is never an orphan card.
+_Avoid_: old card, deleted card
 
 **Event**:
 One timestamped fact recorded about a session as it happens (it started, the user answered, it needs the user, it

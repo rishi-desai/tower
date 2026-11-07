@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive
 
-from tower import cli
+from tower import card, cli
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
@@ -231,6 +231,21 @@ def test_adopt_scan_reports_each_worktree_like_the_bash_version(
     branches = out.split("== BRANCHES WITH UNMERGED WORK AND NO WORKTREE ==\n")[1]
     assert branches.startswith("- parked/x | 1 commit(s) not on main | last: ")
     assert branches.count("\n") == 1  # nothing else: main is the default, the others have worktrees
+
+
+def test_adopt_scan_guesses_tickets_like_a_card_does(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """#64: adopt-scan makes the guess `tower card write` makes, so a year or a version isn't taken for the ticket."""
+    repo.add_worktree("release-2026-11")
+    repo.add_worktree("v2-fix-42")
+    repo.add_worktree("fix/7-x")
+
+    guesses = {
+        row.split(" | ")[0]: row.rsplit(" | ticket guess: ", 1)[1] for row in adopt_rows(capsys) if row.startswith("- ")
+    }
+
+    assert guesses["- [worktree] release-2026-11"] == card.guess_ticket("release-2026-11") == "none"
+    assert guesses["- [worktree] v2-fix-42"] == card.guess_ticket("v2-fix-42") != "#2"
+    assert guesses["- [worktree] fix/7-x"] == card.guess_ticket("fix/7-x") == "#7"
 
 
 def test_an_untracked_file_next_to_the_nested_worktrees_still_counts(

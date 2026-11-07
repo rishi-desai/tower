@@ -347,22 +347,23 @@ def merge_async(
 
 def delete_head_branch(
     pull: Pull, gh: Gh, say: Say, sleep: Callable[[float], None], clock: Callable[[], float]
-) -> None:
+) -> bool:
     """Delete a merged PR's head branch on GitHub, as --delete-branch would, only when it is safe, else say why it
     stays: the branch is in pull's repo, isn't an integration branch, isn't deleted by the repo itself, has no open
     PR based on it (an API delete closes them) and still points at the PR's head. GitHub moves the PRs above a stacked
-    PR by itself, so for one it waits up to RETARGET_TIMEOUT_SECONDS. The local branch is never touched."""
+    PR by itself, so for one it waits up to RETARGET_TIMEOUT_SECONDS. The local branch is never touched. False when
+    GitHub couldn't be read or refused the delete; True when the branch is gone or one of those rules keeps it."""
     if not pull.head_is_here:
         say(f"left {pull.head}: it is in {pull.head_repo or 'a deleted fork'}, not {pull.repo}")
-        return
+        return True
     merged_in = merged_into(pull, pull.head, gh)
     if merged_in:
         say(f"kept {pull.head}: other PRs were merged into it ({pr_list(merged_in)}), so it is an integration branch")
-        return
+        return True
     settings = gh(pull.api(f"repos/{pull.repo}"))
     if settings.code == 0 and json_body(settings).get("delete_branch_on_merge") is True:
         say(f"left {pull.head} to GitHub: {pull.repo} deletes head branches on merge")
-        return
+        return True
     deadline = clock() + (RETARGET_TIMEOUT_SECONDS if pull.stacked else 0)
     above = based_on(pull, gh)
     while above and clock() < deadline:
@@ -373,7 +374,7 @@ def delete_head_branch(
             f"left {pull.head} on GitHub: couldn't read whether deleting it is safe; run tower merge"
             f" {pull.number} again"
         )
-        return
+        return False
     if above:
         moves = " and ".join(f"gh pr edit {n} --base {pull.base}" for n in above)
         say(
@@ -382,25 +383,26 @@ def delete_head_branch(
             f" branch itself: move those ({moves}) or turn on the repo's automatic head branch deletion, then run"
             f" tower merge {pull.number} again to delete it"
         )
-        return
+        return True
     ref = quote(pull.head, safe="/")
     tip = gh(pull.api(f"repos/{pull.repo}/git/ref/heads/{ref}"))
     if tip.code != 0:
         gone = "HTTP 404" in tip.err
         say(f"{pull.head} is already deleted on GitHub" if gone else f"left {pull.head}: {gh_reason(tip)}")
-        return
+        return gone
     sha = json_at(json_body(tip), "object", "sha")
     if sha != pull.head_sha:
         say(
             f"left {pull.head} on GitHub: it has moved since PR #{pull.number} merged (it is at {str(sha)[:7]}, the"
             f" PR's head was {pull.head_sha[:7]})"
         )
-        return
+        return True
     deleted = gh(pull.api("-X", "DELETE", f"repos/{pull.repo}/git/refs/heads/{ref}"))
     if deleted.code != 0:
         say(f"couldn't delete {pull.head} on GitHub: {gh_reason(deleted)}")
-        return
+        return False
     say(f"deleted {pull.head} on GitHub (the local branch is left as it is)")
+    return True
 
 
 def based_on(pull: Pull, gh: Gh) -> list[int] | None:

@@ -47,12 +47,13 @@ NARRATIVE = """## Done
 
 
 def fake_prs(tmp_path: Path, prs: list[dict[str, object]] | None) -> None:
-    """Put a `gh` on PATH whose `pr list` prints prs as JSON; None makes it fail like a logged-out gh."""
+    """Put a `gh` on PATH whose `pr list` prints prs as JSON, each from this repo unless it says isCrossRepository
+    (gh always prints that field when asked); None makes it fail like a logged-out gh."""
     gh = tmp_path / "bin" / "gh"
     if prs is None:
         body = 'echo "gh: To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4'
     else:
-        body = f"cat <<'EOF'\n{json.dumps(prs)}\nEOF"
+        body = f"cat <<'EOF'\n{json.dumps([{'isCrossRepository': False, **pr} for pr in prs])}\nEOF"
     gh.write_text(f'#!/bin/sh\n[ "$1 $2" = "pr list" ] || exit 9\n{body}\n', encoding="utf-8")
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
 

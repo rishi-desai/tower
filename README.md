@@ -209,7 +209,15 @@ PR change.
 
 ### Finishing up
 
-- After merging, remove the worktree in Orca. The hub will list its card as an orphan; say "yes, delete it" when it suggests that.
+- After merging, say **"clean up"** to the hub. It cleans up finished workers with `tower clean [<worktree> ...|--all]`
+  (`python3 -I <plugin>/scripts/run-tower.py clean`), which first checks, for each worktree, that its PR is merged at
+  the worktree's HEAD, `git status --porcelain` is empty, no stash entry is on its branch, its card doesn't say work
+  goes on, and no live session there is busy or waiting. A worktree that fails any check is left exactly as it was,
+  with every failed check named. The rest get their terminals closed, the worktree removed (through Orca when it
+  manages it, else `git worktree remove`), the branch deleted locally and on GitHub (unless an open PR is based on it),
+  and the card moved to `Ledger/_archive/`; then the main checkout runs `git pull --ff-only`. `--dry-run` only checks
+  and lists what would go. Under the policy's `cleanup = "ask"` the hub shows that list and the real run asks once;
+  under `"auto"` it just runs. Why it works this way: `docs/adr/0006-tower-clean-checks-then-removes-and-the-hook-judges-it.md`.
 - Stopping for the day: `/handoff` in any session you'll resume. The cards stay either way.
 - Want an agent to remember a preference for this project? Say **"remember for this project: use pytest fixtures"**. It asks before saving it to `~/.claude/tower/rules/`.
 
@@ -223,7 +231,7 @@ PR change.
 | "discuss: <idea>" | grilling in the hub, ending in a parked issue or a spec (`/to-spec`) |
 | "park: <idea>" | a GitHub issue (asks first) or a backlog line |
 | "what should I pause?" | which running item to pause to get under the WIP limit |
-| "clean up" | housekeeping suggestions: stale cards, orphans, merged worktrees. Nothing is deleted without your yes |
+| "clean up" | housekeeping suggestions, and `tower clean` for finished workers once you say yes (it checks first) |
 
 ### If something looks wrong
 
@@ -365,7 +373,7 @@ agent must ask you instead of trying another way. The prompt names the profile: 
 | `gh pr` / `gh issue` comment, `gh pr review` | `comments` | asks | asks | — |
 | `gh issue` create, edit, close, reopen, delete, transfer, … | `issue_writes` | asks | — | — |
 | `gh pr` create, edit, ready, close, reopen, update-branch (an edit with `--base` also needs `merge_to_main`) | `pr_writes` | asks | — | — |
-| Removing finished worktrees (`tower clean`, coming in T10) | `cleanup` | asks | asks | — |
+| Removing finished worktrees: `tower clean` (never `tower clean --dry-run`) | `cleanup` | asks | asks | — |
 | Other `gh api` writes, `gh release` / `gh label` writes, `gh pr lock`/`unlock`, a gh subcommand from a variable | none: ask unless every GitHub key is `auto` | asks | asks | — |
 | Commands it can't check: an unclosed quote or `$(`, a shell reading code it can't see (a pipe, `<( )`, xargs) | none: ask unless every profile a repo can get lets everything through | asks | asks | — (asks if a `[repos]` entry is stricter) |
 | **Safety floor:** any edit to the policy file, `tower.conf`, a rule file or a `CLAUDE.local.md`; Bash commands naming a rule file, writing `tower.conf` or anything in `~/.claude/tower/` (reading with `cat`, `grep`, `tail` is fine), running `tower policy use` (or code using tower's policy module) or tower's `setup.sh` (other than `--dry-run`), which rewrites `tower.conf` and sets the profile | always | asks | asks | asks |

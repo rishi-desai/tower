@@ -17,10 +17,10 @@ those worktrees still count.
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 from tower import ledger, policy, sessions, state
+from tower.card import guess_ticket
 from tower.github import try_gh
 from tower.gitrepo import GitWorktree, git, list_worktrees, repo_name
 
@@ -94,12 +94,11 @@ def worktree_rows(
     counts = (git(path, "rev-list", "--left-right", "--count", f"{base}...HEAD") or "").split()
     behind, ahead = counts if len(counts) == 2 else ("?", "?")
     last = (git(path, "log", "-1", "--format=%cr: %s") or "")[:LAST_COMMIT_CHARS]
-    ticket = re.search(r"[0-9]+", worktree.branch or "")
     role = "MAIN CHECKOUT" if is_main else "worktree"
     rows = [
         (
             f"- [{role}] {worktree.label} | {card_state} | uncommitted: {dirty} | ahead {ahead} / behind {behind}"
-            f" of {base} | last: {last} | ticket guess: {'#' + ticket.group() if ticket else 'none'} | {worktree.path}"
+            f" of {base} | last: {last} | ticket guess: {guess_ticket(worktree.branch or '')} | {worktree.path}"
         )
     ]
     rows += [f"    {change}" for change in changes[:SHOWN_CHANGES]]

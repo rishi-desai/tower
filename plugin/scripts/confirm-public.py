@@ -21,6 +21,9 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
                    when the two keys differ, and only when the merge is the whole command line (one simple command,
                    nothing before it but python and its switches for tower merge); otherwise, or if gh can't say,
                    it asks unless both keys are auto.
+  cleanup          `tower clean` (src/tower/clean.py, which removes worktrees and deletes branches here and on
+                   GitHub itself), however tower is run, in interpreter code too; never `tower clean --dry-run`,
+                   which only checks (the exact flag, before any --, with no word from a variable before it)
 The rest ask unless every GitHub key above is auto (as in the sandbox profile), since no one key covers
 them: gh release and gh label writes, gh pr lock/unlock, other `gh api` calls that write (GraphQL mutations or queries read from a
 file, REST with a write method or with fields, since gh defaults to POST when fields are given), and a gh
@@ -51,11 +54,12 @@ statements and arithmetic. Commands inside $( ), backticks and <( ) are checked 
 given to `bash -c` (or sh, zsh, csh, ...), `env -S`, eval, ssh/su/watch/tmux/screen/script, or a shell
 through a heredoc. In each simple command, every word naming git or gh (by any path, in any letter
 case) starts an invocation to check, so wrappers like env, command, xargs, nohup, sudo and timeout need
-no special case; so does every word naming tower (or the plugin's run-tower.py) followed by `merge`.
+no special case; so does every word naming tower (or the plugin's run-tower.py) followed by `merge` or `clean`.
 git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and gh's command
 words are found the way gh itself finds them, so -R/--repo can come anywhere. In code for
 python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is checked, and inline code (-c,
--e, --eval) that names tower and merge, in the code or the arguments after it, counts as a tower merge.
+-e, --eval) that names tower and merge (or clean), in the code or the arguments after it, counts as a tower merge
+(or clean).
 
 When unsure, we ask: a command that can't be split (an unclosed quote, $( or backtick, a heredoc
 delimiter with $, a ${ cmd; } substitution), a shell reading code it can't see (from a pipe, <( ), a
@@ -183,6 +187,8 @@ CODE_OPTION = re.compile(r"-[A-Za-z]*[cerE]|--(?:eval|print)\b")
 # Inline code (and the arguments after it) that may run `tower merge` names both words; two searches, each linear.
 TOWER_WORD = re.compile(r"\btower\b")
 MERGE_WORD = re.compile(r"\bmerge\b")
+CLEAN_WORD = re.compile(r"\bclean\b")
+CLEANUP_REASON = "tower clean removes finished worktrees and deletes their branches, here and on GitHub (cleanup=ask)"
 # What a merge's PR lookup (`gh api repos/OWNER/REPO/pulls/N`) prints, on one line: the PR's base, its repo's default
 # branch and, for a PR in a GitHub stack, the stack's base (null otherwise).
 PR_LOOKUP_JQ = "[.base.ref, .base.repo.default_branch, .stack.base.ref] | @json"
@@ -296,9 +302,10 @@ class Gates:
     pr_writes: str
     merge_to_main: str
     merge_to_branch: str
+    cleanup: str  # ask | auto, for tower clean; not a GitHub key, though it deletes branches there too
 
     def asks(self, key: str) -> bool:
-        """Whether an ask|auto key (one of GITHUB_KEYS) asks."""
+        """Whether an ask|auto key (one of GITHUB_KEYS, or cleanup) asks."""
         value: str = getattr(self, key)
         return value != "auto"
 
@@ -310,16 +317,17 @@ class Gates:
     @property
     def all_open(self) -> bool:
         """Whether nothing asks, pushes included: then a command the hook can't check doesn't ask either."""
-        return self.github_open and self.push == "none"
+        return self.github_open and self.push == "none" and not self.asks("cleanup")
 
 
 # The built-in strictest profile, used when tower's core can't be loaded or a value comes from a variable.
-STRICTEST_GATES = Gates("work", "every", "ask", "ask", "ask", "ask", "ask")
+STRICTEST_GATES = Gates("work", "every", "ask", "ask", "ask", "ask", "ask", "ask")
 
 
 def gates_of(repo_policy: RepoPolicy) -> Gates:
     """The hook's view of one repo's policy."""
-    return Gates(repo_policy.profile, repo_policy.push, *(repo_policy.value(key) for key in GITHUB_KEYS))
+    keys = {key: repo_policy.value(key) for key in (*GITHUB_KEYS, "cleanup")}
+    return Gates(profile=repo_policy.profile, push=repo_policy.push, **keys)
 
 
 @dataclass(frozen=True)
@@ -845,9 +853,10 @@ class CommandChecker:
         name = program_name(command.words[index])
         is_language = bool(LANGUAGE_RUNNER.fullmatch(name))
         is_git_dashed = name.startswith("git-") and runs_as_program(command.words, index)  # not `man git-push`
-        if name in TOWER_PROGRAMS and runs_tower(command.words, index):  # judged at the end, like gh pr merge
+        if name in TOWER_PROGRAMS and runs_tower(command.words, index):
+            # A merge is judged at the end, like gh pr merge; a clean now, by the cleanup key
             self.note_tower_merge(command.words, index, depth == 0)
-            return []
+            return self.tower_clean_reasons(command.words, index)
         if name not in INVOKERS and not is_git_dashed and not is_language:
             return []
         self.spend(len(command.words) - index)
@@ -865,11 +874,14 @@ class CommandChecker:
         if name in CODE_STRING_RUNNERS:  # each argument with spaces or operators may be a command line
             return [r for arg in args if re.search(r"[\s;|&]", arg.text) for r in self.check(arg.text, depth + 1)]
         if is_language:  # code in another language: check the git/gh commands and tower merges written inside it
+            found: list[str] = []
             if gives_code(args):  # the code and the arguments after it (sys.argv) together
                 joined = " ".join(arg.text for arg in args)
                 if TOWER_WORD.search(joined) and MERGE_WORD.search(joined):
                     self.merges.append(PendingMerge("tower merge (in interpreter code)", self.tower_gates(), False))
-            return [
+                if TOWER_WORD.search(joined) and CLEAN_WORD.search(joined) and self.tower_gates().asks("cleanup"):
+                    found.append(f"{CLEANUP_REASON}, in interpreter code")
+            return found + [
                 r for arg in args for m in EMBEDDED_COMMAND.finditer(arg.text) for r in self.check(m.group(), depth + 1)
             ]
         if name == "gh":
@@ -901,8 +913,36 @@ class CommandChecker:
         selector = after[0].text if readable and after else None
         self.merges.append(PendingMerge("tower merge", self.tower_gates(), readable, selector))
 
+    def tower_clean_reasons(self, words: list[Word], index: int) -> list[str]:
+        """The reason to ask for the `tower clean` that word INDEX of WORDS (tower or run-tower.py) runs, if it does
+        (a subcommand from a variable may be clean) and cleanup asks. A dry run only checks, so it never asks: tower
+        run as the command itself (bare, from python with only python's switches, or with uv run, so the words after
+        it are all tower's, not another command's as in find -exec ... \\; -exec ... --dry-run), clean right after it,
+        and the exact --dry-run among clean's options (before any --, which makes the words after it worktree
+        names), with no word from a variable among them (one could be --)."""
+        position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
+        if position is None or not (words[position].dynamic or words[position].text == "clean"):
+            return []
+        launcher, after = words[program_position(words) : index], words[position + 1 :]
+        direct = (
+            not launcher
+            or [word.text for word in launcher] == ["uv", "run"]
+            or (
+                program_name(launcher[0]).startswith("python")
+                and all(PYTHON_SWITCHES.fullmatch(word.text) for word in launcher[1:])
+            )
+        )
+        options = after[: next((i for i, word in enumerate(after) if word.text == "--"), len(after))]
+        dry_run = (
+            direct
+            and position == index + 1
+            and not any(word.dynamic for word in words[: position + 1] + options)
+            and any(word.text == "--dry-run" for word in options)
+        )
+        return [] if dry_run or not self.tower_gates().asks("cleanup") else [CLEANUP_REASON]
+
     def tower_gates(self) -> Gates:
-        """The gates for a tower merge: those of the repo it runs in, but the strictest when the line names GH_REPO or
+        """The gates for a tower merge or clean: those of the repo it runs in, but the strictest when the line names GH_REPO or
         GH_HOST, which point its gh calls at another repo, as for gh itself."""
         if self.names_gh_env and self.session_policy.has_overrides:
             return self.strictest_reached()

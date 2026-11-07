@@ -41,6 +41,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tower import events, ledger, policy, sessions
+from tower.github import from_this_repo
 from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
 from tower.overlaps import Overlap, find_overlaps
 from tower.sessions import owning_worktree
@@ -550,8 +551,9 @@ def is_dirty(worktree: Path) -> bool | None:
 
 
 def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
-    """Each branch's PR from `gh pr list` (an open one if it has one, else its newest), or None and why not."""
-    fields = "number,state,headRefName,url,headRefOid"
+    """Each branch's PR from `gh pr list` (an open one if it has one, else its newest; never a fork's), or None and
+    why not."""
+    fields = "number,state,headRefName,url,headRefOid,isCrossRepository"
     try:
         proc = subprocess.run(
             ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", fields],
@@ -576,7 +578,7 @@ def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
         return None, "gh pr list printed something unexpected (expected a list)"
     found: dict[str, Pr] = {}
     for entry in listed:
-        if not isinstance(entry, dict) or not isinstance(entry.get("number"), int):
+        if not isinstance(entry, dict) or not isinstance(entry.get("number"), int) or not from_this_repo(entry):
             continue
         head = entry.get("headRefOid")
         pr = Pr(
