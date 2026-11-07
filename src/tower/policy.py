@@ -277,9 +277,6 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
     except ledger.LedgerError as error:
         problems.append(f"{error}, so its settings weren't used")
         conf = {}
-    except UnicodeDecodeError:
-        problems.append(f"{display_path(ledger.conf_path())} isn't UTF-8 text, so its settings weren't used")
-        conf = {}
     machine_wip = (ledger.wip_limit(conf), f"wip_limit in {display_path(ledger.conf_path())}")
     if not conf.get("wip_limit", "").isdigit():
         machine_wip = (machine_wip[0], "the default")
@@ -578,7 +575,7 @@ def migration_profile() -> str | None:
         return None
     try:
         modes = legacy_modes(ledger.read_conf(ledger.conf_path()))
-    except (ledger.LedgerError, UnicodeDecodeError):
+    except ledger.LedgerError:
         return None  # load() reports an unreadable tower.conf; setup.sh's own read of it fails first
     if modes is None:
         return None
@@ -693,7 +690,7 @@ def use(profile: str, slug: str | None = None) -> str:
     except FileNotFoundError:  # never set up, or migration couldn't write it
         try:
             conf = ledger.read_conf(ledger.conf_path())
-        except (ledger.LedgerError, UnicodeDecodeError) as error:
+        except ledger.LedgerError as error:
             raise PolicyError(f"can't read {display_path(ledger.conf_path())} to migrate it ({error})") from error
         text = migration_text(conf, date.today()) or FILE_HEADER + REPOS_EXAMPLE
     except (OSError, UnicodeDecodeError) as error:
