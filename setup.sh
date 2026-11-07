@@ -273,10 +273,11 @@ fi
 # ---------- 6. doctor ----------
 if [ "$dry_run" -eq 0 ]; then
   echo "6. tower doctor: each dependency, and the fix for any problem"
-  # From $HOME: setup is per machine, so gh is checked for a login, not for access to whichever repo this was run in.
+  # From /, outside every repo: setup is per machine, so gh is checked for a login, not for access to whichever
+  # repo this was run in.
   # A problem is reported with its fix but doesn't fail setup: everything above is done and stays done. pipefail
   # (set above) makes the pipe fail when doctor does.
-  if ! (cd "$HOME" && TOWER_CONF="$conf" python3 -I "$here/plugin/scripts/run-tower.py" doctor) | sed 's/^/  /'; then
+  if ! (cd / && TOWER_CONF="$conf" python3 -I "$here/plugin/scripts/run-tower.py" doctor) | sed 's/^/  /'; then
     echo "  Fix the problems above (each says how), then check again: python3 -I $here/plugin/scripts/run-tower.py doctor"
   fi
 fi

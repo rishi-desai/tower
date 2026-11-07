@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -89,7 +90,11 @@ def check_gh(folder: Path) -> Check:
     if proc is None:
         return Check("gh", FAIL, why, "install the GitHub CLI (brew install gh), then run: gh auth login")
     if proc.returncode != 0:
-        return Check("gh", FAIL, f"gh is not logged in to github.com ({last_line(proc)})", "run: gh auth login")
+        why_not = last_line(proc)
+        if "unknown flag" in why_not:  # --active is new in gh 2.40
+            return Check("gh", FAIL, f"gh is too old ({why_not})", "upgrade gh: brew upgrade gh")
+        fix = "run: gh auth login (unless the line above says GitHub couldn't be reached: then check the network)"
+        return Check("gh", FAIL, f"gh is not logged in to github.com ({why_not})", fix)
     try:
         origin = policy.remote_slugs(folder)[0]
     except policy.RepoUnknown as error:
@@ -106,7 +111,8 @@ def check_gh(folder: Path) -> Check:
     try:
         permission = json.loads(proc.stdout)["viewerPermission"] or "no"
     except (ValueError, KeyError, TypeError):
-        permission = "no"
+        detail = f"gh repo view printed something unexpected for {origin}: {proc.stdout.strip()[:80]!r}"
+        return Check("gh", FAIL, detail, "upgrade gh (brew upgrade gh), then run tower doctor again")
     if permission not in CAN_PUSH:
         return Check("gh", FAIL, f"gh's active account has {permission} access to {origin}, so it can't push", switch)
     return Check("gh", OK, f"gh is logged in with {permission} access to {origin}")
@@ -128,9 +134,11 @@ def check_plugin() -> Check:
     found = [p for p in listed if isinstance(p, dict) and p.get("id") == PLUGIN_ID]
     if not found:
         return Check("plugin", FAIL, f"{PLUGIN_ID} is not installed", f"run: claude plugin install {PLUGIN_ID}")
-    if found[0].get("enabled") is not True:
+    # One entry per scope it's installed in (user, project, local); enabled in any of them is enough.
+    enabled = [p for p in found if p.get("enabled") is True or p.get("projectEnabled") is True]
+    if not enabled:
         return Check("plugin", FAIL, f"{PLUGIN_ID} is disabled", f"run: claude plugin enable {PLUGIN_ID}")
-    version = found[0].get("version")
+    version = enabled[0].get("version")
     return Check("plugin", OK, f"{PLUGIN_ID} {version} is enabled" if version else f"{PLUGIN_ID} is enabled")
 
 
@@ -152,18 +160,22 @@ def check_agents() -> Check:
 def check_installed(name: str, commands: tuple[str, ...], install: str, version_must_mention: str = "") -> Check:
     """name's tool runs: the first of commands on PATH answers `--version`, with output that says
     version_must_mention (for a command name another program also uses, as Ghostscript does gs)."""
+    broken = ""  # the first command on PATH that didn't run, and why: reported only if no later one works
     others = []  # notes on commands on PATH that turned out to be another program
     for command in commands:
-        proc, why = run_tool(command, "--version")
+        proc, _ = run_tool(command, "--version")
         if proc is None:
             continue
-        first = next(iter(proc.stderr.strip().splitlines() + proc.stdout.strip().splitlines()), "")
         if proc.returncode != 0:
-            return Check(name, FAIL, f"{command} is on PATH but doesn't run ({first or why})", f"reinstall: {install}")
-        version = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+            first = next(iter(proc.stderr.strip().splitlines() + proc.stdout.strip().splitlines()), "")
+            broken = broken or f"{command} is on PATH but doesn't run ({first or f'exit {proc.returncode}'})"
+            continue
         if version_must_mention in proc.stdout:
+            version = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
             return Check(name, OK, version or f"{command} runs")
         others.append(f"{command} there is another program")
+    if broken:  # a mise shim with no global version lands here too: `mise use -g` (in install) is its fix
+        return Check(name, FAIL, broken, install)
     note = f" ({'; '.join(others)})" if others else ""
     return Check(name, FAIL, f"{' or '.join(commands)} not on PATH{note}", install)
 
@@ -195,17 +207,36 @@ def check_policy() -> Check:
             detail = f"no policy file at {path}, so every repo gets the strictest profile ({policy.STRICTEST})"
         fix = "run in your own terminal: tower policy use <profile> (or re-run setup.sh)"
         return Check("policy", WARN, detail, fix)
+    if loaded.default_profile is None:
+        detail = f"{path} has no default_profile, so a repo no [repos] entry names gets {policy.STRICTEST}"
+        return Check("policy", WARN, detail, "run in your own terminal: tower policy use <profile>")
     return Check("policy", OK, f"{path} reads cleanly; default_profile is {loaded.default_profile}")
+
+
+def newest_event_times(log: Path) -> list[datetime]:
+    """The times of the events among log's last lines ([] when it doesn't exist). Read without the log's lock (which
+    would create the lock file): a line being appended is at worst skipped as damaged."""
+    try:
+        with open(log, "rb") as handle:
+            lines = deque(handle, maxlen=TAIL_LINES)
+    except FileNotFoundError:
+        return []
+    parsed = (events.parse_line(line) for line in lines)
+    return [ts for ts in (parse_ts(event.ts) for event in parsed if event) if ts is not None]
 
 
 def check_hooks(now: datetime) -> Check:
     """tower's hooks are firing: the event log has an event from the last hour before now (an aware datetime). Only a
-    warning: an hour with no Claude session has none either."""
+    warning: an hour with no Claude session has none either. A log that can't be read fails."""
     directory = events.default_dir()
-    parsed = (events.parse_line(line.encode("utf-8")) for line in events.tail(directory, TAIL_LINES))
-    times = [ts for ts in (parse_ts(event.ts) for event in parsed if event) if ts is not None]
-    if not times:  # this month's log is new or empty (just after it rotated): the older months hold the newest
-        times = [ts for ts in (parse_ts(event.ts) for event in events.read_all(directory)[0][-1:]) if ts is not None]
+    try:
+        times = newest_event_times(directory / events.LOG_NAME)
+        rotated = sorted(directory.glob("events-*.jsonl"), key=lambda path: path.stat().st_mtime)
+        if not times and rotated:  # this month's log is new or empty, just after it rotated: last month's holds it
+            times = newest_event_times(rotated[-1])
+    except OSError as error:
+        detail = f"can't read the event log in {directory} ({error.strerror or type(error).__name__})"
+        return Check("hooks", FAIL, detail, f"make {directory} and its files readable by you")
     if not times:
         return Check("hooks", WARN, f"no events in {directory}", HOOKS_FIX)
     age = max(now - max(times), timedelta(0))  # an event stamped ahead of this clock counts as just now

@@ -438,3 +438,51 @@ def test_an_event_only_in_last_months_log_still_counts_just_after_rotation(bin_d
     check = doctor.check_hooks(NOW)
     assert check.status == "ok"
     assert "15m ago" in check.detail
+
+
+def test_a_broken_git_spice_shim_does_not_hide_a_working_gs(bin_dir: Path) -> None:
+    fake_tool(bin_dir, "git-spice", "echo 'mise ERROR No version is set for shim: git-spice' >&2; exit 1")
+    fake_tool(bin_dir, "gs", "echo 'git-spice 0.33.0'")
+    assert doctor.check_git_spice().status == "ok"
+
+
+def test_the_plugin_enabled_in_one_scope_and_disabled_in_another_passes(bin_dir: Path) -> None:
+    plugins = '[{"id": "tower@tower", "scope": "user", "enabled": false}, {"id": "tower@tower", "scope": "project",'
+    fake_claude(bin_dir, plugins=plugins + ' "enabled": true}]')
+    assert doctor.check_plugin().status == "ok"
+
+
+def test_gh_too_old_for_active_fails_and_says_to_upgrade(bin_dir: Path, tmp_path: Path) -> None:
+    fake_tool(bin_dir, "gh", "echo 'unknown flag: --active' >&2; exit 1")
+    check = doctor.check_gh(tmp_path)
+    assert check.status == "fail"
+    assert "brew upgrade gh" in check.fix
+
+
+def test_gh_repo_view_printing_something_unexpected_is_not_called_an_access_problem(
+    bin_dir: Path, tmp_path: Path
+) -> None:
+    checkout = github_checkout(tmp_path)
+    fake_tool(bin_dir, "gh", 'case "$1 $2" in "auth status") exit 0 ;; *) echo "not json" ;; esac')
+    check = doctor.check_gh(checkout)
+    assert check.status == "fail"
+    assert "unexpected" in check.detail
+    assert "gh auth switch" not in check.fix
+
+
+def test_a_policy_without_default_profile_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_conf(tmp_path, monkeypatch, "")
+    write_policy('[repos]\n"owner/repo" = "personal"\n')
+    check = doctor.check_policy()
+    assert check.status == "warn"
+    assert "no default_profile" in check.detail
+    assert "tower policy use" in check.fix
+
+
+def test_an_event_log_that_cannot_be_read_fails_and_writes_nothing(bin_dir: Path) -> None:
+    directory = events.default_dir()
+    (directory / events.LOG_NAME).mkdir(parents=True)  # a folder where the log should be
+    check = doctor.check_hooks(NOW)
+    assert check.status == "fail"
+    assert str(directory) in check.fix
+    assert not (directory / events.LOCK_NAME).exists()
