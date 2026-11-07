@@ -130,7 +130,6 @@ Limits: this sees only the command text. These are not caught:
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import re
@@ -2053,20 +2052,12 @@ def is_tower_file(path: str) -> bool:
     """Whether PATH (absolute, or relative to this process's folder), or what its symlinks resolve to, is one of
     tower's files: a tower.conf in a .claude folder, anything under a .claude/tower folder, or the tower.conf and the
     folder tower really reads when TOWER_CONF or TOWER_DIR moves them. Case-insensitive, like macOS's disk."""
-    conf, folder = tower_locations()
+    conf = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_CONF") or "~/.claude/tower.conf")).lower()
+    folder = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_DIR") or "~/.claude/tower")).lower()
     for candidate in {os.path.normpath(path).lower(), os.path.realpath(path).lower()}:
         if TOWER_PATH.search(candidate) or candidate == conf or candidate.startswith(folder + "/"):
             return True
     return False
-
-
-@functools.cache
-def tower_locations() -> tuple[str, str]:
-    """The tower.conf and the folder tower reads (TOWER_CONF and TOWER_DIR move them, for tests), symlinks resolved and
-    lower-cased; worked out once, since this process's environment doesn't change."""
-    conf = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_CONF") or "~/.claude/tower.conf"))
-    folder = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_DIR") or "~/.claude/tower"))
-    return conf.lower(), folder.lower()
 
 
 def names_tower_file(
@@ -2185,10 +2176,12 @@ def protected_reasons(
         others = [folder for word, folder in arguments if word is not own]
         return judged_by_text or names_tower_file(text, session, others, spend)
 
-    if not any(names_tower(own, text) for own, text in named):
-        return []
     if any(writes and names_tower(None, target) for writes, target in targets):
         return [TOWER_FILE_REASON]
+    rest = [(own, text) for own, text in named if own is not None] + [(None, command.stdin_text or "")]
+    rest += [(None, target) for writes, target in targets if not writes]  # write targets were judged just above
+    if not any(names_tower(own, text) for own, text in rest):
+        return []
     return [] if reads_only else [TOWER_FILE_REASON]  # only assignments (their $( ) are checked alone), or a read
 
 
