@@ -50,24 +50,28 @@ loaded, the built-in strictest profile (work: everything asks) applies.
 Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, tower.conf (in a .claude
 folder, or the one TOWER_CONF names), a file under ~/.claude/tower/ or $TOWER_DIR (the rules, the policy file,
 the event log) or a Claude Code settings file (.claude/settings.json or settings.local.json, the user's or a
-project's), by its path or one a symlink resolves to, always asks. A file named tower.conf or policy.toml
-anywhere else (a test fixture in a temp folder) isn't tower's. So does any Bash command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/),
-running `tower policy use` (however tower is run, tower's policy module used in python/node code
-included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile, or
-turning tower's plugin off: `claude plugin disable|uninstall|remove` or `claude plugin marketplace remove|rm`
-naming tower, with a name from a variable or none, disable --all, or any name xargs, parallel or find may add. A
-Bash command naming tower.conf, the policy file, another file in ~/.claude/tower, a Claude Code settings file or a
-.claude folder itself (cp settings.json ~/.claude/) asks unless it only reads it with a program like cat, grep,
-tail or jq, and so does one writing to a path under .claude that comes from a variable or $'...' quoting. A path
-ending in tower.conf or policy.toml names tower's only when it resolves to it, the way the Edit check above judges:
-relative to the session's folder and every folder the line cds into, through symlinks, and put under its own name
-into any folder another argument names (git -C DIR, a copy's destination). So a commit message, a heredoc or a test
-fixture that merely says tower.conf passes, while a path from a variable, command output or a glob, a relative one
-after a cd to a variable, any one beside an argument from a variable, and any one in python/node code (which can
-build a path at run time) still asks. Rule
-files are standing instructions loaded into every session, tower.conf and the policy file set the approvals above,
-and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook runs
-at all, so a prompt injection must not be able to change them silently: an agent can't loosen its own rules.
+project's), by its path or one a symlink resolves to, always asks. So does any Bash command naming a rule file
+(CLAUDE.local.md, ~/.claude/tower/rules/), running `tower policy use` (however tower is run, tower's policy module
+used in python/node code included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can
+set the profile, or turning tower's plugin off: `claude plugin disable|uninstall|remove` or `claude plugin
+marketplace remove|rm` naming tower, with a name from a variable or none, disable --all, or any name xargs,
+parallel or find may add. A Bash command naming tower.conf, the policy file, another file in ~/.claude/tower, a
+Claude Code settings file or a .claude folder itself (cp settings.json ~/.claude/) asks unless it only reads it
+with a program like cat, grep, tail or jq, and so does one writing to a path under .claude that comes from a
+variable or $'...' quoting.
+
+A file named tower.conf or policy.toml anywhere else (a test fixture in a temp folder) isn't tower's: a Bash path
+ending in either name counts only when it resolves to tower's file, the way the Edit check judges, relative to
+the session's folder and every folder the line cds into, through symlinks, and put under its own name into any
+folder another argument names (git -C DIR, a copy's destination). So a commit message, a heredoc or a fixture
+that merely says tower.conf passes. What can't be resolved still asks: a path or folder from a variable, command
+output, a glob or brace expansion or a ~name, a relative one after a cd to a bare name (CDPATH may send it
+anywhere), any one beside such an argument, any one in code for python, node, awk, vim and the like (which can
+build a path at run time), and any one in a line that may make a link (ln).
+
+Rule files are standing instructions loaded into every session, tower.conf and the policy file set the approvals
+above, and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook
+runs at all, so a prompt injection must not be able to change them silently: an agent can't loosen its own rules.
 
 How a command is read: it is split into simple commands roughly the way bash or zsh splits it: on
 && || ; | & and newlines and around ( ), respecting quotes, escapes, comments, heredocs, case
@@ -116,8 +120,8 @@ Limits: this sees only the command text. These are not caught:
     safety floor only as the hook's own environment has them, not as a command sets them;
   - the safety floor sees only the command, so a protected file reached by a path built at run time (pieces joined
     in python, a glob of a .claude/tower folder, a copy or unpack into the folder above .claude, a symlink
-    inside it, a hard link, a symlink made by an earlier command of the same line, an argument folder written as an
-    option's value glued to another option) isn't caught. Claude
+    inside it, a hard link, an argument folder written as an option's value glued to another option) isn't
+    caught. Claude
     Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
   - Claude Code run another way to turn tower's plugin off (npx @anthropic-ai/claude-code, a script), a
     nested session started with hooks off (claude --bare, --settings with disableAllHooks; #87), and an edit
@@ -126,6 +130,7 @@ Limits: this sees only the command text. These are not caught:
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -914,6 +919,8 @@ class CommandChecker:
         self.names_gh_env = False  # the line names GH_REPO or GH_HOST, which point gh at another repo
         self.names_git_env = False  # the line names GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR: git at another repo
         self.git_config_from_env = False  # the line sets GIT_CONFIG_*, HOME, ...: git config the hook can't read
+        self.makes_links = False  # the line may run ln: the safety floor judges tower's file names by text
+        self.cds_by_name = False  # the line cds to a bare name, which CDPATH or zsh's cdpath may send anywhere
 
     def spend(self, units: int) -> None:
         """Use UNITS of the work budget; raise TooComplex once it is gone."""
@@ -932,6 +939,7 @@ class CommandChecker:
         """Reasons to ask for the whole COMMAND_LINE, merges included. Raises TooComplex."""
         self.names_gh_env = bool(GH_ENV_MENTION.search(command_line))
         self.names_git_env = bool(GIT_ENV_MENTION.search(command_line))
+        self.makes_links = bool(LINK_MENTION.search(command_line))
         found = self.check(command_line)
         return found + [reason for reason in self.merge_reasons() if reason not in found]
 
@@ -952,7 +960,8 @@ class CommandChecker:
             self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words)
         reasons: list[str] = []
         for command in commands:
-            found = protected_reasons(command, self.cwd, self.folders, self.spend)
+            searched = [Word("a bare cd target", dynamic=True)] if self.cds_by_name else []
+            found = protected_reasons(command, self.cwd, self.folders + searched, self.spend, self.makes_links)
             for index in range(len(command.words)):
                 found += self.check_invocation(command, index, depth)
             reasons += [reason for reason in found if reason not in reasons]
@@ -963,6 +972,8 @@ class CommandChecker:
         cd (one of them is where it really goes); `cd -` and a folder from a variable are marked dynamic. Record the
         folder env -C or sudo -D runs its command in the same way, without moving the line's later commands there."""
         for target in changed_folders(words):
+            first = target.text.split("/")[0]
+            self.cds_by_name = self.cds_by_name or first not in ("", ".", "..") and not first.startswith("~")
             if target.dynamic:
                 self.folders.append(target)
                 continue
@@ -1975,8 +1986,13 @@ TOWER_FILE_MENTION = re.compile(f"{TOWER_FILE_NAME.pattern}|{TOWER_FOLDER_MENTIO
 # Characters that end the path a tower file name is the last part of, looking back from the name: spaces, quotes,
 # an option's = and the punctuation prose and code put around a path ("Fix: tower.conf", open('tower.conf')).
 PATH_DELIMITERS = " \t\r\n'\"=:,;(<>|&"
-# Characters that leave a path's value to run time (an expansion, a command's output, a glob or brace expansion).
-UNRESOLVABLE = re.compile(r"[$`(){}*?[\]]")
+# What leaves a path's value to run time: an expansion, a command's output, a glob or brace expansion, or a ~ still
+# starting a part after expanduser (a zsh named folder, or a user it can't find).
+UNRESOLVABLE = re.compile(r"[$`(){}*?[\]]|(?:^|/)~")
+# Programs whose own code (an awk program, vim's commands) can build a path at run time, like LANGUAGE_RUNNER's.
+PATH_BUILDERS = {"awk", "gawk", "mawk", "nawk", "vim", "vi", "nvim", "ex", "view", "ed", "emacs"}
+# A line that may make a link (ln) can point a path at tower's files before the command that writes through it runs.
+LINK_MENTION = re.compile(r"(?<![\w.-])ln(?![\w.-])")
 # Bash: a word that is a .claude folder itself, which a copy, download or unpack can put a settings file into
 # (cp settings.json ~/.claude/); only READ_ONLY_PROGRAMS may name it. A whole word, or an option's attached value
 # (--output-dir=.claude, -C.claude), so prose naming it doesn't count.
@@ -2037,12 +2053,20 @@ def is_tower_file(path: str) -> bool:
     """Whether PATH (absolute, or relative to this process's folder), or what its symlinks resolve to, is one of
     tower's files: a tower.conf in a .claude folder, anything under a .claude/tower folder, or the tower.conf and the
     folder tower really reads when TOWER_CONF or TOWER_DIR moves them. Case-insensitive, like macOS's disk."""
-    conf = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_CONF") or "~/.claude/tower.conf")).lower()
-    folder = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_DIR") or "~/.claude/tower")).lower()
+    conf, folder = tower_locations()
     for candidate in {os.path.normpath(path).lower(), os.path.realpath(path).lower()}:
         if TOWER_PATH.search(candidate) or candidate == conf or candidate.startswith(folder + "/"):
             return True
     return False
+
+
+@functools.cache
+def tower_locations() -> tuple[str, str]:
+    """The tower.conf and the folder tower reads (TOWER_CONF and TOWER_DIR move them, for tests), symlinks resolved and
+    lower-cased; worked out once, since this process's environment doesn't change."""
+    conf = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_CONF") or "~/.claude/tower.conf"))
+    folder = os.path.realpath(os.path.expanduser(os.environ.get("TOWER_DIR") or "~/.claude/tower"))
+    return conf.lower(), folder.lower()
 
 
 def names_tower_file(
@@ -2064,9 +2088,9 @@ def names_tower_file(
         path = os.path.expanduser(text[start : match.end()])
         relative = not os.path.isabs(path)
         spend(len(session_folders) + len(argument_folders))  # reading them for one from a variable, joining onto each
-        if UNRESOLVABLE.search(path) or any(folder.dynamic for folder in argument_folders):
+        if UNRESOLVABLE.search(path) or any(unresolvable(folder) for folder in argument_folders):
             return True
-        if relative and any(folder.dynamic for folder in session_folders):
+        if relative and any(unresolvable(folder) for folder in session_folders):
             return True
         candidates = {os.path.join(folder.text, path) for folder in session_folders}  # one, for an absolute path
         for folder in argument_folders:
@@ -2079,18 +2103,24 @@ def names_tower_file(
     return False
 
 
+def unresolvable(folder: Word) -> bool:
+    """Whether FOLDER's value is only known at run time: from a variable, or one the shell expands (see UNRESOLVABLE)."""
+    return folder.dynamic or bool(UNRESOLVABLE.search(folder.text))
+
+
 def folder_arguments(words: list[Word], bases: list[Word], spend: Callable[[int], None]) -> list[tuple[Word, Word]]:
     """Each of a command's argument WORDS that may be a folder its program resolves a relative name from (git -C DIR,
     tar --directory=DIR, a copy's destination), paired with that folder: an existing folder from one of BASES (the
     word itself, the value after its = or a short option's attached value), or the word itself when it comes from a
-    variable, so no name can be resolved. Each folder test is paid for with SPEND."""
+    variable or the shell expands it (a glob), so no name can be resolved. Each folder test is paid for with SPEND."""
     known = [base.text for base in bases if not base.dynamic]
     found: list[tuple[Word, Word]] = []
     for word in words:
-        if word.dynamic:
-            found.append((word, word))
+        if word.dynamic or EXPANDING.search(word.text):
+            found.append((word, Word(word.text, dynamic=True)))
             continue
-        values = {word.text, word.text.partition("=")[2], word.text[2:] if word.text[:2] != "--" else ""} - {""}
+        short_value = word.text[2:] if word.text.startswith("-") and not word.text.startswith("--") else ""
+        values = {word.text, word.text.partition("=")[2], short_value} - {""}
         for value in values:
             for base in known:
                 spend(FILE_LOOKUP_COST)
@@ -2100,15 +2130,18 @@ def folder_arguments(words: list[Word], bases: list[Word], spend: Callable[[int]
     return found
 
 
-def protected_reasons(command: SimpleCommand, cwd: str, folders: list[Word], spend: Callable[[int], None]) -> list[str]:
+def protected_reasons(
+    command: SimpleCommand, cwd: str, folders: list[Word], spend: Callable[[int], None], by_text: bool
+) -> list[str]:
     """Reasons to ask because COMMAND names a rule file or one of tower's files, judged on its words and redirect
     targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf, the policy
     file and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any other
     program naming them, asks, and so does a write to a path under .claude whose text is only known at run time
     ($HOME, $'...'), and so does a non-read program naming a .claude folder itself. A path ending in tower.conf or
     policy.toml names them only when it resolves to them from CWD, the session's folder (see changes_policy), or one
-    of FOLDERS the line cds into (see names_tower_file); in code for an interpreter, which can build any path, the
-    name alone does. Each lookup on disk is paid for with SPEND, which raises TooComplex once the budget is gone."""
+    of FOLDERS the line cds into (see names_tower_file); in code for an interpreter or a PATH_BUILDERS program, which
+    can build any path, or when BY_TEXT (the line may make a link), the name alone does. Each lookup on disk is paid
+    for with SPEND, which raises TooComplex once the budget is gone."""
     if changes_policy(command.words, cwd):
         return [POLICY_COMMAND_REASON]
     if turns_tower_off(command.words):
@@ -2126,14 +2159,20 @@ def protected_reasons(command: SimpleCommand, cwd: str, folders: list[Word], spe
     if not reads_only and any(CLAUDE_FOLDER.fullmatch(text) for text in words):
         return [TOWER_FILE_REASON]
     runs_code = any(
-        LANGUAGE_RUNNER.fullmatch(program_name(word)) and (gives_code(command.words[index + 1 :]) or command.stdin_text)
+        program_name(word) in PATH_BUILDERS
+        or (
+            LANGUAGE_RUNNER.fullmatch(program_name(word))
+            and (gives_code(command.words[index + 1 :]) or command.stdin_text)
+        )
         for index, word in enumerate(command.words[program:], program)
     )
+    judged_by_text = runs_code or by_text
+    session = [Word(cwd), *folders]
     targets = [(redirect.writes, redirect.target.text) for redirect in command.redirects]
     named: list[tuple[Word | None, str]] = [(word, word.text) for word in command.words if word.text]
     named += [(None, target) for _, target in targets] + [(None, command.stdin_text or "")]
-    resolves = not runs_code and any(TOWER_FILE_NAME.search(text) for _, text in named)
-    arguments = folder_arguments(command.words[program + 1 :], [Word(cwd), *folders], spend) if resolves else []
+    needs_resolving = not judged_by_text and any(TOWER_FILE_NAME.search(text) for _, text in named)
+    arguments = folder_arguments(command.words[program + 1 :], session, spend) if needs_resolving else []
 
     def names_tower(own: Word | None, text: str) -> bool:
         """Whether TEXT, which is word OWN (None for a redirect target or standard input), names tower.conf, the policy
@@ -2144,7 +2183,7 @@ def protected_reasons(command: SimpleCommand, cwd: str, folders: list[Word], spe
             return False
         spend(len(arguments))  # gathering the folders, before names_tower_file pays to look each one up
         others = [folder for word, folder in arguments if word is not own]
-        return runs_code or names_tower_file(text, [Word(cwd), *folders], others, spend)
+        return judged_by_text or names_tower_file(text, session, others, spend)
 
     if not any(names_tower(own, text) for own, text in named):
         return []

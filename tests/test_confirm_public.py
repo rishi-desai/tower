@@ -1376,10 +1376,11 @@ def test_the_floor_ignores_mentions_of_files_that_arent_towers(
 
 @pytest.fixture
 def home(tmp_path: Path) -> Path:
-    """A home folder (the hook's HOME) holding .claude/tower/, a link to .claude, and a folder state/."""
+    """A home folder (the hook's HOME) holding .claude/tower/, a link to .claude, and folders state/ and repo/."""
     (tmp_path / ".claude" / "tower").mkdir(parents=True)
     (tmp_path / "link").symlink_to(tmp_path / ".claude")
     (tmp_path / "state").mkdir()
+    (tmp_path / "repo").mkdir()
     return tmp_path
 
 
@@ -1403,18 +1404,34 @@ REAL_FILES_BY_OTHER_NAMES = [
     ),
     # where the path can't be worked out, it could be the real file
     pytest.param("", bash('printf x > "$DIR/tower.conf"'), id="folder from a variable"),
-    pytest.param("", bash('cd "$DIR" && printf x > tower.conf'), id="cd to a variable"),
-    pytest.param("", bash("cd - && printf x > tower.conf"), id="cd -"),
+    pytest.param("repo", bash('cd "$DIR" && printf x > tower.conf'), id="cd to a variable"),
+    pytest.param("repo", bash("cd - && printf x > tower.conf"), id="cd -"),
     pytest.param("", bash("printf x > $(mktemp -d)/tower.conf"), id="command output"),
     pytest.param("", bash("printf x > /tmp/*/tower.conf"), id="glob"),
-    pytest.param("", bash('git -C "$DIR" checkout tower.conf'), id="git -C a variable"),
-    # a relative name the program resolves in a folder it's given: each is a folder through the link to .claude
-    pytest.param("", bash("git -C {home}/link checkout tower.conf"), id="git -C a link"),
-    pytest.param("", bash("tar --directory={home}/link -xf /tmp/a.tar tower.conf"), id="tar --directory="),
-    pytest.param("", bash("cp -t {home}/link /tmp/t/tower.conf"), id="copy into a link"),
-    pytest.param("", bash("python3 -c \"open('tower.conf', 'w').write('x')\""), id="interpreter code"),
+    pytest.param("repo", bash('git -C "$DIR" checkout tower.conf'), id="git -C a variable"),
+    # from the review: a folder the shell expands, a link made in the same line, code in awk or vim, CDPATH (run
+    # from repo/, where a relative tower.conf isn't TOWER_CONF)
+    pytest.param("repo", bash("cd {home}/.cla?de && sed -i '' s/a/b/ tower.conf"), id="cd to a glob"),
+    pytest.param("repo", bash("cd {home}/.cla{u,x}de && echo x > tower.conf"), id="cd to a brace expansion"),
+    pytest.param("repo", bash("pushd {home}/.cl*e && echo x > tower.conf"), id="pushd to a glob"),
+    pytest.param("repo", bash("cp /tmp/t/tower.conf {home}/.cla*/"), id="copy into a glob"),
+    pytest.param("repo", bash("cd ~zz && echo x > tower.conf"), id="cd to a named folder"),
+    pytest.param("repo", bash("ln -s {home}/.cla* /tmp/qq && echo x > /tmp/qq/tower.conf"), id="link in the line"),
     pytest.param(
-        "",
+        "repo",
+        bash("""awk 'BEGIN{h=ENVIRON["HOME"]; print "x" > h "/.cl" "aude/tower.conf"}'"""),
+        id="awk code",
+    ),
+    pytest.param("repo", bash("vim -es -c 'cd ~/.claude' -c 'w! tower.conf' -c q /tmp/x"), id="vim commands"),
+    pytest.param("repo", bash("CDPATH={home}/.claude; cd tower; echo x > policy.toml"), id="CDPATH"),
+    pytest.param("repo", bash("cdpath=({home}/.claude); cd tower && echo x > policy.toml"), id="zsh cdpath"),
+    # a relative name the program resolves in a folder it's given: each is a folder through the link to .claude
+    pytest.param("repo", bash("git -C {home}/link checkout tower.conf"), id="git -C a link"),
+    pytest.param("repo", bash("tar --directory={home}/link -xf /tmp/a.tar tower.conf"), id="tar --directory="),
+    pytest.param("repo", bash("cp -t {home}/link /tmp/t/tower.conf"), id="copy into a link"),
+    pytest.param("repo", bash("python3 -c \"open('tower.conf', 'w').write('x')\""), id="interpreter code"),
+    pytest.param(
+        "repo",
         bash("python3 - <<'EOF'\nimport os; os.chdir(os.path.expanduser('~/.claude'))\nopen('tower.conf', 'w')\nEOF"),
         id="interpreter heredoc",
     ),
