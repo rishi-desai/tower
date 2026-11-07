@@ -10,6 +10,10 @@ tower adopt-scan           facts for bringing an in-flight repo under tower (see
 tower card-path [DIR]      where the worktree holding DIR (default: here) keeps its status card (see ledger.py)
 tower card write [--status running|done|needs-you|blocked] [--reason TEXT] [--ticket N] [--dir DIR] [--if-absent]
                            render this worktree's card from facts and the narrative sections on stdin (see card.py)
+tower card kickoff [--dir DIR] [--replace]
+                           put the hub's kickoff (stdin) into the worktree's card, where card write keeps it (see card.py)
+tower decisions add TEXT [--dir DIR]
+                           add one dated line to this worktree's append-only decisions log (see memory.py)
 tower rules                link this project's personal rules into this worktree; prints the rules file (see rules.py)
 tower env [--dir DIR]      the worktree's runtime slot and the variables its project config derives (PORT, ...), as
                            `export` lines for eval (see runtime.py)
@@ -54,6 +58,7 @@ from tower import (
     github,
     hook_events,
     ledger,
+    memory,
     merge,
     multirepo,
     policy,
@@ -125,6 +130,11 @@ def parser() -> argparse.ArgumentParser:
     card_parser = commands.add_parser("card-path", help="where this worktree's status card lives")
     card_parser.add_argument("dir", nargs="?", type=Path, default=Path("."), help="a folder in the worktree")
     add_card_parser(commands)
+    decisions_parser = commands.add_parser("decisions", help="this worktree's append-only decisions log")
+    decisions_commands = decisions_parser.add_subparsers(dest="decisions_command", required=True)
+    add = decisions_commands.add_parser("add", help="add one dated line: what you chose over what and why, or found")
+    add.add_argument("text", help=f"the decision, one line of at most {memory.MAX_DECISION} characters")
+    add.add_argument("--dir", type=Path, default=Path("."), help="a folder in the worktree (default: here)")
     commands.add_parser("rules", help="link this project's personal rules file into this worktree")
     env_parser = commands.add_parser("env", help="this worktree's runtime slot and variables, as export lines")
     env_parser.add_argument("--dir", type=Path, default=Path("."), help="a folder in the worktree (default: here)")
@@ -175,6 +185,15 @@ def add_card_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser
     write.add_argument(
         "--if-absent", action="store_true", help="write only if the worktree has no card yet (exit 3 if it has)"
     )
+    kickoff = card_commands.add_parser(
+        "kickoff", help="put the hub's kickoff prompt (stdin) into the worktree's card, which card write then keeps"
+    )
+    kickoff.add_argument("--dir", type=Path, default=Path("."), help="a folder in the worktree (default: here)")
+    kickoff.add_argument(
+        "--replace",
+        action="store_true",
+        help="the card is an orphan from earlier work on this branch name: replace its kickoff, archive its decisions",
+    )
 
 
 def run_card_write(args: argparse.Namespace) -> int:
@@ -205,6 +224,46 @@ def run_card_write(args: argparse.Namespace) -> int:
         print(f"tower: {warning}", file=sys.stderr)
     print(written.path)
     print(f"status: {written.status} ({written.why})")
+    return 0
+
+
+def run_card_kickoff(args: argparse.Namespace) -> int:
+    """Run `tower card kickoff`: print the card's path (and where an earlier decisions log was archived). Exit 1,
+    writing nothing, when the kickoff, the worktree, the ledger or the card is wrong."""
+    if sys.stdin.isatty():
+        print("tower: pipe the kickoff prompt into tower card kickoff", file=sys.stderr)
+        return 1
+    try:
+        path, archived = card.set_kickoff(args.dir, sys.stdin.read(), replace=args.replace)
+    except (NotARepo, ledger.LedgerError, card.CardError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(
+            f"tower: couldn't write the kickoff ({error.strerror or type(error).__name__}: {error.filename})",
+            file=sys.stderr,
+        )
+        return 1
+    if archived is not None:
+        print(f"tower: archived the earlier work's decisions log to {archived}", file=sys.stderr)
+    print(path)
+    return 0
+
+
+def add_decision(directory: Path, text: str) -> int:
+    """Run `tower decisions add`: print the log's path. Exit 1, writing nothing, when the decision or the worktree is
+    wrong or the log can't be written."""
+    try:
+        print(memory.add_decision(directory, text))
+    except (NotARepo, ledger.LedgerError, memory.DecisionError) as error:
+        print(f"tower: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(
+            f"tower: couldn't add the decision ({error.strerror or type(error).__name__}: {error.filename})",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -409,6 +468,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_or_explain(lambda: print(ledger.card_path(args.dir)))
     if args.command == "card" and args.card_command == "write":
         return run_card_write(args)
+    if args.command == "card" and args.card_command == "kickoff":
+        return run_card_kickoff(args)
+    if args.command == "decisions" and args.decisions_command == "add":
+        return add_decision(args.dir, args.text)
     if args.command == "rules":
         return run_or_explain(link_rules)
     if args.command == "env":

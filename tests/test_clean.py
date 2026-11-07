@@ -361,6 +361,20 @@ def test_a_card_archived_before_under_the_same_name_is_kept(repo: Fixture) -> No
     assert (repo.ledger / "_archive" / "feat-1.md").read_text(encoding="utf-8") == "an earlier feat-1\n"
 
 
+def test_the_decisions_log_is_archived_with_the_card_so_a_reused_branch_name_starts_empty(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    (repo.ledger / "_decisions").mkdir()
+    (repo.ledger / "_decisions" / "feat-1.md").write_text("- 2026-11-07T09:00 chose X over Y\n", encoding="utf-8")
+
+    said = run_clean(repo, worker, "feat-1")
+
+    archived = repo.ledger / "_archive" / "feat-1.decisions.md"
+    assert f"feat-1: archived its decisions log to {archived}" in said
+    assert said[-1] == "result: True"
+    assert archived.read_text(encoding="utf-8") == "- 2026-11-07T09:00 chose X over Y\n"
+    assert not (repo.ledger / "_decisions" / "feat-1.md").exists()
+
+
 def test_the_main_checkout_pulls_the_merged_work(repo: Fixture, tmp_path: Path) -> None:
     origin = tmp_path / "origin.git"
     git(repo.main, "clone", "-q", "--bare", str(repo.main), str(origin))

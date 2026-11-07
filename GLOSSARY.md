@@ -60,8 +60,24 @@ A PR from this repo whose head branch has the worktree's branch name. A fork's P
 branch name (a stranger's patch-1 isn't this work).
 _Avoid_: PR by branch name (a fork's PR can have the same branch name)
 
+**Kickoff**:
+The hub's first prompt to a worker: which skill to start with, the two reviews and their ranges, and how to ship. Kept
+word for word as a fixed part of the worker's card, so it comes back after compaction; the worker can't reword or drop
+it.
+_Avoid_: prompt (alone: every message is one), instructions
+
+**Decisions log**:
+A worktree's append-only list of what its worker decided or found out, one dated line each ("chose X over Y because Z",
+"the auth middleware already exists in src/auth"). Lines are added, never changed; unlike the card, it is never stale.
+_Avoid_: notes, history (that is the event log), memory (that is worker memory, all three together)
+
+**Worker memory**:
+What a worker gets back when its context restarts (compaction, `/clear`, a new session on its worktree): its kickoff,
+its current card and its decisions log.
+_Avoid_: context (Claude Code's word for the whole window), state (that is the effective state)
+
 **Ledger**:
-The vault folder holding a project's cards and its backlog of parked ideas.
+The vault folder holding a project's cards, their decisions logs and its backlog of parked ideas.
 _Avoid_: board, tracker
 
 **Machine config** (`tower.conf`):

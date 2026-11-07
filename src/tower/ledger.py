@@ -3,6 +3,8 @@
   - the per-machine config (~/.claude/tower.conf, plain `key=value` lines written by setup.sh) and how to read it
   - which project folder in the notes vault a repo maps to: <projects_dir>/<project.<repo>= or the repo's name>
   - how a branch becomes a card file name: "/" -> "__", a detached HEAD -> detached-<short sha>
+  - where a worktree's decisions log lives (Ledger/_decisions/, by its card's name) and how a finished worker's notes
+    are archived (Ledger/_archive/)
 
 Cards live outside every repo, in <project folder>/Ledger/, so every worktree of a repo writes to the same folder,
 cards never show up in a PR, and Obsidian can show them.
@@ -12,9 +14,13 @@ from __future__ import annotations
 
 import codecs
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tower.gitrepo import git, repo_name
+
+ARCHIVE = "_archive"
+DECISIONS = "_decisions"  # a folder, so the scans that read the Ledger's *.md as cards never see a decisions log
 
 
 class LedgerError(Exception):
@@ -115,3 +121,23 @@ def card_path(worktree_dir: Path) -> Path:
     """Where the worktree holding worktree_dir keeps its card; creates the Ledger folder if needed."""
     branch = git(worktree_dir, "branch", "--show-current")  # "" on a detached HEAD
     return open_ledger(worktree_dir) / card_name(branch, "HEAD", worktree_dir)
+
+
+def decisions_path(worktree_dir: Path) -> Path:
+    """Where the worktree holding worktree_dir keeps its decisions log: Ledger/_decisions/<its card's name>. Creates
+    the Ledger folder if needed, not the _decisions folder."""
+    card = card_path(worktree_dir)
+    return card.parent / DECISIONS / card.name
+
+
+def archive(note: Path, ledger_folder: Path, name: str | None = None) -> Path:
+    """Move note into the Ledger's _archive folder as name (default: its own), under a timestamped name when one by
+    that name is already there (a reused branch); where it went. Raises OSError when it can't be moved."""
+    folder = ledger_folder / ARCHIVE
+    target = folder / (name or note.name)
+    if target.exists():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        target = folder / f"{target.stem}.{stamp}{target.suffix}"
+    folder.mkdir(exist_ok=True)
+    note.rename(target)
+    return target
