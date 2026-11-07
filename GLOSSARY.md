@@ -47,6 +47,7 @@ _Avoid_: prune, teardown, delete (alone: the card is archived, not deleted)
 A worker's short Markdown note in the vault saying where its worktree stands: status, ticket, PR, what's done, the
 one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
 the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
+A card is named after its worktree's branch, or its commit on a detached HEAD; that name isn't the worktree's label.
 _Avoid_: status file, report
 
 **Ticket guess**:
@@ -59,8 +60,24 @@ A PR from this repo whose head branch has the worktree's branch name. A fork's P
 branch name (a stranger's patch-1 isn't this work).
 _Avoid_: PR by branch name (a fork's PR can have the same branch name)
 
+**Kickoff**:
+The hub's first prompt to a worker: which skill to start with, the two reviews and their ranges, and how to ship. Kept
+word for word as a fixed part of the worker's card, so it comes back after compaction; the worker can't reword or drop
+it.
+_Avoid_: prompt (alone: every message is one), instructions
+
+**Decisions log**:
+A worktree's append-only list of what its worker decided or found out, one dated line each ("chose X over Y because Z",
+"the auth middleware already exists in src/auth"). Lines are added, never changed; unlike the card, it is never stale.
+_Avoid_: notes, history (that is the event log), memory (that is worker memory, all three together)
+
+**Worker memory**:
+What a worker gets back when its context restarts (compaction, `/clear`, a new session on its worktree): its kickoff,
+its current card and its decisions log.
+_Avoid_: context (Claude Code's word for the whole window), state (that is the effective state)
+
 **Ledger**:
-The vault folder holding a project's cards and its backlog of parked ideas.
+The vault folder holding a project's cards, their decisions logs and its backlog of parked ideas.
 _Avoid_: board, tracker
 
 **Machine config** (`tower.conf`):

@@ -146,15 +146,6 @@ function badgeOf(status: Status | 'session-waiting', isStale: boolean): { label:
   }
 }
 
-/**
- * The card's file name for a worktree row. Must match tower's core (card_name in src/tower/ledger.py):
- * "/" becomes "__"; a detached HEAD (labelled "(detached abc1234)") is "detached-abc1234".
- */
-export function cardFile(label: string): string {
-  const detached = label.match(/^\(detached (\w+)\)$/)
-  return `${detached ? `detached-${detached[1]}` : label.replace(/\//g, '__')}.md`
-}
-
 // ---------- actions (pane buttons) ----------
 // Anything that changes something is sent to this session's Claude as a prompt, so tower's approval
 // prompts still apply. The pane itself only switches Orca's tab, opens Obsidian, and messages sessions.
@@ -461,7 +452,7 @@ export const register: Register = on => {
       <Button key={`orca-${w.label}`} plain hotkey={hotkey} label={w.label} onPress={() => void openInOrca($, w.label, w.path)} />
     )
     const cardLink = (w: StateWorktree) => state.ledger === null ? null : (
-      <Button key={`card-${w.label}`} plain dimColor label="card" onPress={() => void openCard($, `${state.ledger}/${cardFile(w.label)}`)} />
+      <Button key={`card-${w.label}`} plain dimColor label="card" onPress={() => void openCard($, `${state.ledger}/${w.card_file}`)} />
     )
     const cardAge = (updated: string) => {
       const age = ageOf(updated, now)

@@ -95,11 +95,13 @@ class WorktreeFacts:
     dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow).
     card_unreadable is True when a card file exists but couldn't be read: card is None, but not because there's none.
     commits_after_merge counts HEAD's commits that a merged PR's head doesn't have (work the merge didn't take); None
-    when the PR isn't merged or git couldn't compare (no head from gh, or that commit isn't in this clone)."""
+    when the PR isn't merged or git couldn't compare (no head from gh, or that commit isn't in this clone).
+    card_file is the card's file name in the Ledger (ledger.card_name), which readers use instead of rebuilding it."""
 
     label: str
     branch: str | None
     path: str
+    card_file: str
     is_main: bool
     card: Card | None
     sessions: tuple[Session, ...]
@@ -307,8 +309,8 @@ def gather(
         card = None
         card_unreadable = False
         pr = prs.get(wt.branch) if wt.branch else None
+        card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
         if ledger_folder is not None:
-            card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
             notes_before = len(notes)
             card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
@@ -320,6 +322,7 @@ def gather(
             label=wt.label,
             branch=wt.branch,
             path=wt.path,
+            card_file=card_file,
             is_main=is_main,
             card=card,
             sessions=tuple(live.get(os.path.realpath(wt.path), [])),
@@ -611,6 +614,7 @@ def to_json(report: Report) -> dict[str, object]:
                 "label": facts.label,
                 "branch": facts.branch,
                 "path": facts.path,
+                "card_file": facts.card_file,
                 "is_main": facts.is_main,
                 "status": v.status,
                 "reason": v.reason,

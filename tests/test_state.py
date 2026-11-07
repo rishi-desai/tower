@@ -337,6 +337,23 @@ def test_a_detached_worktree_finds_its_card(repo: Fixture, capsys: pytest.Captur
     assert row["status"] == "blocked"
 
 
+@pytest.mark.parametrize("detached", [False, True])
+def test_each_row_names_the_card_file_the_core_writes(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], detached: bool
+) -> None:
+    """The pane opens a card by the row's card_file, never by rebuilding it from the label (#65): git's short sha can
+    be longer than the label's 7 characters (an ambiguous prefix in a big repo; core.abbrev here)."""
+    git(repo.main, "config", "core.abbrev", "12")
+    path = repo.add_worktree("feat/1-x")
+    if detached:
+        git(path, "checkout", "-q", "--detach")
+    written = ledger.card_path(path)
+
+    (row,) = [row for row in rows(tower_state(capsys)).values() if row["path"] == str(path)]
+
+    assert row["card_file"] == written.name
+
+
 def shared_fixture(repo: Fixture) -> None:
     """The repo both the hub and the pane are tested on: one worker for each way a status can be decided.
 

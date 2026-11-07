@@ -16,7 +16,7 @@ Then, in this order: its terminals are closed and the worktree removed through O
 manage it (Orca running but unable to list its worktrees removes nothing); its branch on GitHub is deleted by tower
 merge's rules (merge.delete_head_branch: never while open PRs are based on it, never an integration branch, never once
 it moved, and it says why when it leaves one); the local branch is deleted only if it still points at the checked
-commit (`git update-ref -d`), with its upstream settings; its card moves to the Ledger's _archive folder. Live sessions are read again just before each worktree's terminals close, since a removal before it (a stacked
+commit (`git update-ref -d`), with its upstream settings; its card (and its decisions log, as <card>.decisions.md) moves to the Ledger's _archive folder. Live sessions are read again just before each worktree's terminals close, since a removal before it (a stacked
 PR's branch delete waits for GitHub) takes time. When the worktree can't be removed, nothing after it runs; a branch or
 card step that fails is said and makes the run fail, but the others still run. Once every worktree is done, the main
 checkout runs `git pull --ff-only` if any was removed; a pull that fails is said, but the cleanup is done by then. Git-ignored files (.env, build output) go with the worktree:
@@ -39,7 +39,6 @@ import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from tower import ledger, merge, sessions, state
@@ -50,7 +49,6 @@ ORCA_TIMEOUT_SECONDS = 60  # one orca call; removing a worktree is the slowest
 PULL_TIMEOUT_SECONDS = 120
 GIT_REMOVE_TIMEOUT_SECONDS = 120  # git deletes every file in the worktree, node_modules included
 WORK_GOES_ON = ("running", "needs-you", "blocked")
-ARCHIVE = "_archive"
 
 # A program run with a list of arguments, answering with its exit code, stdout and stderr (Orca's CLI here).
 Run = Callable[[list[str]], GhResult]
@@ -408,12 +406,23 @@ def remove(
     else:
         git(main, "config", "--remove-section", f"branch.{branch}")  # its upstream; fails only when it has none
         say(f"{label}: deleted the local branch {branch}")
+    card_archived = True
     if target.card is not None and ledger_folder is not None:
         try:
-            say(f"{label}: archived its card to {archive_card(target.card, ledger_folder)}")
+            say(f"{label}: archived its card to {ledger.archive(target.card, ledger_folder)}")
         except OSError as error:
             say(f"{label}: couldn't archive its card {target.card} ({error.strerror or type(error).__name__})")
+            worked = card_archived = False
+    if card_archived and ledger_folder is not None:  # a log stays with a card that stays; one with no card goes too
+        card_file = target.card or ledger_folder / ledger.card_name(branch, str(target.head), main)
+        try:
+            log = ledger.archive_decisions(card_file)
+        except OSError as error:
+            say(f"{label}: couldn't archive its decisions log ({error.strerror or type(error).__name__})")
             worked = False
+        else:
+            if log is not None:
+                say(f"{label}: archived its decisions log to {log}")
     if target.idle_sessions and not via_orca:
         say(f"{label}: session(s) {', '.join(target.idle_sessions)} still open in {path}, which is gone: close them")
     return True, worked
@@ -463,19 +472,6 @@ def remove_worktree(target: Target, main: Path, via_orca: bool, orca: Run, say: 
         return False
     say(f"{label}: removed the worktree {path} {how}")
     return True
-
-
-def archive_card(card: Path, ledger_folder: Path) -> Path:
-    """Move card into the Ledger's _archive folder, under a timestamped name when one by its name is already there (a
-    reused branch); where it went. Raises OSError when it can't be moved."""
-    archive = ledger_folder / ARCHIVE
-    target = archive / card.name
-    if target.exists():
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        target = archive / f"{card.stem}.{stamp}{card.suffix}"
-    archive.mkdir(exist_ok=True)
-    card.rename(target)
-    return target
 
 
 def pull_main(main: Path, say: Say) -> None:
