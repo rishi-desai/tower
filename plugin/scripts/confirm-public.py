@@ -8,10 +8,15 @@ shows the user a confirmation prompt, even when an allow rule like Bash(git *) w
 What asks is set by tower's policy for the session's repo (src/tower/policy.py, read through the plugin's
 lib/tower link to tower's core; `tower policy` shows it). Each action is judged by one key of it:
   push             git push: every -> every push asks; force -> only force pushes, deletions, --prune and
-                   +refspecs; none -> no push asks
+                   +refspecs (and pushes under config that can force: -c remote.*.mirror/push, any --config-env,
+                   an alias for a forcing push or one that runs shell code or sets git's options, or config it
+                   can't read: GIT_CONFIG_*, HOME or XDG_CONFIG_HOME set on the line, an include.path,
+                   help.autocorrect, a key from a variable, under which a subcommand that isn't one of git's own,
+                   so may be an alias, counts as a possible push);
+                   none -> no push asks
   comments         gh pr comment, gh pr review, gh issue comment
   issue_writes     gh issue create, edit, close, reopen, delete, lock, pin, transfer, develop, ...
-  pr_writes        gh pr create, edit, ready, close, reopen, update-branch (an edit that changes
+  pr_writes        gh pr create, edit, ready, close, reopen, update-branch, revert (an edit that changes
                    the base, -B/--base, also needs merge_to_main: it can retarget an armed auto-merge at main)
   merge_to_main /  gh pr merge, `tower merge` (the workers' merge path, src/tower/merge.py, whose own gh calls this
   merge_to_branch  hook can't see) and a gh api write to a PR's merge or merge-async endpoint, by the branch the PR
@@ -25,28 +30,37 @@ lib/tower link to tower's core; `tower policy` shows it). Each action is judged 
                    GitHub itself), however tower is run, in interpreter code too; never `tower clean --dry-run`,
                    which only checks (the exact flag, before any --, with no word from a variable before it)
 The rest ask unless every GitHub key above is auto (as in the sandbox profile), since no one key covers
-them: gh release and gh label writes, gh pr lock/unlock, other `gh api` calls that write (GraphQL mutations or queries read from a
-file, REST with a write method or with fields, since gh defaults to POST when fields are given), and a gh
-subcommand taken from a variable.
+them: every other gh command that isn't a known read (GH_READS: view, list, status, diff, checks and the like, plus
+local work such as clone and checkout), so gh release, label, repo, gist, secret, variable, workflow, run and cache
+writes, an extension or a gh alias, and anything a newer gh adds; gh pr lock/unlock; other `gh api` calls that write
+(GraphQL mutations or queries read from a file, REST with a write method or with fields, since gh defaults to POST
+when fields are given); and a gh subcommand taken from a variable.
 
 Which repo's policy: the session's repo (the hook's `cwd`), judged by every remote it has, fetch and push
 URLs alike (the stricter profile of each, so re-pointing a remote can only tighten it). An action that
 reaches another repo is judged by the stricter of that repo's policy and the session's, key by key: a gh
 command naming one (-R/--repo, a PR or issue URL, a gh api repos/OWNER/REPO endpoint), a git push to a URL
-or with -c remote.*/url.* settings, git -C/--git-dir/--work-tree, and every folder the line cds or pushds
-into. A repo from a variable or command output, a line naming GH_REPO or GH_HOST (for gh) or GIT_DIR or
-GIT_WORK_TREE (for git push), and `cd -` get the strictest profile. If tower's core can't be loaded, the
-built-in strictest profile (work: everything asks) applies.
+or with -c/--config-env remote.*/url.* settings, git -C/--git-dir/--work-tree, every folder the line cds or
+pushds into, and every folder env -C/--chdir or sudo -D/--chdir runs a command in. A repo from a variable or
+command output, a line naming GH_REPO or GH_HOST (for gh and tower), or naming GIT_DIR, GIT_WORK_TREE or
+GIT_COMMON_DIR or setting config through variables (GIT_CONFIG_*, HOME, XDG_CONFIG_HOME; for git push, and gh and
+tower, which find their repo through git), and `cd -` get the strictest profile. If tower's core can't be
+loaded, the built-in strictest profile (work: everything asks) applies.
 
-Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf or a file
-under ~/.claude/tower/ (the rules, the policy file, the event log), by its path or one a symlink resolves
-to, always asks. So does any Bash command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/),
+Safety floor, in every profile: any Edit/Write/MultiEdit of a CLAUDE.local.md, a tower.conf, a file
+under ~/.claude/tower/ (the rules, the policy file, the event log) or a Claude Code settings file
+(.claude/settings.json or settings.local.json, the user's or a project's), by its path or one a symlink
+resolves to, always asks. So does any Bash command naming a rule file (CLAUDE.local.md, ~/.claude/tower/rules/),
 running `tower policy use` (however tower is run, tower's policy module used in python/node code
-included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile. A Bash command naming tower.conf, a policy.toml or another
-file in ~/.claude/tower asks unless it only reads it with a program like cat, grep or tail, and so does one
-writing to a path under .claude that comes from a variable or $'...' quoting. Rule files are standing
-instructions loaded into every session, and tower.conf and the policy file set the approvals above, so a
-prompt injection must not be able to change them silently: an agent can't loosen its own rules.
+included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile, or
+turning tower's plugin off: `claude plugin disable|uninstall|remove` or `claude plugin marketplace remove|rm`
+naming tower, with a name from a variable or none, disable --all, or any name xargs, parallel or find may add. A
+Bash command naming tower.conf, a policy.toml, another file in ~/.claude/tower, a Claude Code settings file or a
+.claude folder itself (cp settings.json ~/.claude/) asks unless it only reads it with a program like cat, grep,
+tail or jq, and so does one writing to a path under .claude that comes from a variable or $'...' quoting. Rule
+files are standing instructions loaded into every session, tower.conf and the policy file set the approvals above,
+and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook runs
+at all, so a prompt injection must not be able to change them silently: an agent can't loosen its own rules.
 
 How a command is read: it is split into simple commands roughly the way bash or zsh splits it: on
 && || ; | & and newlines and around ( ), respecting quotes, escapes, comments, heredocs, case
@@ -65,9 +79,10 @@ When unsure, we ask: a command that can't be split (an unclosed quote, $( or bac
 delimiter with $, a ${ cmd; } substitution), a shell reading code it can't see (from a pipe, <( ), a
 redirect or xargs), a git/gh subcommand, gh api method or GraphQL query taken from a variable or command
 output, and a command too big to check quickly. Those ask unless the policy lets every push and GitHub
-write through (sandbox), and even then they ask when their text names tower.conf, ~/.claude/tower or a
-rule file, or `tower policy use`. JSON that isn't a well-formed tool call, and any crash in this hook,
-always ask. (Input that isn't JSON at all passes, leaving the call to Claude Code's own rules.)
+write through (sandbox), and even then they ask when their text names tower.conf, ~/.claude/tower, a
+Claude Code settings file or a rule file, `tower policy use`, or a `claude plugin` command that turns one
+off. JSON that isn't a well-formed tool call, and any crash in this hook, always ask. (Input that isn't
+JSON at all passes, leaving the call to Claude Code's own rules.)
 
 Limits: this sees only the command text. These are not caught:
   - scripts and programs: `bash script.sh`, `python x.py`, `make`, or anything that calls the GitHub
@@ -75,22 +90,30 @@ Limits: this sees only the command text. These are not caught:
   - commands built at run time: a variable or command output used as the program or as eval/-c code
     (`$GIT push`, `eval "$(...)"`, `bash -c "$CMD"`), xargs input that supplies the subcommand, or a
     tower.conf path supplied at run time (`... | xargs sed -i`);
-  - aliases and functions: git aliases set outside the command (`git p` for push), `gh alias set`, and
-    shell functions;
+  - aliases and functions: git aliases set outside the command (`git p` for push) and shell functions;
   - disguised names: globs, brace expansion or zsh glob qualifiers in a program name, and a protected
-    path reached through cd and a relative path, a glob or a variable;
+    path reached through cd and a relative path, a variable, or a glob other than right under a .claude folder;
   - under push=force, a variable holding a force refspec (`git push origin "$REF"`, REF=+main), or git
-    config set outside the command that changes what push does;
+    config that changes what push does set outside the command, by an earlier command of the same line
+    (`git config remote.origin.mirror true && git push`), or by eval or source code that runs after a push
+    written before it (in a loop or a function);
+  - commands git runs from its config (a `!` alias, diff.external, core.sshCommand, a credential helper):
+    a gh write inside one isn't checked;
   - a plain push straight to the default branch (`git push origin HEAD:main`) is judged by push, not
     merge_to_main: refusing direct pushes to main is GitHub branch protection's job (T03, #20);
   - which repo a command acts on, beyond what its words show (see "Which repo's policy"): a GraphQL
-    mutation (which can reach any repo by node id), a script that changes folders, zsh's AUTO_CD (a folder
+    mutation (which can reach any repo by node id), a script or another program that changes folders
+    (`tmux new -c DIR`, `make -C DIR`), zsh's AUTO_CD (a folder
     name alone as a command) and gh repo set-default run in an earlier command are judged by the session's
     repo; TOWER_DIR and TOWER_CONF, which move the policy file and tower.conf for tests, aren't known to the
     safety floor;
   - the safety floor matches text, so a protected file reached by a path built at run time (pieces joined
-    in python, a glob, a relative path after a cd that names no protected folder) isn't caught. Claude
-    Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that.
+    in python, a glob, a relative path after a cd that names no protected folder, a copy or unpack into the
+    folder above .claude, a symlink inside it) isn't caught. Claude
+    Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
+  - Claude Code run another way to turn tower's plugin off (npx @anthropic-ai/claude-code, a script), a
+    nested session started with hooks off (claude --bare, --settings with disableAllHooks; #87), and an edit
+    of the installed plugin's own files under ~/.claude/plugins/.
 """
 
 from __future__ import annotations
@@ -98,6 +121,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -111,6 +135,7 @@ if TYPE_CHECKING:  # only for the annotations: the hook imports tower's core in 
 # From this file's place, like run-tower.py: the plugin's lib/ holds the link to tower's core.
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# The gh pr and issue writes a policy key covers (GH_KEYS below says which).
 GH_WRITE_SUBCOMMANDS = {
     "pr": {
         "comment",
@@ -124,6 +149,7 @@ GH_WRITE_SUBCOMMANDS = {
         "lock",
         "unlock",
         "update-branch",
+        "revert",  # opens a PR that reverts a merged one
     },
     "issue": {
         "comment",
@@ -139,14 +165,55 @@ GH_WRITE_SUBCOMMANDS = {
         "transfer",
         "develop",
     },
-    "release": {"create", "edit", "delete", "upload", "delete-asset"},
-    "label": {"create", "edit", "delete", "clone"},
 }
+# gh commands that only read GitHub or work locally (`gh help reference`, gh 2.102), by group; a subgroup ("repo
+# license") lists its own, and a group or subgroup alone prints its help. Any other gh command may write: a pr or
+# issue write is judged by its key below, and the rest (release, label, repo, secret, workflow writes, an extension,
+# a gh alias, a command a newer gh adds) ask unless every GitHub key is auto. `auth token` prints a credential, so it
+# isn't listed, and neither is `auth status` with -t/--show-token (see prints_token). `extension browse` isn't
+# either: its screen can install and remove extensions.
+GH_READS: dict[str, set[str]] = {
+    "agent-task": {"list", "view"},
+    "alias": {"list"},
+    "attestation": {"download", "trusted-root", "verify"},
+    "auth": {"status"},
+    "cache": {"list"},
+    "codespace": {"list", "logs", "view"},
+    "config": {"get", "list"},
+    "discussion": {"list", "view"},
+    "extension": {"list", "search"},
+    "gist": {"clone", "list", "view"},
+    "gpg-key": {"list"},
+    "issue": {"list", "status", "view"},
+    "label": {"list"},
+    "org": {"list"},
+    "pr": {"checkout", "checks", "diff", "list", "status", "view"},
+    "preview": {"prompter"},
+    "project": {"field-list", "item-list", "list", "view"},
+    "release": {"download", "list", "verify", "verify-asset", "view"},
+    "repo": {"clone", "list", "read-dir", "read-file", "set-default", "view"},
+    "repo autolink": {"list", "view"},
+    "repo deploy-key": {"list"},
+    "repo gitignore": {"list", "view"},
+    "repo license": {"list", "view"},
+    "ruleset": {"check", "list", "view"},
+    "run": {"download", "list", "view", "watch"},
+    "secret": {"list"},
+    "skill": {"list", "preview", "search"},
+    "ssh-key": {"list"},
+    "variable": {"get", "list"},
+    "workflow": {"list", "view"},
+}
+# A word that is a cluster of one-letter options (-t, -at), with no value attached.
+SHORT_OPTIONS = re.compile(r"-[A-Za-z]+")
+# gh commands that only read, whatever follows them. `co`, gh's default alias for pr checkout, isn't one: it lives in
+# gh's config, which can redefine it, so it asks like any gh alias.
+GH_READ_COMMANDS = {"browse", "completion", "help", "licenses", "search", "status", "version"}
 # Not a policy key: a merge is judged by merge_to_main or merge_to_branch once the branch its PR lands on is known.
 MERGE = "merge (by where the PR lands)"
-# The policy key each gh write is judged by; a group's other writes are under its "*" entry. None (release and label
-# writes, and locking a PR's conversation, which pr_approval=none never let through) asks unless every GitHub key is
-# auto.
+# The policy key each gh pr and issue write above is judged by; a group's other writes are under its "*" entry. None
+# (locking a PR's conversation, which pr_approval=none never let through), like a gh command that is neither a known
+# read nor one of these writes, asks unless every GitHub key is auto.
 GH_KEYS: dict[str, dict[str, str | None]] = {
     "pr": {"comment": "comments", "review": "comments", "merge": MERGE, "lock": None, "unlock": None, "*": "pr_writes"},
     "issue": {"comment": "comments", "*": "issue_writes"},
@@ -195,7 +262,19 @@ PR_LOOKUP_JQ = "[.base.ref, .base.repo.default_branch, .stack.base.ref] | @json"
 PR_URL = re.compile(r"https://(?P<host>[^/\s]+)/(?P<repo>[^/\s]+/[^/\s]+)/pull/(?P<number>[0-9]+)")
 # A line naming these points gh or git at a repo other than the one the hook judges by.
 GH_ENV_MENTION = re.compile(r"\bGH_(?:REPO|HOST)\b")
-GIT_ENV_MENTION = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b")
+GIT_ENV_MENTION = re.compile(r"\bGIT_(?:DIR|WORK_TREE|COMMON_DIR)\b")
+# Setting one of these gives git config the hook can't read: GIT_CONFIG_* (GIT_CONFIG_COUNT=1, export
+# GIT_CONFIG_PARAMETERS=...) holds settings, and HOME and XDG_CONFIG_HOME move the global config file. It could alias
+# push, make it force or point it at another repo. See sets_git_config(). (Another repo's own config, reached with
+# GIT_DIR, -C or cd, is that repo's, like the session's: see GIT_ENV_MENTION and Limits.)
+GIT_CONFIG_VARIABLE = r"(?:GIT_CONFIG\w*|HOME|XDG_CONFIG_HOME)"
+GIT_CONFIG_ASSIGNMENT = re.compile(GIT_CONFIG_VARIABLE + r"\+?=")
+GIT_CONFIG_NAME = re.compile(GIT_CONFIG_VARIABLE + r"(?:\+?=|$)")
+# Shell builtins whose arguments name variables they set or export (export GIT_CONFIG_COUNT, read GIT_CONFIG_KEY_0).
+VARIABLE_SETTERS = {"export", "declare", "typeset", "readonly", "local", "read"}
+# git settings that hide what git does: include.path reads more config from a file the hook can't see, and
+# help.autocorrect runs the subcommand git guesses for a mistyped one (psuh).
+GIT_HIDING_CONFIG = re.compile(r"include(?:if\..*)?\.path|help\.autocorrect")
 # A git URL: scheme://host/path, or [user@]host:path where the host has an @ before it or a dot in it (not HEAD:main).
 GIT_URL = re.compile(r"[A-Za-z][\w+-]*://\S+|[^\s@/:]+@[^\s/:]+:\S+|[^\s@/:]+\.[^\s@/:]+:[^\s/]\S*")
 # git push's options that take the next word as their value (--repo is read for its value instead).
@@ -248,8 +327,8 @@ LANGUAGE_RUNNER = re.compile(r"(?:python|node|perl|ruby|osascript|php|deno|bun|l
 EMBEDDED_COMMAND = re.compile(r"(?<![\w./-])(?:git|gh)[ \t]+[^'\"`\n;|&)]*")
 # The programs that start an invocation we check: env for its -S string, source/. for the code they read.
 INVOKERS = {"git", "gh", "eval", "env", "source", "."} | SHELLS | CODE_STRING_RUNNERS
-# Commands that run the rest of their words as a command. Only used to tell `... | sudo bash` (a shell
-# reading the pipe) from `... | grep bash` (bash is just an argument).
+# Commands that run the rest of their words as a command. Used to tell `... | sudo bash` (a shell reading the pipe)
+# from `... | grep bash` (bash is just an argument), and to find variables a wrapper like env sets for its command.
 WRAPPERS = {
     "env",
     "command",
@@ -270,10 +349,43 @@ WRAPPERS = {
 }
 # What a shell reads commands from when given one of these as its script: standard input.
 STDIN_PATHS = {"-", "/dev/stdin", "/dev/fd/0"}
-# env's options that take the next word as their value (GNU and BSD env).
-ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "-P"}
-# gh's built-in aliases for write subcommands (the ALIASES line of `gh <group> <subcommand> --help`).
-GH_ALIASES = {"pr": {"new": "create"}, "issue": {"new": "create"}, "release": {"new": "create"}}
+# sudo's options that take the next word as their value (sudo -C is --close-from; its folder option is -D).
+SUDO_OPTIONS_WITH_VALUE = {"-a", "-C", "-c", "-D", "-g", "-p", "-R", "-r", "-T", "-t", "-U", "-u"}
+SUDO_OPTIONS_WITH_VALUE |= {"--auth-type", "--close-from", "--login-class", "--chdir", "--group", "--prompt"}
+SUDO_OPTIONS_WITH_VALUE |= {"--chroot", "--role", "--command-timeout", "--type", "--other-user", "--user"}
+# env's options that take the next word as their value (GNU and BSD env; -S's value is the command env runs).
+ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "-P", "-S", "--split-string", "-L", "-U", "-a", "--argv0"}
+# gh's built-in aliases (the ALIASES line of `gh <group> [<subcommand>] --help`, gh 2.102): for groups, and for
+# subcommands by group, where "*" holds those of every group (each list is also ls). Unlike a gh alias, they can't
+# be redefined.
+GH_GROUP_ALIASES = {
+    "agent": "agent-task",
+    "agents": "agent-task",
+    "agent-tasks": "agent-task",
+    "at": "attestation",
+    "cs": "codespace",
+    "ext": "extension",
+    "extensions": "extension",
+    "rs": "ruleset",
+    "skills": "skill",
+}
+GH_ALIASES = {
+    "*": {"ls": "list"},
+    "pr": {"new": "create", "co": "checkout"},
+    "issue": {"new": "create"},
+    "release": {"new": "create"},
+    "skill": {"show": "preview"},
+}
+# git's own commands that agents run (`git --list-cmds=main`). git ignores an alias named like one, so under config
+# the hook can't read these are judged as themselves; any other subcommand may be an alias for push.
+GIT_OWN_COMMANDS = {
+    *("add", "am", "apply", "archive", "bisect", "blame", "branch", "cat-file", "check-ignore", "checkout"),
+    *("cherry-pick", "clean", "clone", "commit", "config", "describe", "diff", "fetch", "for-each-ref"),
+    *("format-patch", "fsck", "gc", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "merge"),
+    *("merge-base", "mv", "notes", "pull", "range-diff", "rebase", "reflog", "remote", "reset", "restore"),
+    *("rev-list", "rev-parse", "revert", "rm", "shortlog", "show", "show-ref", "sparse-checkout", "stash"),
+    *("status", "submodule", "switch", "symbolic-ref", "tag", "version", "worktree"),
+}
 # git push's long options that force or delete; git also accepts any unambiguous prefix (--del).
 GIT_PUSH_FORCE_OPTIONS = ("force", "force-with-lease", "force-if-includes", "mirror", "delete", "prune")
 # `git -c` settings that make a plain push mirror (delete remote refs) or use force refspecs.
@@ -789,7 +901,8 @@ class CommandChecker:
         self.cd_folder = cwd  # where the line's cds, taken in order, end up
         self.reached: set[str] = set()  # stricter profiles of other repos the line reaches, for the prompt
         self.names_gh_env = False  # the line names GH_REPO or GH_HOST, which point gh at another repo
-        self.names_git_env = False  # the line names GIT_DIR or GIT_WORK_TREE, which point git at another repo
+        self.names_git_env = False  # the line names GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR: git at another repo
+        self.git_config_from_env = False  # the line sets GIT_CONFIG_*, HOME, ...: git config the hook can't read
 
     def spend(self, units: int) -> None:
         """Use UNITS of the work budget; raise TooComplex once it is gone."""
@@ -824,7 +937,8 @@ class CommandChecker:
             return self.unchecked("nests $( ) or ( ) too deeply to check")
         self.simple_commands += len(commands)
         for command in commands:
-            self.note_cd(command.words)
+            self.note_folders(command.words)
+            self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words)
         reasons: list[str] = []
         for command in commands:
             found = protected_reasons(command, self.cwd)
@@ -833,9 +947,10 @@ class CommandChecker:
             reasons += [reason for reason in found if reason not in reasons]
         return reasons
 
-    def note_cd(self, words: list[Word]) -> None:
+    def note_folders(self, words: list[Word]) -> None:
         """Record the folder a simple command cds or pushds into, from the session's folder and from the line's last
-        cd (one of them is where it really goes); `cd -` and a folder from a variable are marked dynamic."""
+        cd (one of them is where it really goes); `cd -` and a folder from a variable are marked dynamic. Record the
+        folder env -C or sudo -D runs its command in the same way, without moving the line's later commands there."""
         for target in changed_folders(words):
             if target.dynamic:
                 self.folders.append(target)
@@ -843,6 +958,11 @@ class CommandChecker:
             path = os.path.expanduser(target.text)
             self.folders += [Word(os.path.join(self.cwd, path)), Word(os.path.join(self.cd_folder, path))]
             self.cd_folder = os.path.join(self.cd_folder, path)
+        chdirs = wrapper_folders(words)
+        if chdirs:
+            parts = [os.path.expanduser(folder.text) for folder in chdirs]
+            dynamic = any(folder.dynamic for folder in chdirs)
+            self.folders += [Word(os.path.join(base, *parts), dynamic) for base in (self.cwd, self.cd_folder)]
 
     def check_invocation(self, command: SimpleCommand, index: int, depth: int) -> list[str]:
         """Reasons to ask if word INDEX of COMMAND runs something we check (git, gh, a shell, eval, env -S,
@@ -864,8 +984,8 @@ class CommandChecker:
         if name == "eval":
             return self.check(" ".join(arg.text for arg in args), depth + 1)
         if name == "env":
-            code = env_split_string(args)
-            return self.check(code, depth + 1) if code is not None else []
+            line = env_split_line(args)
+            return self.check(f"env {line}", depth + 1) if line is not None else []
         if name in ("source", "."):  # only as the program: `git add .` passes a directory
             is_sourcing = args and runs_as_program(command.words, index)
             return self.check_sourced(args[0], command, depth) if is_sourcing else []
@@ -887,8 +1007,11 @@ class CommandChecker:
         if name == "gh":
             reason = self.check_gh(args, is_whole_command=depth == 0 and index == 0)
         else:  # git, or one of its dashed executables (libexec/git-core/git-push)
-            git_args = args if name == "git" else [Word(name[4:]), *args]
-            reason = check_git(git_args, lambda: self.push_mode(git_args))
+            # env -C DIR / sudo -D DIR before git work like git -C DIR, so a later git -C joins onto DIR
+            self.spend(index)  # the words before git, read for those options
+            moved = [part for folder in wrapper_folders(command.words[:index]) for part in (Word("-C"), folder)]
+            git_args = [*moved, *(args if name == "git" else [Word(name[4:]), *args])]
+            reason = check_git(git_args, lambda: self.push_mode(git_args), self.git_config_from_env)
         return [reason] if reason else []
 
     def note_tower_merge(self, words: list[Word], index: int, top_level: bool) -> None:
@@ -897,7 +1020,7 @@ class CommandChecker:
         runs as its own command (TOP_LEVEL; merge_reasons() checks nothing is chained), straight or from python with
         only python's switches, merge comes right after it, and at most a PR number follows."""
         self.spend(len(words) - index)
-        position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
+        position = next_operand(words, index + 1)
         if position is None or not (words[position].dynamic or words[position].text == "merge"):
             return
         launcher, after = words[:index], words[position + 1 :]
@@ -920,7 +1043,7 @@ class CommandChecker:
         it are all tower's, not another command's as in find -exec ... \\; -exec ... --dry-run), clean right after it,
         and the exact --dry-run among clean's options (before any --, which makes the words after it worktree
         names), with no word from a variable among them (one could be --)."""
-        position = next((i for i in range(index + 1, len(words)) if not words[i].text.startswith("-")), None)
+        position = next_operand(words, index + 1)
         if position is None or not (words[position].dynamic or words[position].text == "clean"):
             return []
         launcher, after = words[program_position(words) : index], words[position + 1 :]
@@ -942,16 +1065,22 @@ class CommandChecker:
         return [] if dry_run or not self.tower_gates().asks("cleanup") else [CLEANUP_REASON]
 
     def tower_gates(self) -> Gates:
-        """The gates for a tower merge or clean: those of the repo it runs in, but the strictest when the line names GH_REPO or
-        GH_HOST, which point its gh calls at another repo, as for gh itself."""
-        if self.names_gh_env and self.session_policy.has_overrides:
+        """The gates for a tower merge or clean: those of the repo it runs in, but the strictest when the line may
+        point its gh and git calls at another repo (GH_REPO, GH_HOST, see git_repo_unknown), as for gh itself."""
+        if (self.names_gh_env and self.session_policy.has_overrides) or self.git_repo_unknown():
             return self.strictest_reached()
         return self.gates_for([], [])
 
+    def git_repo_unknown(self) -> bool:
+        """Whether the line may point git at a repo the hook can't tell, with [repos] entries that make it matter: it
+        names GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR, or sets config the hook can't read (GIT_CONFIG_*, HOME), which
+        can rewrite a remote's URL. gh and tower find their repo through git too."""
+        return (self.names_git_env or self.git_config_from_env) and self.session_policy.has_overrides
+
     def push_mode(self, git_args: list[Word]) -> str:
         """The push key for git run with GIT_ARGS: the stricter of the session's and that of every repo the push
-        reaches (a URL it pushes to, the folders git and the line point at)."""
-        if self.names_git_env and self.session_policy.has_overrides:
+        reaches (a URL it pushes to, the folders git and the line point at); the strictest when git_repo_unknown."""
+        if self.git_repo_unknown():
             return self.strictest_reached().push
         named, folders = git_repos(git_args)
         return self.gates_for(named, folders).push
@@ -973,6 +1102,7 @@ class CommandChecker:
                 joined = os.path.join(joined, os.path.expanduser(folder.text))
             if git_folders:
                 folders.append(Word(joined, any(folder.dynamic for folder in git_folders)))
+        folders = list({(folder.text, folder.dynamic): folder for folder in folders}.values())  # each one once
         if len({folder.text for folder in folders}) > MAX_FOLDERS and self.session_policy.has_overrides:
             return self.strictest_reached()
         else:
@@ -1007,19 +1137,20 @@ class CommandChecker:
         return self.unchecked(HIDDEN_CODE_REASON)
 
     def check_gh(self, args: list[Word], is_whole_command: bool) -> str | None:
-        """Reason to ask for gh run with ARGS, or None if it only reads or the policy lets it through. A merge is
+        """Reason to ask for gh run with ARGS, or None if it is a known read or the policy lets it through. A merge is
         only collected here; IS_WHOLE_COMMAND says gh is the program at the top level, which merge_reasons() needs
         before it asks gh for the merge's base."""
-        indexes = gh_command_indexes(args)
+        indexes = gh_command_indexes(args, count=3)  # a subgroup's command (gh repo license list) has three words
         if not indexes:
             return None
         flags = [arg for position, arg in enumerate(args) if position not in indexes[:2]]
         without_group = args[: indexes[0]] + args[indexes[0] + 1 :]  # gh api's endpoint stays in
 
         def gates() -> Gates:
-            """The gates for this gh command: the session's and those of every repo it names. Only for a write, since
+            """The gates for this gh command: the session's and those of every repo it names, or the strictest when
+            the line may point it at another repo (GH_REPO, GH_HOST, git_repo_unknown). Only for a write, since
             finding them may run git."""
-            if self.names_gh_env and self.session_policy.has_overrides:
+            if (self.names_gh_env and self.session_policy.has_overrides) or self.git_repo_unknown():
                 return self.strictest_reached()
             return self.gates_for(gh_named_repos(without_group), [])
 
@@ -1033,25 +1164,29 @@ class CommandChecker:
                 return None
             reason = check_gh_api(without_group)
             return None if reason is None or gates().github_open else reason
-        writes = GH_WRITE_SUBCOMMANDS.get(group.text, set())
-        if not writes or len(indexes) < 2:
-            return None
-        subcommand = args[indexes[1]]
+        group_name = GH_GROUP_ALIASES.get(group.text, group.text)
+        if group_name in GH_READ_COMMANDS or (len(indexes) == 1 and group_name in GH_READS):
+            return None  # it only reads, or it is a group alone, which prints its help
+        subcommand = args[indexes[1]] if len(indexes) > 1 else Word("")
         if subcommand.dynamic:
             return None if gates().github_open else GH_DYNAMIC_REASON
-        name = GH_ALIASES.get(group.text, {}).get(subcommand.text, subcommand.text)
-        if name not in writes:
+        name = gh_alias_target(group_name, subcommand.text)
+        third = args[indexes[2]] if len(indexes) > 2 else None
+        shows_token = prints_token(group_name, name, flags)
+        if not shows_token and is_gh_read(group_name, name, third):
             return None
-        group_keys = GH_KEYS.get(group.text, {})
-        key = group_keys.get(name, group_keys.get("*"))
-        action = f"gh {group.text} {name}"
+        group_keys = GH_KEYS.get(group_name, {})
+        key = group_keys.get(name, group_keys.get("*")) if name in GH_WRITE_SUBCOMMANDS.get(group_name, ()) else None
+        action = f"gh {group_name} {name}".rstrip()
         if key == MERGE:
             self.merges.append(parse_merge(flags, gates(), is_whole_command))
             return None
-        if key is None:  # release and label writes, PR lock/unlock
-            return None if gates().github_open else f"{action} changes something on GitHub that no one key covers"
+        if key is None:  # any other gh command that isn't a known read: release, repo, secret writes, PR lock, ...
+            reason = f"{action} may change something on GitHub that no one key covers (it isn't a known read)"
+            reason = f"{action} prints your GitHub auth token" if shows_token else reason
+            return None if gates().github_open else reason
         keys = [key]
-        if (group.text, name) == ("pr", "edit") and changes_base(flags):
+        if (group_name, name) == ("pr", "edit") and changes_base(flags):
             keys.append("merge_to_main")
         judged = gates()
         asking = [k for k in keys if judged.asks(k)]
@@ -1263,7 +1398,12 @@ def program_name(word: Word) -> str:
     prefix (=git is git's path) or a zsh brace group's "{"; "" if that part comes from a variable or command
     output."""
     name = os.path.basename(word.text).lstrip("={").lower()
-    return "" if "$" in name or "`" in name else name
+    return "" if has_expansion(name) else name
+
+
+def has_expansion(text: str) -> bool:
+    """Whether TEXT, a word as written, holds a $ or backtick expansion, so its value is only known at run time."""
+    return "$" in text or "`" in text
 
 
 def program_position(words: list[Word]) -> int:
@@ -1285,24 +1425,6 @@ def runs_as_program(words: list[Word], index: int) -> bool:
 def is_process_substitution(word: Word) -> bool:
     """Whether WORD is a <( ), >( ) or zsh =( ): a file name the shell makes up for a command's output."""
     return word.dynamic and word.text.startswith(("<(", ">(", "=("))
-
-
-def env_split_string(args: list[Word]) -> str | None:
-    """The command `env` runs from -S/--split-string (env -S 'git push'), or None if it has none."""
-    index = 0
-    while index < len(args):
-        text = args[index].text
-        following = args[index + 1].text if index + 1 < len(args) else None
-        if text.startswith("--split-string="):
-            return text.split("=", 1)[1]
-        if text == "--split-string":
-            return following
-        if text.startswith("-") and not text.startswith("--") and "S" in text:
-            return text[text.index("S") + 1 :] or following
-        if not text.startswith("-") and not ASSIGNMENT.match(text):
-            return None  # the command env runs starts here
-        index += 2 if text in ENV_OPTIONS_WITH_VALUE else 1
-    return None
 
 
 @dataclass
@@ -1346,58 +1468,271 @@ def parse_shell_args(args: list[Word]) -> ShellArgs:
     return ShellArgs(script=None if from_stdin else operand)  # -s: commands from stdin, operands are arguments
 
 
-def check_git(args: list[Word], mode: Callable[[], str]) -> str | None:
+def check_git(args: list[Word], mode: Callable[[], str], config_from_env: bool) -> str | None:
     """Reason to ask for git run with ARGS: a push, judged by the policy's push mode (MODE is called only for a push,
-    since finding it may run git), found past git's global options.
+    since finding it may run git), found past git's global options. CONFIG_FROM_ENV: the line sets variables that
+    give git config the hook can't read (GIT_CONFIG_VARIABLE).
 
-    A subcommand from a variable, command output or a `-c alias.*` set in the same command could be push.
+    A subcommand from a variable, command output or a `-c alias.*` set in the same command could be push. Config the
+    hook can't read (from those variables, an include.path, a -c or --config-env key from a variable) could define
+    an alias for push and make it force, so then a subcommand that isn't one of git's own (GIT_OWN_COMMANDS) counts
+    as a push that may force. Any --config-env takes its value from the environment, so it may force too.
     """
     index = 0
     aliases: set[str] = set()
-    config_forces = False  # -c remote.<name>.mirror/push can make a plain push delete or force
+    unreadable = config_from_env
+    config_forces = False  # -c remote.<name>.mirror/push, or an alias for push --force, can make a push delete or force
+    # An alias that runs shell code (!) or gives git its own options first (-c, --config-env) may do either too.
     while index < len(args) and args[index].text.startswith("-"):
-        if args[index].text == "-c" and index + 1 < len(args):
-            key = args[index + 1].text.split("=", 1)[0].lower()
+        setting = config_setting(args, index)
+        if setting is not None:
+            key, _, value = setting.text.partition("=")
+            key = key.lower()
+            unreadable = unreadable or is_unreadable_config(key)
             if key.startswith("alias."):
                 aliases.add(key[len("alias.") :])
-            config_forces = config_forces or bool(GIT_FORCING_CONFIG.fullmatch(key))
+                parts = alias_words(value)
+                runs_more = parts is None or (bool(parts) and parts[0].startswith(("!", "-")))
+                forcing_part = any(map(is_force_push_arg, parts or []))
+                config_forces = config_forces or setting.dynamic or runs_more or forcing_part
+            from_env = args[index].text.startswith("--config-env")
+            config_forces = config_forces or from_env or bool(GIT_FORCING_CONFIG.fullmatch(key))
         index += 2 if args[index].text in GIT_OPTIONS_WITH_VALUE else 1
     if index >= len(args):
         return None
     subcommand = args[index]
+    forces = config_forces or unreadable
     if subcommand.dynamic or subcommand.text.lower() in aliases:
         action = "git with a subcommand from a variable, command output or alias, which could be push,"
-        return check_push(args[index + 1 :], mode(), action, config_forces)
+        return check_push(args[index + 1 :], mode(), action, forces)
     if subcommand.text != "push":
+        if not unreadable or subcommand.text in GIT_OWN_COMMANDS:
+            return None  # git ignores an alias named like one of its own commands
+        action = "git under config it can't read (GIT_CONFIG_*, HOME, an include, a key from a variable), maybe a push,"
+        return check_push(args[index + 1 :], mode(), action, forces)
+    return check_push(args[index + 1 :], mode(), "git push", forces)
+
+
+def alias_words(value: str) -> list[str] | None:
+    """The words git splits a -c alias.*'s VALUE into, honoring quotes and backslashes as git does ("push '--force'"
+    is push --force), or None when it can't be split (an unclosed quote)."""
+    try:
+        return shlex.split(value)
+    except ValueError:
         return None
-    return check_push(args[index + 1 :], mode(), "git push", config_forces)
+
+
+def is_unreadable_config(key: str) -> bool:
+    """Whether a git setting's KEY hides what git does: it comes from a variable, includes a config file, or
+    autocorrects a mistyped subcommand (GIT_HIDING_CONFIG)."""
+    return has_expansion(key) or bool(GIT_HIDING_CONFIG.fullmatch(key.lower()))
+
+
+def sets_git_config(words: list[Word]) -> bool:
+    """Whether a simple command's WORDS may set a GIT_CONFIG_VARIABLE: an assignment before its program
+    (GIT_CONFIG_COUNT=1 git push, or alone), one among the words of a wrapper like env or sudo, or a name that
+    export, read or declare sets. A name only known at run time may be one: env $(cat vars) git push, export "$N=1",
+    or an env that xargs, parallel or find run (xargs -I{} env {} git push). Other words only name one (echo
+    GIT_CONFIG_COUNT=1, unset, a commit message)."""
+    program = program_position(words)
+    if any(GIT_CONFIG_ASSIGNMENT.match(word.text) for word in words[:program]):
+        return True
+    name = program_name(words[program]) if program < len(words) else ""
+    args = words[program + 1 :]
+    if name in WRAPPERS:
+        if any(GIT_CONFIG_ASSIGNMENT.match(word.text) for word in args):
+            return True
+        names = [program_name(word) for word in words]
+        supplier = next((i for i in range(program, len(words)) if names[i] in ARGUMENT_SUPPLIERS), len(words))
+        return any(
+            i > supplier or env_hides_variables(words, i) for i in range(program, len(words)) if names[i] == "env"
+        )
+    return name in VARIABLE_SETTERS and any(GIT_CONFIG_NAME.match(word.text) or hides_name(word) for word in args)
+
+
+def env_hides_variables(words: list[Word], index: int) -> bool:
+    """Whether the env at word INDEX of WORDS may set variables its words don't show: what it runs starts with a word
+    only known at run time, which may expand to assignments (env $(cat vars) git push). (An env that xargs, parallel
+    or find run may get assignments from them: sets_git_config counts that.)"""
+    command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
+    return command_at < len(words) and hides_name(words[command_at])
+
+
+def hides_name(word: Word) -> bool:
+    """Whether the variable name WORD gives (all of it, or what comes before its =) is only known at run time."""
+    return has_expansion(word.text.split("=", 1)[0])
+
+
+def config_setting(args: list[Word], index: int) -> Word | None:
+    """The key=value setting git's global option at INDEX of ARGS gives, or None for another option: -c's value, or
+    --config-env's name with its value taken from an environment variable (so the setting is marked dynamic)."""
+    text = args[index].text
+    following = args[index + 1] if index + 1 < len(args) else None
+    if text == "-c":
+        return following
+    if text == "--config-env" and following is not None:
+        spec = following.text
+    elif text.startswith("--config-env="):
+        spec = text.split("=", 1)[1]
+    else:
+        return None
+    name, _, variable = spec.partition("=")
+    return Word(f"{name}=${variable}", dynamic=True)
+
+
+@dataclass(frozen=True)
+class WrapperSyntax:
+    """How a wrapper (env, sudo) reads its options: which take a value, name a folder to run in, or hold more of its
+    arguments."""
+
+    with_value: set[str]  # its options that take a value: the rest of a short one's word (-Cdir) or the next word
+    chdir: set[str]  # the options among them that name the folder
+    split: frozenset[str] = frozenset()  # those whose value it splits into more of its own arguments (env -S)
+    flags: frozenset[str] = frozenset()  # long flags that are a prefix of one that takes a value (sudo --login)
+
+
+@dataclass
+class WrapperOptions:
+    """What a wrapper's options say, read up to the command it runs."""
+
+    chdirs: list[Word] = field(default_factory=list)  # the folders its folder options name, in order
+    split: Word | None = None  # env -S's value, which env splits into more of its own arguments
+    split_at: int = 0  # the index of the word holding -S (its value ends at command_at)
+    command_at: int = 0  # the index of the first word after its options: the command it runs
+
+
+# The wrappers whose options the hook reads, to find where and what they run.
+WRAPPER_SYNTAX = {
+    "env": WrapperSyntax(ENV_OPTIONS_WITH_VALUE, {"-C", "--chdir"}, frozenset({"-S", "--split-string"})),
+    "sudo": WrapperSyntax(SUDO_OPTIONS_WITH_VALUE, {"-D", "--chdir"}, flags=frozenset({"--login"})),
+}
+
+
+def wrapper_folders(words: list[Word]) -> list[Word]:
+    """The folders a simple command's WORDS tell env (-C, --chdir) or sudo (-D, --chdir) to run its command in, in
+    order (each relative to the one before). A -C inside env -S's string is found when that is checked."""
+    found: list[Word] = []
+    first = program_position(words)  # runs_as_program's test, with the program found once rather than per word
+    wrapped = first < len(words) and program_name(words[first]) in WRAPPERS
+    for index in range(first, len(words)):
+        name = program_name(words[index])
+        if name in WRAPPER_SYNTAX and (index == first or wrapped):
+            found += read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1).chdirs
+    return found
+
+
+def env_split_line(args: list[Word]) -> str | None:
+    """The rest of env's command line when env, run with ARGS, has -S/--split-string (env -S 'git push'), or None:
+    env splits that string into more of its own arguments, options included (-S'-C ../repo git push'), in its
+    place."""
+    options = read_wrapper_options(args, WRAPPER_SYNTAX["env"])
+    if options.split is None:
+        return None
+    try:
+        parts = shlex.split(options.split.text.replace("\\_", " "))  # env reads \_ as a space between words
+        split = [Word(part, has_expansion(part)) for part in parts]
+    except ValueError:  # an unclosed quote: checking the string as written reports it can't be split
+        return options.split.text
+    before, after = args[: options.split_at], args[options.command_at :]
+    return " ".join(map(shell_text, [*before, *split, *after]))
+
+
+def shell_text(word: Word) -> str:
+    """WORD written back as shell text, to be split again, so a '#' stays a word rather than starting a comment:
+    single-quoted, or double-quoted when it holds an expansion, which must still be seen as one."""
+    if not word.dynamic:
+        return shlex.quote(word.text)
+    return '"' + word.text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def read_wrapper_options(args: list[Word], wrapper: WrapperSyntax, start: int = 0) -> WrapperOptions:
+    """What WRAPPER's options among its ARGS, from START, say, read up to the command it runs (or to env -S's value,
+    after which env reads on from the split string); the indexes it gives count in ARGS. An option that takes a value
+    takes the rest of its word (--chdir=DIR, -CDIR, -iCDIR in a cluster) or else the next word; a long one may be cut
+    short (--ch), as getopt allows."""
+    options = WrapperOptions()
+    index = start
+    while index < len(args):
+        word = args[index]
+        if ASSIGNMENT.match(word.text) or word.text == "-":  # env's NAME=value, and - (an empty environment)
+            index += 1
+            continue
+        if word.text == "--":
+            index += 1
+            break
+        if not word.text.startswith("-"):
+            break
+        start = index
+        index += 1
+        if word.text.startswith("--"):
+            given, _, attached = word.text.partition("=")
+            option = long_option(wrapper, given)
+            has_value = "=" in word.text
+        else:  # a cluster of short options: the first one that takes a value takes the rest of the word
+            letter = next((i for i in range(1, len(word.text)) if f"-{word.text[i]}" in wrapper.with_value), None)
+            option = None if letter is None else f"-{word.text[letter]}"
+            attached = "" if letter is None else word.text[letter + 1 :]
+            has_value = bool(attached)
+        if option is None:
+            continue
+        if has_value:
+            value = Word(attached, word.dynamic)
+        elif index < len(args):
+            value = args[index]
+            index += 1
+        else:
+            break
+        if option in wrapper.chdir:
+            options.chdirs.append(value)
+        if option in wrapper.split:
+            options.split, options.split_at = value, start
+            break
+    options.command_at = index
+    return options
+
+
+def long_option(wrapper: WrapperSyntax, given: str) -> str | None:
+    """Which of WRAPPER's options that take a value the long option GIVEN stands for: GIVEN itself, or the one it is
+    a prefix of (--ch for --chdir), as getopt allows. When it is a prefix of several, a folder or split option wins;
+    None when it names none of them (a flag)."""
+    if given in wrapper.with_value:
+        return given
+    if given in wrapper.flags:  # getopt reads an exact name as itself, not as the start of a longer one
+        return None
+    matches = sorted(option for option in wrapper.with_value if option.startswith("--") and option.startswith(given))
+    return next((option for option in matches if option in wrapper.chdir | wrapper.split), next(iter(matches), None))
 
 
 def git_repos(args: list[Word]) -> tuple[list[Word], list[Word]]:
     """The repos a git push run with ARGS (git's own arguments, subcommand included) reaches besides the session's
-    checkout: (repo URLs: from -c remote.*.url/pushurl and url.*.insteadOf settings, and the push's repository when
-    that is a URL or a variable; folders: -C, --git-dir, --work-tree, in order). Only called for a push, or for a
-    subcommand that may be one (an alias, a variable), so the words after the subcommand are read as push's."""
+    checkout: (repo URLs: from -c or --config-env remote.*.url/pushurl and url.*.insteadOf settings, and the push's
+    repository when that is a URL or a variable; folders: -C, --git-dir, --work-tree, in order). Only called for a
+    push, or for a subcommand that may be one (an alias, a variable), so the words after the subcommand are read as
+    push's."""
     named: list[Word] = []
     folders: list[Word] = []
     index = 0
     while index < len(args) and args[index].text.startswith("-"):
         text = args[index].text
         value = args[index + 1] if index + 1 < len(args) else None
+        setting = config_setting(args, index)
         if text in ("-C", "--git-dir", "--work-tree") and value is not None:
             folders.append(value)
         elif text.startswith(("--git-dir=", "--work-tree=")):
             folders.append(Word(text.split("=", 1)[1], args[index].dynamic))
-        elif text == "-c" and value is not None:
-            named += config_repos(value)
+        elif setting is not None:
+            named += config_repos(setting)
         index += 2 if text in GIT_OPTIONS_WITH_VALUE else 1
     return named + push_destination(args[index + 1 :]), folders
 
 
 def config_repos(setting: Word) -> list[Word]:
     """The repo URLs a `git -c` SETTING (key=value) points git at: remote.<name>.url or .pushurl's value, and both
-    sides of url.<base>.insteadOf / pushInsteadOf; none for any other setting."""
+    sides of url.<base>.insteadOf / pushInsteadOf; none for any other setting. A key from a variable, or an included
+    file, could set any of them, so its value counts as a URL from a variable."""
     key, _, value = setting.text.partition("=")
+    if is_unreadable_config(key):
+        return [Word(value, dynamic=True)]
     lowered = key.lower()
     if lowered.startswith("remote.") and lowered.endswith((".url", ".pushurl")):
         return [Word(value, setting.dynamic)]
@@ -1464,13 +1799,47 @@ def is_force_push_arg(arg: str) -> bool:
     return arg.startswith(("+", ":"))
 
 
-def gh_command_indexes(args: list[Word]) -> list[int]:
-    """Indexes in ARGS of gh's first two command words (`pr`, `comment`), found the way gh's CLI library
+def is_gh_read(group: str, name: str, third: Word | None) -> bool:
+    """Whether `gh GROUP NAME` is a known read (GH_READS), THIRD being the command word after NAME if any: NAME is a
+    listed read, or NAME is a subgroup (`gh repo license`) and THIRD is missing (its help) or one of its reads."""
+    if name in GH_READS.get(group, ()):
+        return True
+    subgroup = GH_READS.get(f"{group} {name}")
+    if subgroup is None:
+        return False
+    return third is None or (not third.dynamic and gh_alias_target(f"{group} {name}", third.text) in subgroup)
+
+
+def gh_alias_target(group: str, subcommand: str) -> str:
+    """The gh subcommand SUBCOMMAND of GROUP stands for: itself, or what gh's built-in alias for it names (pr co is
+    checkout, any ls is list)."""
+    return GH_ALIASES.get(group, {}).get(subcommand) or GH_ALIASES["*"].get(subcommand, subcommand)
+
+
+def prints_token(group: str, name: str, flags: list[Word]) -> bool:
+    """Whether `gh GROUP NAME` with FLAGS (the words after them) prints the auth token, which no known read does: gh
+    auth token, gh auth status -t/--show-token (or -t in a cluster), gh config get oauth_token (or a key from a
+    variable, which may be it)."""
+    if group == "auth":
+        return name == "token" or any(
+            flag.text.startswith("--show-token") or has_short_option(flag.text, "t") for flag in flags
+        )
+    return (group, name) == ("config", "get") and any(flag.text == "oauth_token" or flag.dynamic for flag in flags)
+
+
+def has_short_option(text: str, letter: str) -> bool:
+    """Whether the word TEXT gives the one-letter option LETTER, alone (-t) or in a cluster of them (-at)."""
+    return bool(SHORT_OPTIONS.fullmatch(text)) and letter in text[1:]
+
+
+def gh_command_indexes(args: list[Word], count: int) -> list[int]:
+    """Indexes in ARGS of gh's first COUNT command words (`pr`, `comment`), found the way gh's CLI library
     (cobra) finds them: a flag without "=" takes the next word as its value, except -h and --help, so
-    `gh pr -R owner/repo comment` is a comment; "--" ends the search."""
+    `gh pr -R owner/repo comment` is a comment; "--" ends the search. Past the second, a word may be an argument
+    (`gh pr view 5`): only a subgroup's (`gh repo license list`) is a command word."""
     found: list[int] = []
     index = 0
-    while index < len(args) and len(found) < 2:
+    while index < len(args) and len(found) < count:
         text = args[index].text
         if text == "--":
             break
@@ -1572,23 +1941,61 @@ def parse_gh_api(args: list[Word]) -> GhApiCall:
 # --- Rule files, tower's files, and the hook itself -----------------------------------------------
 
 # Case-insensitive, since macOS's disk is: TOWER.conf is tower.conf. Paths are normalized (a//b, a/./b) first.
-# Edit/Write: CLAUDE.local.md, tower.conf, and anything under ~/.claude/tower/ (rules, policy file, event log).
-PROTECTED_PATH = re.compile(r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/|(?:^|/)tower\.conf$", re.IGNORECASE)
+# Edit/Write: CLAUDE.local.md, tower.conf, anything under ~/.claude/tower/ (rules, policy file, event log), and Claude
+# Code's settings files, the user's and any project's (enabledPlugins or disableAllHooks there turns this hook off).
+PROTECTED_PATH = re.compile(
+    r"(?:^|/)CLAUDE\.local\.md$|/\.claude/tower/|(?:^|/)tower\.conf$|(?:^|/)\.claude/settings(?:\.local)?\.json$",
+    re.IGNORECASE,
+)
 # Bash: naming a rule file asks even for a read.
 RULE_FILE_MENTION = re.compile(r"CLAUDE\.local\.md|\.claude/tower/rules", re.IGNORECASE)
-# Bash: tower.conf and the rest of ~/.claude/tower/ (policy file, event log) may be read by READ_ONLY_PROGRAMS.
-TOWER_FILE_MENTION = re.compile(r"tower\.conf|policy\.toml|\.claude/tower(?![\w.-])", re.IGNORECASE)
+# Bash: tower.conf, the rest of ~/.claude/tower/ (policy file, event log) and Claude Code's settings files may be read
+# by READ_ONLY_PROGRAMS.
+TOWER_FILE_MENTION = re.compile(
+    r"tower\.conf|policy\.toml|\.claude/tower(?![\w.-])|\.claude/settings(?:\.local)?\.json"
+    r"|\.claude/[^/\s]*[{*?[]",  # a glob or brace expansion right under a .claude folder (.claude/{settings.json,x})
+    re.IGNORECASE,
+)
+# Bash: a word that is a .claude folder itself, which a copy, download or unpack can put a settings file into
+# (cp settings.json ~/.claude/); only READ_ONLY_PROGRAMS may name it. A whole word, or an option's attached value
+# (--output-dir=.claude, -C.claude), so prose naming it doesn't count.
+CLAUDE_FOLDER = re.compile(r"(?:\S*[/=]|-[A-Za-z]+)?\.claude", re.IGNORECASE)
 # Programs that can't write a file except through a redirection.
 READ_ONLY_PROGRAMS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "ls", "stat", "file", "diff", "cmp"}
-READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":"}
+READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":", "jq"}
 RULE_FILE_REASON = "the command touches a personal rule file (CLAUDE.local.md or ~/.claude/tower/rules)"
-TOWER_FILE_REASON = "the command may change tower.conf, the policy file (which sets these approvals) or tower's files"
+TOWER_FILE_REASON = (
+    "the command may change tower.conf, the policy file (which sets these approvals), tower's files or Claude Code's "
+    "settings (which can turn this hook off)"
+)
+TOWER_PLUGIN_REASON = "the command may turn off tower's plugin, whose hook asks for these approvals"
+# `claude plugin` subcommands that turn a plugin off (uninstall's alias is remove), and `claude plugin marketplace`
+# ones that remove a marketplace with its plugins (remove's alias is rm).
+PLUGIN_OFF_VERBS = {"disable", "uninstall", "remove"}
+MARKETPLACE_OFF_VERBS = {"remove", "rm"}
+# Programs that add words of their own to the command they run: xargs and parallel from their input, find -exec's {}.
+ARGUMENT_SUPPLIERS = {"xargs", "parallel", "find"}
+# More words "plugin" after claude than a real command has (one, or one more as an option's value): asking is cheaper
+# than reading each one as the group.
+MAX_PLUGIN_GROUPS = 3
+# Characters that make the shell expand a word into others (a glob, brace expansion), so its text isn't the name.
+EXPANDING = re.compile(r"[{*?[]")
+PLUGIN_GROUPS = {"plugin", "plugins"}  # claude's plugin command and its alias
+# Text that may turn a plugin off, in this order (see mentions_in_order): in a command that couldn't be checked fully,
+# or in another language's code.
+PLUGIN_OFF_MENTION = (
+    re.compile(r"\bclaude\b", re.IGNORECASE),
+    re.compile(r"\bplugins?\b", re.IGNORECASE),
+    re.compile(rf"\b(?:{'|'.join(sorted(PLUGIN_OFF_VERBS | MARKETPLACE_OFF_VERBS))})\b", re.IGNORECASE),
+)
 POLICY_COMMAND_REASON = (
     "the command may change tower's policy (tower policy use, its policy module, or tower's setup.sh), "
     "which only you do"
 )
-# Bash text that may run `tower policy use` or setup.sh --profile, for a command that couldn't be checked fully.
-POLICY_COMMAND_MENTION = re.compile(r"tower.*\bpolicy\b|setup\.sh", re.IGNORECASE | re.DOTALL)
+# Bash text that may run `tower policy use` (tower, then policy) or setup.sh --profile, for a command that couldn't be
+# checked fully.
+POLICY_COMMAND_MENTION = (re.compile("tower", re.IGNORECASE), re.compile(r"\bpolicy\b", re.IGNORECASE))
+SETUP_MENTION = re.compile(r"setup\.sh", re.IGNORECASE)
 # Interpreter code that uses tower's policy module, or runs `tower policy use` (not a path that merely holds both words).
 POLICY_CODE = re.compile(
     r"from\s+tower(?:\.\w+)*\s+import\b[^\n;]*\bpolicy\b|\btower\.policy\b|\bimport\s+tower\b|\btower\s+policy\s+use\b"
@@ -1600,7 +2007,7 @@ def check_protected_edit(file_path: str) -> str | None:
     the one its symlinks resolve to (a link to ~/.claude reaches tower's files under another name)."""
     path = os.path.expanduser(file_path)
     if any(PROTECTED_PATH.search(candidate) for candidate in (os.path.normpath(path), os.path.realpath(path))):
-        return f"edits a personal rule file or tower's settings ({file_path})"
+        return f"edits a personal rule file, tower's settings or Claude Code's ({file_path})"
     return None
 
 
@@ -1609,9 +2016,12 @@ def protected_reasons(command: SimpleCommand, cwd: str) -> list[str]:
     targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf, a
     policy.toml and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any
     other program naming them, asks, and so does a write to a path under .claude whose text is only known at run
-    time ($HOME, $'...'). CWD is the session's folder (see changes_policy)."""
+    time ($HOME, $'...'), and so does a non-read program naming a .claude folder itself. CWD is the session's folder
+    (see changes_policy)."""
     if changes_policy(command.words, cwd):
         return [POLICY_COMMAND_REASON]
+    if turns_tower_off(command.words):
+        return [TOWER_PLUGIN_REASON]
     words = [os.path.normpath(word.text) for word in command.words if word.text]
     targets = [(redirect.writes, os.path.normpath(redirect.target.text)) for redirect in command.redirects]
     texts = words + [target for _, target in targets]
@@ -1622,6 +2032,8 @@ def protected_reasons(command: SimpleCommand, cwd: str) -> list[str]:
     hidden = [redirect.target for redirect in command.redirects if redirect.writes]
     hidden += [] if reads_only else command.words
     if any(word.dynamic and ".claude" in word.text for word in hidden):
+        return [TOWER_FILE_REASON]
+    if not reads_only and any(CLAUDE_FOLDER.fullmatch(text) for text in words):
         return [TOWER_FILE_REASON]
     if not any(TOWER_FILE_MENTION.search(text) for text in [*texts, command.stdin_text or ""]):
         return []
@@ -1651,6 +2063,69 @@ def changes_policy(words: list[Word], cwd: str) -> bool:
             if any(word.text == "use" or word.dynamic for word in after_policy):
                 return True
     return False
+
+
+def turns_tower_off(words: list[Word]) -> bool:
+    """Whether a simple command's WORDS run `claude plugin disable|uninstall|remove` or `claude plugin marketplace
+    remove|rm` on what may be tower (see plugin_args_turn_tower_off). claude counts wherever it is a word, unless the
+    command's program only reads or prints its words (echo, grep); any later word "plugin" may be the group, since an
+    option's value can say plugin too (claude -d plugin plugin disable tower), and so may a word from a variable. The
+    first claude word is the one that runs: the words after it are its own. Code in another language (python -c)
+    that mentions claude, plugin and an off verb in that order counts too."""
+    program = program_position(words)
+    if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
+        return False
+    if any(LANGUAGE_RUNNER.fullmatch(program_name(word)) for word in words[program:]) and any(
+        mentions_in_order(word.text, PLUGIN_OFF_MENTION) for word in words[program + 1 :]
+    ):
+        return True
+    index = next((i for i in range(program, len(words)) if program_name(words[i]) == "claude"), None)
+    if index is None:
+        return False
+    supplied = any(program_name(word) in ARGUMENT_SUPPLIERS for word in words[program:index])
+    rest = words[index + 1 :]
+    groups = [i for i, word in enumerate(rest) if word.text in PLUGIN_GROUPS or word.dynamic]
+    if len(groups) > MAX_PLUGIN_GROUPS:
+        return True
+    return any(plugin_args_turn_tower_off(rest[i + 1 :], supplied) for i in groups)
+
+
+def plugin_args_turn_tower_off(args: list[Word], supplied: bool) -> bool:
+    """Whether `claude plugin` with ARGS turns off what may be tower: a name holding "tower", from a variable or that
+    the shell expands (t{ow,}er), no name at all, disable --all, or any name when SUPPLIED (xargs, parallel or find
+    run claude and may add tower's).
+    A subcommand from a variable may be one that does. --help counts like any option, and after -- every word is a
+    name."""
+    verb_at, verbs = next_operand(args, 0), PLUGIN_OFF_VERBS
+    if verb_at is not None and args[verb_at].text == "marketplace":  # its own subcommand comes next
+        verb_at, verbs = next_operand(args, verb_at + 1), MARKETPLACE_OFF_VERBS
+    if verb_at is None or not (args[verb_at].dynamic or args[verb_at].text in verbs):
+        return False
+    after = args[verb_at + 1 :]
+    end = next((i for i, word in enumerate(after) if word.text == "--"), len(after))
+    options = [word.text for word in after[:end] if word.text.startswith("-")]
+    names = [word for word in after[:end] if not word.text.startswith("-")] + after[end + 1 :]  # -s user's too
+    disables_all = "--all" in options or any(has_short_option(option, "a") for option in options)
+    hidden = any(word.dynamic or EXPANDING.search(word.text) or "tower" in word.text.lower() for word in names)
+    return supplied or not names or disables_all or hidden
+
+
+def mentions_in_order(text: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    """Whether TEXT has a match of each of PATTERNS, each after the one before. The earliest match of each leaves the
+    most room for the next, so this finds any such sequence in linear time, where one regex joining them with .*
+    would backtrack for minutes over a long padded command."""
+    position = 0
+    for pattern in patterns:
+        match = pattern.search(text, position)
+        if match is None:
+            return False
+        position = match.end()
+    return True
+
+
+def next_operand(words: list[Word], start: int) -> int | None:
+    """Index of the first of WORDS from START on that isn't an option (doesn't start with -), or None."""
+    return next((i for i in range(start, len(words)) if not words[i].text.startswith("-")), None)
 
 
 def ask(reasons: list[str], prefix: str) -> None:
@@ -1701,8 +2176,11 @@ def decide(call: object) -> tuple[list[str], str] | None:
     if checker.incomplete:  # the safety floor holds for what couldn't be checked, even when nothing else asks
         if TOWER_FILE_MENTION.search(command) and TOWER_FILE_REASON not in reasons:
             reasons.append(TOWER_FILE_REASON)
-        if POLICY_COMMAND_MENTION.search(command) and POLICY_COMMAND_REASON not in reasons:
+        mentions_policy = mentions_in_order(command, POLICY_COMMAND_MENTION) or SETUP_MENTION.search(command)
+        if mentions_policy and POLICY_COMMAND_REASON not in reasons:
             reasons.append(POLICY_COMMAND_REASON)
+        if mentions_in_order(command, PLUGIN_OFF_MENTION) and TOWER_PLUGIN_REASON not in reasons:
+            reasons.append(TOWER_PLUGIN_REASON)
     if not reasons:
         return None
     problems = session_policy.problems

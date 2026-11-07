@@ -158,6 +158,11 @@ One kind of action the approval hook may stop for your approval (a push, a merge
 judged by one key of the repo's profile, or, for what no key covers, asks unless every GitHub key is auto.
 _Avoid_: check, permission
 
+**Known read**:
+A `gh` command the approval hook knows only reads GitHub or works locally (viewing, listing, cloning, checking out a
+PR). Every other `gh` command counts as a GitHub write, including one a newer `gh` adds.
+_Avoid_: safe command, read-only command
+
 **Lands on**:
 The branch a merge puts a PR's commits on, which merge_to_main and merge_to_branch judge: the PR's base, or for a
 stacked PR the stack's base. A PR based on feat1 in a stack on main lands on main.
@@ -169,8 +174,9 @@ wip_limit): the built-in work, personal or sandbox, or one the policy file defin
 _Avoid_: mode, level, preset
 
 **Safety floor**:
-What asks in every profile, sandbox included: an agent's change to the policy file, tower.conf, a rule file or a
-CLAUDE.local.md, or running `tower policy use`. It is how an agent is kept from loosening its own rules.
+What asks in every profile, sandbox included: an agent's change to the policy file, tower.conf, a rule file, a
+CLAUDE.local.md or Claude Code's settings, running `tower policy use`, or turning tower's plugin off. It is how an
+agent is kept from loosening its own rules.
 _Avoid_: hard rule, override
 
 ## Health

