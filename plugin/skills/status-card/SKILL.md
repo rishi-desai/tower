@@ -44,6 +44,22 @@ It prints the card's path and the status it chose, with why. If it exits 1, it w
 - `--status running` while you fix a failed check or review on an open PR, so the card doesn't say `waiting-ci` while you work.
 - The ticket is guessed from the branch (`feat-42-x` → #42) or kept from the last card. Pass `--ticket 42` (or `--ticket none`) when that's wrong.
 
+## Decisions log
+
+Your context can be compacted or cleared mid-ticket. Afterwards, tower gives you back the hub's kickoff, your card and your decisions log, and nothing else from this conversation. So whenever you decide something a later you would otherwise redo or undo, or find out something that took digging, add one line right then, not when you stop:
+
+- a choice between real alternatives: "chose SQLite FTS over a LIKE scan because the feed has 40k rows"
+- a discovery: "the auth middleware already exists in src/auth; reuse it"
+- an answer from the user: "user picked B: keep the old endpoint until v2"
+
+```
+python3 -I <plugin>/scripts/run-tower.py decisions add "chose X over Y because Z"
+```
+
+One line, at most 300 characters. Lines are only ever added: if a decision changes, add a new line saying so ("switched from X to Y: Z broke"). Skip what the code, a commit message or the card already says.
+
+The card's `## Kickoff` section is the hub's kickoff prompt word for word. Leave it out of what you send: `card write` keeps it, and refuses a `## Kickoff` section from you.
+
 ## Rules
 
 - Under ~30 lines. If you need more, the detail belongs in the PR body; link it.

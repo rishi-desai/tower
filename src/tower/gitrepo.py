@@ -62,6 +62,15 @@ def list_worktrees(repo_dir: Path) -> list[GitWorktree]:
     return found
 
 
+def is_main_checkout(directory: Path) -> bool:
+    """Whether directory is in the repo's main checkout (git lists it first), where the hub runs and tower never starts
+    a worker. Raises NotARepo outside a git repo."""
+    top = git(directory, "rev-parse", "--show-toplevel")
+    if top is None:
+        raise NotARepo(f"not a git repo: {directory}")
+    return os.path.realpath(top) == os.path.realpath(list_worktrees(directory)[0].path)
+
+
 def repo_name(repo_dir: Path) -> str:
     """The repo's name, the same from every worktree: the folder holding the shared .git (normal repo), or the shared
     folder itself without ".git" (bare repo, /code/poot.git -> poot)."""

@@ -345,6 +345,13 @@ description, or you type `/tower:<name>`.
 - **The policy line** (`policy-context.py`, a SessionStart hook): one line added to each session's context saying
   which profile applies to its repo, what it may do without asking, and what asks you first, so a worker doesn't
   stop to ask about what the policy allows. It comes back after `/clear`, `/resume` and compaction.
+- **Worker memory** (`worker-memory.py`, a SessionStart hook on `startup`, `clear` and `compact`): gives a worker
+  back what compaction or `/clear` would lose: the hub's kickoff word for word (a fixed `## Kickoff` section the hub
+  writes into the card with `tower card kickoff`, which the worker's `card write` keeps), its current card, and its
+  decisions log (`<Ledger>/_decisions/<card name>`, one dated line per decision, added with `tower decisions add` and
+  never rewritten; `tower clean` archives it with the card). It stays under Claude Code's 10,000-character cap for
+  SessionStart output, keeping the log's newest lines. Quiet in the main checkout, on `/resume` and for a worktree with
+  no card or log. See docs/adr/0008.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
   answer a session, by typing or in its pop-up, a card that says `needs-you` is re-rendered by tower's core as `running` (the
@@ -567,11 +574,11 @@ tower/
   plugin/
     .claude-plugin/plugin.json        its `types` names types/index.d.ts, the pane's saved state
     hooks/hooks.json                  command hooks (approval, card reminder, card resume, needs-you notification,
-                                      event log, runtime variables) and, under `modules`, the pane mod
+                                      event log, runtime variables, worker memory) and, under `modules`, the pane mod
     hooks/register.tsx                the pane mod: the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  the pane's saved state, as Claude Code checks it
     tests/                            claude plugin test plugin; fixtures/ holds `tower state --json` output tests/test_state.py checks
-    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, run-tower.py (the core's CLI, for the skills and the pane)
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, worker-memory.py, run-tower.py (the core's CLI, for the skills and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ (ADOPT.md: its adopt mode) status-card/ project-rules/ babysit-pr/
                                       leaving-pr-comments/ adopt/ (an alias for the hub's adopt mode, for one release)

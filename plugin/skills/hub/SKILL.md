@@ -157,6 +157,12 @@ Two reviews run before the PR, in this order, and the prompt gives each the rang
    EOF
    ```
    If it exits 3, a card exists at the path it names: check whether it's newer than the kickoff file you wrote just before the launch (`find '<card path>' -newer '<kickoff file>'` prints it if so). Newer means the worker has written its own (maybe `needs-you` with a question): leave it. Older means it's an orphan from an earlier worktree on the same branch: run the same command without `--if-absent` to replace it.
+
+   Then, whichever card is there now, fix the kickoff in it, so the worker gets it back after compaction or `/clear` (worker memory: tower's SessionStart hook re-reads the kickoff, the card and the worker's decisions log). The worker's `card write` keeps it word for word:
+   ```
+   python3 -I <plugin>/scripts/run-tower.py card kickoff --dir '<new worktree path>' < '<kickoff file>'
+   ```
+   Add `--replace` only when you just replaced an orphan card above: it replaces the earlier work's kickoff and archives its decisions log. Without it, a card that already has a different kickoff is left alone (exit 1, saying so); that card is from earlier work on the same branch name, since you write one kickoff per worktree, so run it again with `--replace`.
 5. On failure, show Orca's `error.message` as it is. If it says the launch outcome is unknown (it gives an `operationId`), check first: find the worktree whose `displayName` is your `--name` in `orca worktree list --json`; if it's there, `orca terminal list --worktree path:<its path> --json` shows a connected Claude terminal if the launch worked (LIVE SESSIONS can lag or be skipped). Otherwise re-run the same command with `--retry-launch <operationId>` added, from the same directory; never as a fresh launch, which can start a second worker.
 
 ### Fallback: the two-step paste
@@ -170,6 +176,8 @@ When Orca isn't reachable, the user creates the worktree in their worktree app w
 ```
 
 **Step 2: then, as a separate message:** the kickoff prompt above.
+
+When the user says the session is running, ask for the worktree's path if you don't know it, and do step 4 of "Start it through Orca" with it: the starter card, then the kickoff, from a kickoff file holding the Step 2 text (write it with the Write tool as in step 2 there). Without the kickoff in its card, the worker loses it at compaction.
 
 Never write `/effort <level>` for the user to paste: a level typed after `/effort` is saved as the default for every new session, not just this one. And never put both steps in one block: pasted together, Claude Code reads the `/implement` line as `/effort`'s argument and rejects the whole message.
 
