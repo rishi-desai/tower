@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from tower import card, ledger
-from tower.gitrepo import is_main_checkout
+from tower.gitrepo import git, is_main_checkout
 
 MAX_DECISION = 300  # characters: a line, not a paragraph; every line is re-read on each restart
 BUDGET = 9_500  # characters; Claude Code's cap is 10,000, measured on the whole output
@@ -51,21 +51,15 @@ def add_decision(worktree: Path, text: str) -> Path:
     path = ledger.decisions_path(worktree)
     path.parent.mkdir(exist_ok=True)
     line = f"- {time.strftime(card.TIME_FORMAT)} {decision}\n"
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        if os.fstat(fd).st_size and not ends_with_newline(path):
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
             line = "\n" + line  # a hand edit left the last line open; never join this one onto it
         os.write(fd, line.encode("utf-8"))
     finally:
         os.close(fd)
     return path
-
-
-def ends_with_newline(path: Path) -> bool:
-    """Whether the file's last byte is a newline."""
-    with open(path, "rb") as handle:
-        handle.seek(-1, os.SEEK_END)
-        return handle.read(1) == b"\n"
 
 
 def session_context(worktree: Path, source: str) -> str:
@@ -76,11 +70,14 @@ def session_context(worktree: Path, source: str) -> str:
     OSError."""
     if source not in RESTARTS or is_main_checkout(worktree):
         return ""
-    card_file = ledger.card_path(worktree)
+    card_file = ledger.existing_card_path(worktree)
+    if card_file is None:
+        return ""
     log_file = ledger.decisions_log(card_file)
-    card_text = read_or_none(card_file)
-    log_text = read_or_none(log_file)
-    if card_text is None and log_text is None:
+    born = worktree_birth(worktree)
+    card_text, card_problem = read_since(card_file, born)
+    log_text, log_problem = read_since(log_file, born)
+    if card_text is None and log_text is None and not card_problem and not log_problem:
         return ""
     front, body = card.split_card(card_text or "")
     rest, kickoff = card.split_kickoff(body)
@@ -92,7 +89,7 @@ def session_context(worktree: Path, source: str) -> str:
     )
     kickoff_part = f"# Kickoff\n{kickoff or '(none recorded: the hub did not start this worktree)'}"
     card_part = f"# Card ({card_file})\n" + (
-        "\n".join(front) + "\n\n" + rest.strip("\n") if card_text is not None else "(none yet)"
+        "\n".join(front) + "\n\n" + rest.strip("\n") if card_text is not None else card_problem or "(none yet)"
     )
     log_heading = f"# Decisions log ({log_file}, oldest first)"
     card_room = BUDGET - len(f"{header}\n\n{kickoff_part}\n\n\n\n{log_heading}") - 2 * LEFT_OUT_ROOM
@@ -102,7 +99,7 @@ def session_context(worktree: Path, source: str) -> str:
     room = BUDGET - len(f"{header}\n\n{kickoff_part}\n\n{card_part}\n\n{log_heading}") - LEFT_OUT_ROOM
     decisions = [line for line in (log_text or "").splitlines() if line.strip()]
     kept = newest_that_fit(decisions, room)
-    log_part = log_heading + "\n" + ("\n".join(kept) if kept else "(none yet)")
+    log_part = log_heading + "\n" + ("\n".join(kept) if kept else log_problem or "(none yet)")
     if len(kept) < len(decisions):
         log_part += (
             f"\n({len(decisions) - len(kept)} older decisions left out to stay under Claude Code's limit:"
@@ -122,9 +119,25 @@ def newest_that_fit(lines: list[str], room: int) -> list[str]:
     return kept[::-1]
 
 
-def read_or_none(path: Path) -> str | None:
-    """The file's text (bytes that aren't UTF-8 replaced), or None when there's no file."""
+def read_since(path: Path, born: float | None) -> tuple[str | None, str]:
+    """(the file's text, "") when it was written since born (bytes that aren't UTF-8 replaced); (None, "") when there's
+    no file or it's older than the worktree, so from earlier work on the same branch name; (None, why) when it can't be
+    read, so the rest of the memory still comes back."""
     try:
-        return path.read_text(encoding="utf-8", errors="replace")
+        if born is not None and path.stat().st_mtime < born:
+            return None, ""
+        return path.read_text(encoding="utf-8", errors="replace"), ""
     except FileNotFoundError:
+        return None, ""
+    except OSError as error:
+        return None, f"(couldn't read it: {error.strerror or type(error).__name__})"
+
+
+def worktree_birth(worktree: Path) -> float | None:
+    """When the worktree was made: its own git folder's creation time (.git/worktrees/<name>), or None where the
+    filesystem doesn't keep one (st_birthtime is macOS and BSD) or git can't say."""
+    git_dir = git(worktree, "rev-parse", "--absolute-git-dir")
+    try:
+        return getattr(os.stat(git_dir), "st_birthtime", None) if git_dir else None  # getattr: Linux has none
+    except OSError:
         return None

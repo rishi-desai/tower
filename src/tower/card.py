@@ -50,6 +50,8 @@ SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "File
 REQUIRED = ("Done", "Why it matters", "Needs you", "Verify")
 ALIASES = {"verify it yourself": "Verify"}
 KICKOFF = "Kickoff"
+# Characters. Claude Code shows the first 2,000 of SessionStart output that passes its cap, and the kickoff comes first.
+MAX_KICKOFF = 1500
 REQUESTS = ("running", "needs-you", "blocked", "done")
 NEEDS_REASON = ("needs-you", "blocked")
 PROPERTIES = ("status", "ticket", "updated", "branch", "pr", "base", "reason")  # what the core writes
@@ -119,6 +121,8 @@ def parse_sections(text: str) -> dict[str, str]:
         if FENCE.match(line):
             fenced = not fenced
         heading = None if fenced else HEADING.match(line)
+        if fenced and is_kickoff_heading(line):
+            canonical(KICKOFF)  # refused even in a code block: split_kickoff finds the kickoff without fences
         if heading:
             name = canonical(heading.group(1))
             if name in found:
@@ -167,31 +171,31 @@ def normalize_kickoff(text: str) -> str:
     kickoff = text.strip()
     if not kickoff:
         raise CardError("the kickoff is empty")
+    if len(kickoff) > MAX_KICKOFF:
+        raise CardError(f"a kickoff is at most {MAX_KICKOFF} characters; this one has {len(kickoff)}")
     if any(HEADING.match(line) for line in kickoff.splitlines()):
         raise CardError("a kickoff can't contain a ## heading: the card would read it as a section")
     return kickoff
 
 
 def split_kickoff(body: str) -> tuple[str, str | None]:
-    """(the card's body without its ## Kickoff section, the kickoff's text or None when it has none). The section ends
-    at the next ## heading outside a code block, or at the end."""
+    """(the card's body without its ## Kickoff section, the kickoff's text or None when it has none). The kickoff is
+    the last "## Kickoff" line to the next "## " line or the end, code blocks or not: a worker's unclosed ``` must
+    never hide it, and neither the narrative (parse_sections) nor a kickoff (normalize_kickoff) can hold such a line."""
     lines = body.split("\n")
-    start: int | None = None
-    end = len(lines)
-    fenced = False
-    for i, line in enumerate(lines):
-        if FENCE.match(line):
-            fenced = not fenced
-        heading = None if fenced else HEADING.match(line)
-        if heading and start is None and heading.group(1).lower() == KICKOFF.lower():
-            start = i
-        elif heading and start is not None:
-            end = i
-            break
-    if start is None:
+    starts = [i for i, line in enumerate(lines) if is_kickoff_heading(line)]
+    if not starts:
         return body, None
+    start = starts[-1]
+    end = next((i for i in range(start + 1, len(lines)) if HEADING.match(lines[i])), len(lines))
     rest = "\n".join(lines[:start] + lines[end:]).rstrip("\n") + "\n"
     return rest, "\n".join(lines[start + 1 : end]).strip("\n")
+
+
+def is_kickoff_heading(line: str) -> bool:
+    """Whether line is the ## Kickoff heading."""
+    heading = HEADING.match(line)
+    return heading is not None and heading.group(1).lower() == KICKOFF.lower()
 
 
 def with_kickoff(body: str, kickoff: str) -> str:
@@ -433,7 +437,8 @@ def set_kickoff(worktree: Path, text: str, replace: bool = False) -> tuple[Path,
     else: (the card's path, where the earlier work's decisions log was archived or None). The same kickoff again changes nothing.
     replace is for an orphan card from earlier work on the same branch name: it replaces a different kickoff and
     archives that work's decisions log. Raises NotARepo, LedgerError, OSError, or CardError (an empty kickoff, the
-    main checkout, no card yet, a different kickoff without replace; nothing written)."""
+    main checkout, no card yet, a different kickoff without replace; nothing written). An OSError from archiving the log
+    comes after the kickoff was written."""
     kickoff = normalize_kickoff(text)
     if is_main_checkout(worktree):
         raise CardError("the main checkout has no kickoff: tower starts every worker in its own worktree")
@@ -453,10 +458,9 @@ def set_kickoff(worktree: Path, text: str, replace: bool = False) -> tuple[Path,
             f"{path} already has a different kickoff. Pass --replace only when it's an orphan card from earlier work"
             " on this branch name (that also archives the earlier work's decisions log)"
         )
-    archived = ledger.archive_decisions(path) if replace else None
     prefix = card_text[: len(card_text) - len(body)]
     write_atomically(path, prefix + with_kickoff(rest, kickoff), if_absent=False)
-    return path, archived
+    return path, ledger.archive_decisions(path) if replace else None  # only once the new kickoff is in
 
 
 def resume(worktree: Path) -> Path | None:

@@ -123,6 +123,15 @@ def card_path(worktree_dir: Path) -> Path:
     return open_ledger(worktree_dir) / card_name(branch, "HEAD", worktree_dir)
 
 
+def existing_card_path(worktree_dir: Path) -> Path | None:
+    """Where the worktree holding worktree_dir keeps its card, like card_path, but None when the Ledger folder doesn't
+    exist, which it never creates: for readers that run in every session (any repo, not only tower's)."""
+    folder = project_dir(repo_name(worktree_dir), read_conf(conf_path())) / "Ledger"
+    if not folder.is_dir():
+        return None
+    return folder / card_name(git(worktree_dir, "branch", "--show-current"), "HEAD", worktree_dir)
+
+
 def decisions_path(worktree_dir: Path) -> Path:
     """Where the worktree holding worktree_dir keeps its decisions log (decisions_log of its card). Creates the Ledger
     folder if needed, not the _decisions folder."""

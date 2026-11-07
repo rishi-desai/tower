@@ -16,7 +16,9 @@ hook (`worker-memory.py`) on `startup`, `clear` and `compact`:
 - **The hook prints the kickoff, the current card and the log**, under Claude Code's 10,000-character cap for
   SessionStart output (above it, Claude sees only a 2,000-character preview and a file path). The kickoff and card come
   whole; the log keeps its newest lines that fit and names the file for the rest. It skips `resume` and `fork` (the
-  transcript still holds everything) and the main checkout (the hub's, where tower never starts a worker).
+  transcript still holds everything) and the main checkout (the hub's, where tower never starts a worker). A card or log
+  older than the worktree itself is earlier work on a reused branch name, not yet replaced by the hub, so it isn't
+  given (macOS keeps the worktree's creation time; elsewhere this check is skipped).
 
 There is no PreCompact hook. Claude Code runs only scripts there (`command`, `http`, `mcp_tool`, never `prompt` or
 `agent`), so it can't make the worker update its card or log before compaction; its stdout only steers the summary

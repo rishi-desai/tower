@@ -406,14 +406,17 @@ def remove(
     else:
         git(main, "config", "--remove-section", f"branch.{branch}")  # its upstream; fails only when it has none
         say(f"{label}: deleted the local branch {branch}")
+    card_archived = True
     if target.card is not None and ledger_folder is not None:
         try:
             say(f"{label}: archived its card to {ledger.archive(target.card, ledger_folder)}")
         except OSError as error:
             say(f"{label}: couldn't archive its card {target.card} ({error.strerror or type(error).__name__})")
-            worked = False
+            worked = card_archived = False
+    if card_archived and ledger_folder is not None:  # a log stays with a card that stays; one with no card goes too
+        card_file = target.card or ledger_folder / ledger.card_name(branch, str(target.head), main)
         try:
-            log = ledger.archive_decisions(target.card)
+            log = ledger.archive_decisions(card_file)
         except OSError as error:
             say(f"{label}: couldn't archive its decisions log ({error.strerror or type(error).__name__})")
             worked = False
