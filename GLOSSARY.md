@@ -47,8 +47,7 @@ _Avoid_: prune, teardown, delete (alone: the card is archived, not deleted)
 A worker's short Markdown note in the vault saying where its worktree stands: status, ticket, PR, what's done, the
 one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
 the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
-Its name is the worktree's branch, or on a detached HEAD `detached-` and git's short commit id, which can be longer
-than the 7 characters the worktree's label shows. Only tower's core names a card; everything else uses that name.
+A card is named after its worktree's branch, or its commit on a detached HEAD; that name isn't the worktree's label.
 _Avoid_: status file, report
 
 **Ticket guess**:
