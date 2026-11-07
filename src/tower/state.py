@@ -689,6 +689,9 @@ def worktrees_section(report: Report) -> list[str]:
         ]
         if card and card.stale:
             fields.append("STALE: not updated in over 24h")
+        # not through cell(): it would turn a branch's "|" into "/" and name a file that isn't there, and a git ref
+        # can't hold the spaces of " | "
+        fields.append(f"card_file: {facts.card_file}")
         out.append(" | ".join([*fields, f"reason: {cell(v.reason)}", facts.path]))
     limit = " — AT LIMIT" if report.slots >= report.wip_limit else ""
     out.append(

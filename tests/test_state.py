@@ -354,6 +354,30 @@ def test_each_row_names_the_card_file_the_core_writes(
     assert row["card_file"] == written.name
 
 
+@pytest.mark.parametrize("branch", [None, "feat/1|x"])
+def test_the_scan_names_the_card_file_the_core_writes(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], branch: str | None
+) -> None:
+    """The hub opens <LEDGER>/<card_file> from the scan, never a name rebuilt from the label (#89): git's short sha
+    can be longer than the label's 7 characters (an ambiguous prefix in a big repo; core.abbrev here), and a branch's
+    "|" stays in its card's name. None is a detached HEAD."""
+    git(repo.main, "config", "core.abbrev", "12")
+    path = repo.add_worktree(branch or "feat-1")
+    if branch is None:
+        git(path, "checkout", "-q", "--detach")
+    written = ledger.card_path(path)
+    if branch is None:
+        assert len(written.stem) > len("detached-") + 7  # else this test can't catch a name rebuilt from the label
+
+    assert cli.main(["scan", "--no-github"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    folder = next(line.removeprefix("LEDGER: ") for line in lines if line.startswith("LEDGER: "))
+    (row,) = [line for line in lines if line.endswith(f" | {path}")]
+    (card_file,) = [field.removeprefix("card_file: ") for field in row.split(" | ") if field.startswith("card_file: ")]
+
+    assert Path(folder) / card_file == written
+
+
 def shared_fixture(repo: Fixture) -> None:
     """The repo both the hub and the pane are tested on: one worker for each way a status can be decided.
 
@@ -472,7 +496,7 @@ def test_a_pipe_in_a_card_never_splits_a_report_row(repo: Fixture, capsys: pytes
 
     fields = row.split(" | ")
     assert fields[1:3] == ["status: no-card", "card: running / needs-you / waiting-ci / blocked / done"]
-    assert len(fields) == 7  # label, status, card, ticket, updated, reason, path
+    assert len(fields) == 8  # label, status, card, ticket, updated, card_file, reason, path
 
 
 def test_an_empty_project_mapping_falls_back_to_the_repo_name(
