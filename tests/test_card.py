@@ -498,3 +498,12 @@ def test_an_answer_leaves_other_cards_alone_and_is_quiet_without_tower(
     (tmp_path / "tower.conf").write_text("wip_limit=3\n", encoding="utf-8")  # no projects_dir: not set up
     assert (run_resume(path).returncode, run_resume(path).stdout) == (0, "")
     assert (run_resume(tmp_path).returncode, run_resume(tmp_path).stdout) == (0, "")  # not a git repo
+
+
+def test_an_answer_with_a_tower_conf_that_isnt_utf8_says_so_in_the_debug_log(repo: Fixture, tmp_path: Path) -> None:
+    (tmp_path / "tower.conf").write_bytes(b"projects_dir=/Users/caf\xe9/vault\n")
+
+    proc = run_resume(repo.main)
+
+    assert (proc.returncode, proc.stdout) == (0, "")
+    assert proc.stderr == f"tower: card-resume: {tmp_path / 'tower.conf'} isn't UTF-8 text (line 1)\n"

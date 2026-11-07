@@ -460,6 +460,26 @@ def test_scan_without_a_ledger_fails_instead_of_reporting_nothing_needs_you(
     assert proc.stderr == f"tower: no projects_dir in {tmp_path / 'tower.conf'} (run setup.sh on this machine)\n"
 
 
+def test_scan_with_a_tower_conf_that_isnt_utf8_says_so_instead_of_crashing(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "tower.conf").write_bytes(b"\xff")
+
+    code, out, err = run(capsys, "scan", "--no-github")
+
+    assert (code, out) == (1, "")
+    assert err == f"tower: {tmp_path / 'tower.conf'} isn't UTF-8 text (line 1)\n"
+
+
+def test_a_tower_conf_saved_with_a_byte_order_mark_still_finds_the_ledger(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "tower.conf"
+    conf.write_bytes(b"\xef\xbb\xbf" + conf.read_bytes())  # as an editor saving "UTF-8 with BOM" writes it
+
+    assert run(capsys, "card-path")[:2] == (0, f"{repo.ledger / 'main.md'}\n")
+
+
 # ---------- the plugin's entry points ----------
 
 

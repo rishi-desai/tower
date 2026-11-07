@@ -297,6 +297,20 @@ def test_without_a_ledger_it_still_reports_sessions(
     assert (result["slots"], result["wip_limit"]) == (1, 4)
 
 
+def test_a_tower_conf_that_isnt_utf8_is_noted_and_worktrees_are_still_reported(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    path = repo.add_worktree("feat-1")
+    repo.sessions(interactive("w1", path, "busy"))
+    (tmp_path / "tower.conf").write_bytes(b"wip_limit=3\nprojects_dir=/Users/caf\xe9/vault\n")  # a Latin-1 path
+
+    result = tower_state(capsys)
+
+    note = f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used"
+    assert note in result["notes"]  # type: ignore[operator]
+    assert rows(result)["feat-1"]["status"] == "running"
+
+
 def test_outside_a_repo_it_says_so_and_exits_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["state", "--repo", str(tmp_path)]) == 1
     assert f"tower: not a git repo: {tmp_path}" in capsys.readouterr().err

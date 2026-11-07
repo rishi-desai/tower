@@ -63,6 +63,12 @@ _Avoid_: PR by branch name (a fork's PR can have the same branch name)
 The vault folder holding a project's cards and its backlog of parked ideas.
 _Avoid_: board, tracker
 
+**Machine config** (`tower.conf`):
+This machine's own settings, written by setup.sh: where the vault's projects live, which project folder a repo maps
+to, the worktrees folder, the WIP limit. One that can't be read, or isn't UTF-8 text, is broken, never mistaken for a
+machine that was never set up: tower says why wherever it needed it.
+_Avoid_: config (alone: it reads as runtime config), settings
+
 **Archived card**:
 The card of a worktree that cleanup removed, kept in the Ledger's `_archive` folder so the history stays. It is no
 longer any worktree's card and is never an orphan card.

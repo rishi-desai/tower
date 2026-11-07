@@ -72,9 +72,14 @@ fi
 
 # ---------- 1. per-machine config ----------
 # conf_get KEY [DEFAULT] — KEY's saved value, read by tower's core (src/tower/ledger.py) so it parses the file the same way.
+# A tower.conf that can't be read stops setup with the reason, since rewriting it would drop every saved value.
 conf_get() {
   python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; from tower import ledger
-print(ledger.conf_get(ledger.read_conf(Path(sys.argv[2])), sys.argv[3], sys.argv[4]))' "$here/plugin/lib" "$conf" "$1" "${2-}"
+try:
+    conf = ledger.read_conf(Path(sys.argv[2]))
+except ledger.ConfUnreadable as error:
+    sys.exit(f"setup.sh: {error}; fix or remove it, then run setup.sh again")
+print(ledger.conf_get(conf, sys.argv[3], sys.argv[4]))' "$here/plugin/lib" "$conf" "$1" "${2-}"
 }
 # policy ARGS... — `tower policy ARGS`, run from this checkout's plugin (src/tower/policy.py does the work).
 policy() {
