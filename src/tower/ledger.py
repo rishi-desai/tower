@@ -10,6 +10,7 @@ cards never show up in a PR, and Obsidian can show them.
 
 from __future__ import annotations
 
+import codecs
 import os
 from pathlib import Path
 
@@ -17,11 +18,12 @@ from tower.gitrepo import git, repo_name
 
 
 class LedgerError(Exception):
-    """The ledger can't be found: no projects_dir in the config, or that folder doesn't exist."""
+    """The ledger can't be found: tower.conf is unreadable (ConfUnreadable), has no projects_dir, or names a folder
+    that doesn't exist."""
 
 
 class ConfUnreadable(LedgerError):
-    """tower.conf exists but can't be read or isn't UTF-8: a broken config to report, unlike a machine never set up."""
+    """tower.conf exists but can't be read or isn't UTF-8: broken, so worth reporting, unlike a machine never set up."""
 
 
 def conf_path() -> Path:
@@ -31,15 +33,16 @@ def conf_path() -> Path:
 
 def read_conf(path: Path) -> dict[str, str]:
     """The config's `key=value` lines as a dict; the last line for a key wins. It's parsed, never run, so a typo in it
-    can't run as a command. Values may hold spaces (iCloud paths do). A missing file is an empty config; one that
-    exists but can't be read, or isn't UTF-8 (the error names the line), raises ConfUnreadable, so it never passes for
-    a machine that was never set up."""
+    can't run as a command. Values may hold spaces (iCloud paths do), and a leading byte order mark (an editor's "UTF-8
+    with BOM") is skipped. A missing file is an empty config; one that exists but can't be read, or isn't UTF-8 (the
+    error names the line), raises ConfUnreadable, so it never passes for a machine that was never set up."""
     try:
         data = path.read_bytes()
     except FileNotFoundError:
         return {}
     except OSError as error:
         raise ConfUnreadable(f"can't read {path} ({error.strerror or type(error).__name__})") from error
+    data = data.removeprefix(codecs.BOM_UTF8)
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
