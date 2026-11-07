@@ -232,6 +232,17 @@ test("clicking a name lands on the terminal Orca says is waiting, not the newest
   await ui.unmount()
 })
 
+test("a detached worktree's card button opens the card file the core named, not one rebuilt from its label", async ($, on) => {
+  // git's short sha can be longer than the label's 7 characters (an ambiguous prefix in a big repo), as here (#65).
+  const detached = variant(w => w.label !== 'feat-8' ? w : { ...w, label: '(detached 3f9a982)', branch: null, card_file: 'detached-3f9a9829c738.md' })
+  const w = world(on, detached)
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'card-(detached 3f9a982)' })
+  expect(w.argvs.at(-1)).toEqual(['open', `obsidian://open?path=${encodeURIComponent('/vault/repo/Ledger/detached-3f9a9829c738.md')}`])
+  await ui.unmount()
+})
+
 test('in a worker inside Orca, 0 goes back to the hub; the hub and sessions outside Orca get no band', async ($, on) => {
   const w = world(on, SHARED, { ORCA_TERMINAL_HANDLE: 'term_waiting' })
   await startSession($, on, w, '/p/worktrees/feat-8/src')

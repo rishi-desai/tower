@@ -9,6 +9,8 @@ export type StateWorktree = {
   label: string
   branch: string | null
   path: string
+  /** The card's file name in the Ledger, as the core names it: open this, don't rebuild it from label. */
+  card_file: string
   is_main: boolean
   status: Status
   reason: string
