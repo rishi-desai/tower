@@ -19,6 +19,7 @@ from pathlib import Path
 
 from tower import events, ledger, policy, sessions
 from tower.gitrepo import COMMAND_TIMEOUT_SECONDS
+from tower.state import parse_ts
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 PLUGIN_ID = "tower@tower"  # setup.sh installs tower from the marketplace it adds, also named tower
@@ -92,19 +93,20 @@ def check_gh(folder: Path) -> Check:
     try:
         origin = policy.remote_slugs(folder)[0]
     except policy.RepoUnknown as error:
-        return Check(
-            "gh", WARN, f"gh is logged in, but which repo this is isn't known ({error})", "check that git runs"
-        )
+        detail = f"gh is logged in, but which repo this is isn't known ({error})"
+        return Check("gh", FAIL, detail, "check that git -C <this folder> remote -v runs, then run tower doctor again")
     if origin is None:
         return Check("gh", OK, "gh is logged in (no GitHub origin here, so no repo to check access to)")
     switch = f"run gh auth switch to an account that can push to {origin} (gh auth login adds one)"
     proc, why = run_tool("gh", "repo", "view", origin, "--json", "viewerPermission")
     if proc is None or proc.returncode != 0:
-        return Check("gh", FAIL, f"gh can't read {origin} ({last_line(proc) if proc else why})", switch)
+        # The account may not see the repo, or GitHub may be out of reach: gh's own line says which.
+        detail = f"gh can't read {origin} ({last_line(proc) if proc else why})"
+        return Check("gh", FAIL, detail, f"if GitHub is reachable from here, {switch}")
     try:
-        permission = json.loads(proc.stdout)["viewerPermission"]
+        permission = json.loads(proc.stdout)["viewerPermission"] or "no"
     except (ValueError, KeyError, TypeError):
-        permission = None
+        permission = "no"
     if permission not in CAN_PUSH:
         return Check("gh", FAIL, f"gh's active account has {permission} access to {origin}, so it can't push", switch)
     return Check("gh", OK, f"gh is logged in with {permission} access to {origin}")
@@ -119,9 +121,11 @@ def check_plugin() -> Check:
         return Check("plugin", FAIL, f"claude plugin list failed ({last_line(proc)})", "run: claude plugin list")
     try:
         listed = json.loads(proc.stdout)
-        found = [p for p in listed if isinstance(p, dict) and p.get("id") == PLUGIN_ID]
-    except (ValueError, TypeError):
+    except ValueError:
+        listed = None
+    if not isinstance(listed, list):
         return Check("plugin", FAIL, "claude plugin list --json printed something unexpected", FORMAT_FIX)
+    found = [p for p in listed if isinstance(p, dict) and p.get("id") == PLUGIN_ID]
     if not found:
         return Check("plugin", FAIL, f"{PLUGIN_ID} is not installed", f"run: claude plugin install {PLUGIN_ID}")
     if found[0].get("enabled") is not True:
@@ -145,10 +149,10 @@ def check_agents() -> Check:
     return Check("agents", OK, f"claude agents --json lists {len(listed)} session(s)")
 
 
-def check_installed(name: str, commands: tuple[str, ...], install: str, mentions: str = "") -> Check:
-    """name's tool runs: the first of commands on PATH answers `--version` (and, with mentions, says that word,
-    for a command name another tool also uses)."""
-    others = []  # commands on PATH that turned out to be another program
+def check_installed(name: str, commands: tuple[str, ...], install: str, version_must_mention: str = "") -> Check:
+    """name's tool runs: the first of commands on PATH answers `--version`, with output that says
+    version_must_mention (for a command name another program also uses, as Ghostscript does gs)."""
+    others = []  # notes on commands on PATH that turned out to be another program
     for command in commands:
         proc, why = run_tool(command, "--version")
         if proc is None:
@@ -157,16 +161,17 @@ def check_installed(name: str, commands: tuple[str, ...], install: str, mentions
         if proc.returncode != 0:
             return Check(name, FAIL, f"{command} is on PATH but doesn't run ({first or why})", f"reinstall: {install}")
         version = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
-        if mentions in proc.stdout:
+        if version_must_mention in proc.stdout:
             return Check(name, OK, version or f"{command} runs")
-        others.append(f" ({command} there is another program)")
-    return Check(name, FAIL, f"{' or '.join(commands)} not on PATH{''.join(others)}", install)
+        others.append(f"{command} there is another program")
+    note = f" ({'; '.join(others)})" if others else ""
+    return Check(name, FAIL, f"{' or '.join(commands)} not on PATH{note}", install)
 
 
 def check_git_spice() -> Check:
     """git-spice, which submits and restacks stacked PRs, is installed (brew names its command gs)."""
     install = "brew install git-spice (or: mise use -g aqua:abhinav/git-spice)"
-    return check_installed("git-spice", ("git-spice", "gs"), install, mentions="git-spice")
+    return check_installed("git-spice", ("git-spice", "gs"), install, version_must_mention="git-spice")
 
 
 def check_mise() -> Check:
@@ -183,10 +188,13 @@ def check_policy() -> Check:
         fix = f"edit {path} as each problem says (tower policy lists them with their lines)"
         return Check("policy", FAIL, "; ".join(loaded.problems), fix)
     if not loaded.exists:
-        detail = f"no policy file at {path}, so every repo gets the strictest profile ({policy.STRICTEST})"
-        return Check(
-            "policy", WARN, detail, "run in your own terminal: tower policy use <profile> (or re-run setup.sh)"
-        )
+        migrated = policy.migration_profile()
+        if migrated:
+            detail = f"no policy file at {path} yet; tower.conf's old approvals become profile {migrated} when tower policy first runs"
+        else:
+            detail = f"no policy file at {path}, so every repo gets the strictest profile ({policy.STRICTEST})"
+        fix = "run in your own terminal: tower policy use <profile> (or re-run setup.sh)"
+        return Check("policy", WARN, detail, fix)
     return Check("policy", OK, f"{path} reads cleanly; default_profile is {loaded.default_profile}")
 
 
@@ -194,22 +202,16 @@ def check_hooks(now: datetime) -> Check:
     """tower's hooks are firing: the event log has an event from the last hour before now (an aware datetime). Only a
     warning: an hour with no Claude session has none either."""
     directory = events.default_dir()
-    newest = None
-    for line in events.tail(directory, TAIL_LINES):
-        event = events.parse_line(line.encode("utf-8"))
-        try:
-            ts = datetime.fromisoformat(event.ts.replace("Z", "+00:00")) if event else None  # 3.9 rejects "Z"
-        except ValueError:
-            continue
-        if ts is not None and ts.tzinfo is not None and (newest is None or ts > newest):
-            newest = ts
-    if newest is None:
-        return Check("hooks", WARN, f"no events in {directory / events.LOG_NAME}", HOOKS_FIX)
-    age = max(now - newest, timedelta(0))  # an event stamped ahead of this clock counts as just now
-    ago = (
-        f"{int(age.total_seconds() // 3600)}h ago" if age >= HOOKS_WINDOW else f"{int(age.total_seconds() // 60)}m ago"
-    )
-    if age > HOOKS_WINDOW:
+    parsed = (events.parse_line(line.encode("utf-8")) for line in events.tail(directory, TAIL_LINES))
+    times = [ts for ts in (parse_ts(event.ts) for event in parsed if event) if ts is not None]
+    if not times:  # this month's log is new or empty (just after it rotated): the older months hold the newest
+        times = [ts for ts in (parse_ts(event.ts) for event in events.read_all(directory)[0][-1:]) if ts is not None]
+    if not times:
+        return Check("hooks", WARN, f"no events in {directory}", HOOKS_FIX)
+    age = max(now - max(times), timedelta(0))  # an event stamped ahead of this clock counts as just now
+    late = age > HOOKS_WINDOW
+    ago = f"{int(age.total_seconds() // 3600)}h ago" if late else f"{int(age.total_seconds() // 60)}m ago"
+    if late:
         return Check("hooks", WARN, f"no event in the last hour (the last was {ago})", HOOKS_FIX)
     return Check("hooks", OK, f"the last event was {ago}")
 
@@ -217,12 +219,13 @@ def check_hooks(now: datetime) -> Check:
 def check_vault() -> Check:
     """The vault folder holding every project's Ledger (projects_dir in tower.conf) exists."""
     conf_path = ledger.conf_path()
+    fix = f"set projects_dir in {conf_path} to your vault's projects folder, or re-run setup.sh"
     try:
         root = ledger.projects_root(ledger.read_conf(conf_path))
-    except (ledger.LedgerError, UnicodeDecodeError) as error:
-        detail = f"{conf_path} isn't UTF-8 text" if isinstance(error, UnicodeDecodeError) else str(error)
-        fix = f"set projects_dir in {conf_path} to your vault's projects folder, or re-run setup.sh"
-        return Check("vault", FAIL, detail, fix)
+    except ledger.LedgerError as error:
+        return Check("vault", FAIL, str(error), fix)
+    except UnicodeDecodeError:
+        return Check("vault", FAIL, f"{conf_path} isn't UTF-8 text", fix)
     return Check("vault", OK, f"projects_dir is {root}")
 
 
@@ -241,6 +244,11 @@ def run_all(folder: Path, now: datetime) -> list[Check]:
     ]
 
 
+def failed(checks: list[Check]) -> int:
+    """How many checks failed: the problems that make `tower doctor` exit 1 (warnings don't count)."""
+    return sum(1 for check in checks if check.status == FAIL)
+
+
 def render(checks: list[Check]) -> str:
     """The report: one line per check (status, name, what it found), a `fix:` line under each that isn't ok, and a
     last line counting problems (failures) and warnings."""
@@ -251,9 +259,9 @@ def render(checks: list[Check]) -> str:
         lines.append(f"{label:<4}  {check.name:<{width}}  {check.detail}")
         if check.status != OK:
             lines.append(f"{'':<4}  {'':<{width}}  fix: {check.fix}")
-    failed = sum(1 for check in checks if check.status == FAIL)
+    problem_count = failed(checks)
     warned = sum(1 for check in checks if check.status == WARN)
-    problems = "no problems" if not failed else f"{failed} problem{'s' if failed > 1 else ''}"
+    problems = "no problems" if not problem_count else f"{problem_count} problem{'s' if problem_count > 1 else ''}"
     warnings = f"{warned} warning{'s' if warned != 1 else ''}"
     lines.append(f"tower doctor: {problems}, {warnings}")
     return "\n".join(lines) + "\n"

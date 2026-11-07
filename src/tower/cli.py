@@ -347,7 +347,7 @@ def run_doctor() -> int:
     """Print `tower doctor`'s report; exit 1 when a check failed, 0 when every check passed or only warned."""
     checks = doctor.run_all(Path("."), datetime.now(timezone.utc))
     sys.stdout.write(doctor.render(checks))
-    return 1 if any(check.status == doctor.FAIL for check in checks) else 0
+    return 1 if doctor.failed(checks) else 0
 
 
 def show_policy() -> int:

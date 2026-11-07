@@ -188,6 +188,7 @@ def test_claude_agents_entries_without_a_folder_fail_as_a_format_change(bin_dir:
     check = doctor.check_agents()
     assert check.status == "fail"
     assert "cwd" in check.detail
+    assert "claude update" in check.fix
 
 
 def test_claude_agents_listing_sessions_passes(bin_dir: Path, tmp_path: Path) -> None:
@@ -223,6 +224,7 @@ def test_a_gs_that_is_ghostscript_does_not_count_as_git_spice(bin_dir: Path) -> 
     check = doctor.check_git_spice()
     assert check.status == "fail"
     assert "gs there is another program" in check.detail
+    assert "brew install git-spice" in check.fix
 
 
 def test_mise_missing_fails_and_says_how_to_install_it(bin_dir: Path) -> None:
@@ -262,6 +264,7 @@ def test_a_policy_value_that_is_not_allowed_fails_and_names_it(tmp_path: Path, m
     check = doctor.check_policy()
     assert check.status == "fail"
     assert 'push = "sometimes"' in check.detail
+    assert "policy.toml" in check.fix
 
 
 def test_no_policy_file_warns_and_says_how_to_choose_a_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -357,3 +360,81 @@ def test_a_tower_conf_that_is_not_utf8_fails_the_vault_check_instead_of_crashing
     check = doctor.check_vault()
     assert check.status == "fail"
     assert "UTF-8" in check.detail
+    assert "projects_dir" in check.fix
+
+
+def test_a_tower_conf_without_projects_dir_fails_the_vault_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_conf(tmp_path, monkeypatch, "wip_limit=3\n")
+    check = doctor.check_vault()
+    assert check.status == "fail"
+    assert "no projects_dir" in check.detail
+    assert "setup.sh" in check.fix
+
+
+def test_gh_that_cannot_read_the_repo_fails_and_says_to_check_the_network_then_switch(
+    bin_dir: Path, tmp_path: Path
+) -> None:
+    checkout = github_checkout(tmp_path)
+    fake_tool(
+        bin_dir,
+        "gh",
+        """case "$1 $2" in
+  "auth status") exit 0 ;;
+  *) echo 'GraphQL: Could not resolve to a Repository' >&2; exit 1 ;;
+esac""",
+    )
+    check = doctor.check_gh(checkout)
+    assert check.status == "fail"
+    assert "Could not resolve" in check.detail
+    assert "reachable" in check.fix and "gh auth switch" in check.fix
+
+
+def test_gh_where_git_does_not_run_fails_and_says_to_check_git(bin_dir: Path, tmp_path: Path) -> None:
+    fake_gh(bin_dir)
+    (bin_dir / "git").unlink()
+    check = doctor.check_gh(tmp_path)
+    assert check.status == "fail"
+    assert "remote -v" in check.fix
+
+
+def test_claude_plugin_list_failing_fails_the_plugin_check(bin_dir: Path) -> None:
+    fake_tool(bin_dir, "claude", "echo 'boom' >&2; exit 1")
+    check = doctor.check_plugin()
+    assert check.status == "fail"
+    assert "boom" in check.detail
+    assert "claude plugin list" in check.fix
+
+
+def test_claude_plugin_list_in_a_new_format_fails_as_a_format_change(bin_dir: Path) -> None:
+    fake_claude(bin_dir, plugins='{"plugins": [{"id": "tower@tower", "enabled": true}]}')
+    check = doctor.check_plugin()
+    assert check.status == "fail"
+    assert "unexpected" in check.detail
+    assert "claude update" in check.fix
+
+
+def test_no_claude_command_fails_the_agents_check_and_says_to_install_claude_code(bin_dir: Path) -> None:
+    check = doctor.check_agents()
+    assert check.status == "fail"
+    assert "Claude Code" in check.fix
+
+
+def test_no_policy_file_with_old_approvals_in_tower_conf_says_what_they_become(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_conf(tmp_path, monkeypatch, "push_approval=every\npr_approval=every\n")
+    check = doctor.check_policy()
+    assert check.status == "warn"
+    assert "become profile work" in check.detail
+    assert "tower policy use" in check.fix
+
+
+def test_an_event_only_in_last_months_log_still_counts_just_after_rotation(bin_dir: Path) -> None:
+    log_event(minutes_ago=15)
+    directory = events.default_dir()
+    (directory / events.LOG_NAME).rename(directory / "events-2026-10.jsonl")
+    check = doctor.check_hooks(NOW)
+    assert check.status == "ok"
+    assert "15m ago" in check.detail
