@@ -33,6 +33,7 @@ import sys
 import time
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -1344,6 +1345,99 @@ def test_the_floor_follows_a_symlink_to_tower_files(tmp_path: Path) -> None:
     assert asks(run_hook(tmp_path, call, policy='default_profile = "sandbox"\n'))
 
 
+# The floor judges the file a mention resolves to, not the text (#75): a commit message, a test fixture in a temp
+# folder or a heredoc that says tower.conf or policy.toml isn't tower's settings. Workers run with no other prompt,
+# so each false ask stalls one.
+MENTIONS_OF_OTHER_FILES = [
+    pytest.param(
+        {"tool_name": "Write", "tool_input": {"file_path": "/private/tmp/pytest-of-x/t0/tower.conf"}}, id="fixture"
+    ),
+    pytest.param(
+        {"tool_name": "Edit", "tool_input": {"file_path": "/repo/tests/fixtures/policy.toml"}}, id="policy fixture"
+    ),
+    pytest.param(bash('printf "projects_dir=\\xff" > /tmp/t/tower.conf && uv run tower state'), id="temp tower.conf"),
+    pytest.param(bash('git commit -m "Fix: tower.conf decode error"'), id="commit message"),
+    pytest.param(
+        bash("git commit -m \"$(cat <<'EOF'\nFix: tower.conf (policy.toml too)\nEOF\n)\""), id="commit heredoc"
+    ),
+    pytest.param(bash("git commit -F - <<'EOF'\nRead tower.conf as UTF-8\nEOF"), id="commit from stdin"),
+    pytest.param(bash("cp tests/fixtures/policy.toml /tmp/t/policy.toml"), id="copy a fixture"),
+    pytest.param(bash('uv run pytest -q tests/test_scans.py -k "gh pr merge"'), id="pytest"),
+]
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("call", MENTIONS_OF_OTHER_FILES)
+def test_the_floor_ignores_mentions_of_files_that_arent_towers(
+    tmp_path: Path, profile: str, call: dict[str, object]
+) -> None:
+    assert run_hook(tmp_path, call, policy=f'default_profile = "{profile}"\n') is None
+
+
+@pytest.fixture
+def home(tmp_path: Path) -> Path:
+    """A home folder (the hook's HOME) holding .claude/tower/, a link to .claude, and a folder state/."""
+    (tmp_path / ".claude" / "tower").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(tmp_path / ".claude")
+    (tmp_path / "state").mkdir()
+    return tmp_path
+
+
+# (session folder under home, tool call): each reaches tower.conf or the policy file another way than by its full
+# path, and asks in every profile. TOWER_CONF is <home>/tower.conf and TOWER_DIR <home>/state (see real_file_asks).
+REAL_FILES_BY_OTHER_NAMES = [
+    pytest.param(
+        "", {"tool_name": "Write", "tool_input": {"file_path": "{home}/link/tower.conf"}}, id="Write via link"
+    ),
+    pytest.param("", bash("echo x > {home}/link/tower.conf"), id="redirect via link"),
+    pytest.param("", bash("cd {home}/link && echo x > tower.conf"), id="cd into a link"),
+    pytest.param(".claude", bash("echo push_approval=none >> tower.conf"), id="relative, in .claude"),
+    pytest.param("", bash("sed -i '' s/a/b/ .claude/tower.conf"), id="relative, from home"),
+    pytest.param(".claude/tower", bash("printf x > ../tower.conf"), id="relative, up a folder"),
+    pytest.param(".claude/tower", bash("sed -i '' s/work/sandbox/ policy.toml"), id="relative policy file"),
+    pytest.param("", bash("echo x > {home}/TOWER.CONF"), id="TOWER_CONF, other case"),
+    pytest.param("", {"tool_name": "Write", "tool_input": {"file_path": "{home}/tower.conf"}}, id="Write TOWER_CONF"),
+    pytest.param("", bash("cp /tmp/x {home}/state/policy.toml"), id="TOWER_DIR's policy file"),
+    pytest.param(
+        "", {"tool_name": "Edit", "tool_input": {"file_path": "{home}/state/policy.toml"}}, id="Edit TOWER_DIR's"
+    ),
+    # where the path can't be worked out, it could be the real file
+    pytest.param("", bash('printf x > "$DIR/tower.conf"'), id="folder from a variable"),
+    pytest.param("", bash('cd "$DIR" && printf x > tower.conf'), id="cd to a variable"),
+    pytest.param("", bash("cd - && printf x > tower.conf"), id="cd -"),
+    pytest.param("", bash("printf x > $(mktemp -d)/tower.conf"), id="command output"),
+    pytest.param("", bash("printf x > /tmp/*/tower.conf"), id="glob"),
+    pytest.param("", bash('git -C "$DIR" checkout tower.conf'), id="git -C a variable"),
+    # a relative name the program resolves in a folder it's given: each is a folder through the link to .claude
+    pytest.param("", bash("git -C {home}/link checkout tower.conf"), id="git -C a link"),
+    pytest.param("", bash("tar --directory={home}/link -xf /tmp/a.tar tower.conf"), id="tar --directory="),
+    pytest.param("", bash("cp -t {home}/link /tmp/t/tower.conf"), id="copy into a link"),
+    pytest.param("", bash("python3 -c \"open('tower.conf', 'w').write('x')\""), id="interpreter code"),
+    pytest.param(
+        "",
+        bash("python3 - <<'EOF'\nimport os; os.chdir(os.path.expanduser('~/.claude'))\nopen('tower.conf', 'w')\nEOF"),
+        id="interpreter heredoc",
+    ),
+]
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize(("folder", "call"), REAL_FILES_BY_OTHER_NAMES)
+def test_the_floor_asks_for_tower_files_by_any_name(
+    home: Path, profile: str, folder: str, call: dict[str, Any]
+) -> None:
+    assert real_file_asks(home, folder, call, profile)
+
+
+def real_file_asks(home: Path, folder: str, call: dict[str, Any], profile: str) -> bool:
+    """Whether CALL, with {home} filled in, asks for a session in FOLDER under HOME, with tower.conf and the policy
+    file moved by TOWER_CONF and TOWER_DIR to <home>/tower.conf and <home>/state as well."""
+    tool_input = {key: value.replace("{home}", str(home)) for key, value in call["tool_input"].items()}
+    session = {**call, "tool_input": tool_input, "cwd": str(home / folder)}
+    env = {"TOWER_DIR": str(home / "state")}
+    return asks(run_hook(home, session, policy=f'default_profile = "{profile}"\n', env=env))
+
+
 # --- Regressions from the /code-review xhigh of T09: each was a way to reach a work repo without a prompt -----
 
 FORK_POLICY = 'default_profile = "personal"\n[repos]\n"acme/*" = "work"\n'
@@ -1499,6 +1593,21 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
     code = "tower " * 40_000
     start = time.monotonic()
     run_hook(tmp_path, bash(f"python3 -c '{code}' merge 5"), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param('git commit -m "' + "tower.conf " * 50_000 + '"', id="names"),
+        pytest.param("git add " + "src tower.conf " * 4000, id="names and folders"),
+    ],
+)
+def test_a_command_naming_tower_conf_over_and_over_is_checked_in_time(tmp_path: Path, command: str) -> None:
+    """Each path the floor looks up on disk is paid for from the work budget, so a command naming tower.conf (or
+    folders) tens of thousands of times runs out of budget, and asks, before the hook's timeout."""
+    start = time.monotonic()
+    assert asks(run_hook(tmp_path, bash(command), policy='default_profile = "sandbox"\n'))
     assert time.monotonic() - start < 10
 
 
