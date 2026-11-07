@@ -25,6 +25,7 @@ def facts(
         label="main" if is_main else "feat-42",
         branch="main" if is_main else "feat-42",
         path="/code/repo" if is_main else "/code/repo/worktrees/feat-42",
+        card_file="main.md" if is_main else "feat-42.md",
         is_main=is_main,
         card=card,
         sessions=sessions,
