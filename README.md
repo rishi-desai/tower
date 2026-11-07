@@ -142,7 +142,8 @@ so the two can't disagree.
   so nothing else can approve on your behalf.
 - **Buttons:** Refresh (r), Refresh GitHub (g: PRs and every open issue: each ready one, then the newest others
   up to ten, and "+ N more";
-  `start #N` on a `ready-for-agent` issue starts it, `discuss #N` on any other asks the hub to discuss it first),
+  `start #N` on a `ready-for-agent` issue starts it, `discuss #N` on any other asks the hub to discuss it first;
+  an issue a worktree's card already names has no button, only where it runs after its title, e.g. `· running in feat-93-x`),
   What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
 
 Anything that changes something (starting a ticket, parking an idea) is sent to the hub's Claude as a request,

@@ -55,6 +55,13 @@ The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess 
 be wrong, so it is a guess, never a fact.
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
+**Issue in progress**:
+An open issue that a worker's card names as its ticket. It stays open on GitHub until its PR merges, but it is no
+longer there to start or discuss: the pane shows which worktree has it and in what effective state. A card's ticket
+often starts as the branch's ticket guess, and the worker corrects it when the guess is wrong; a worktree without a
+card is on no issue, whatever its branch name says.
+_Avoid_: started issue, claimed issue, assigned (GitHub's own word for a person on an issue)
+
 **Worktree's PR**:
 A PR from this repo whose head branch has the worktree's branch name. A fork's PR is never it, even with the same
 branch name (a stranger's patch-1 isn't this work).

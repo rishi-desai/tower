@@ -62,6 +62,21 @@ export function worktreeAt(state: TowerState, cwd: string): StateWorktree | unde
     .find(w => w.path !== '' && (cwd === w.path || cwd.startsWith(`${w.path}/`)))
 }
 
+/**
+ * Where each issue in progress runs, by the ticket its cards name: "#93" -> "running in feat-93-x" (each worktree on it,
+ * in its effective state, comma-joined). A worktree without a card is on no issue.
+ */
+export function inProgressNotes(state: TowerState): Map<string, string> {
+  const notes = new Map<string, string>()
+  for (const w of state.worktrees) {
+    const ticket = w.card?.ticket
+    if (!ticket || ticket === 'none') continue
+    const note = `${w.status} in ${w.label}`
+    notes.set(ticket, notes.has(ticket) ? `${notes.get(ticket)}, ${note}` : note)
+  }
+  return notes
+}
+
 // ---------- reading `tower scan`'s GitHub section ----------
 
 export type Issue = { number: string; title: string; isReady: boolean }
@@ -477,6 +492,8 @@ export const register: Register = on => {
     const issues = github?.issues ?? []
     const shownIssues = issuesToShow(issues)
     const moreIssues = issues.length - shownIssues.length
+    // An issue in progress gets no button: its number, then where it runs after its title ("… · running in feat-93-x").
+    const inProgress = inProgressNotes(state)
     let hotkey = 0 // 1-9 on the Needs you rows
     const nextHotkey = () => (hotkey < 9 ? String(++hotkey) : undefined)
 
@@ -554,11 +571,11 @@ export const register: Register = on => {
           <Box key={`issue-${issue.number}`} flexDirection="row" columnGap={1}>
             <Box flexShrink={0}>
               <Text> </Text>
-              {issue.isReady
+              {inProgress.has(`#${issue.number}`) ? <Text>{`#${issue.number}`}</Text> : issue.isReady
                 ? <Button key={`start-${issue.number}`} plain label={`start #${issue.number}`} onPress={() => void askClaude($, `start #${issue.number}`)} />
                 : <Button key={`discuss-${issue.number}`} plain dimColor label={`discuss #${issue.number}`} onPress={() => void askClaude($, `discuss #${issue.number}`)} />}
             </Box>
-            <Text wrap="wrap">{issue.title}</Text>
+            <Text wrap="wrap">{[issue.title, inProgress.get(`#${issue.number}`)].filter(Boolean).join(' · ')}</Text>
           </Box>
         ))}
         {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
