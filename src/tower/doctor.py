@@ -253,10 +253,8 @@ def check_vault() -> Check:
     fix = f"set projects_dir in {conf_path} to your vault's projects folder, or re-run setup.sh"
     try:
         root = ledger.projects_root(ledger.read_conf(conf_path))
-    except ledger.LedgerError as error:
+    except ledger.LedgerError as error:  # unset, missing, or a tower.conf that can't be read
         return Check("vault", FAIL, str(error), fix)
-    except UnicodeDecodeError:
-        return Check("vault", FAIL, f"{conf_path} isn't UTF-8 text", fix)
     return Check("vault", OK, f"projects_dir is {root}")
 
 
