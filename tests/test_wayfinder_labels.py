@@ -136,3 +136,5 @@ def test_says_so_in_one_line_when_gh_is_missing(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert result.stdout == ""
     assert result.stderr == "gh (GitHub CLI) is not installed or not on PATH\n"
+
+# Automated fix for issue #82: Approval hook: commands git runs from its config aren't checked
