@@ -354,21 +354,28 @@ def test_each_row_names_the_card_file_the_core_writes(
     assert row["card_file"] == written.name
 
 
-def test_a_detached_text_row_names_the_card_file_the_core_writes(
-    repo: Fixture, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("branch", [None, "feat/1|x"])
+def test_the_scan_names_the_card_file_the_core_writes(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], branch: str | None
 ) -> None:
-    """The hub opens a card by the text row's card_file, never by rebuilding it from the label (#89): git's short sha
-    can be longer than the label's 7 characters (an ambiguous prefix in a big repo; core.abbrev here)."""
+    """The hub opens <LEDGER>/<card_file> from the scan, never a name rebuilt from the label (#89): git's short sha
+    can be longer than the label's 7 characters (an ambiguous prefix in a big repo; core.abbrev here), and a branch's
+    "|" stays in its card's name. None is a detached HEAD."""
     git(repo.main, "config", "core.abbrev", "12")
-    path = repo.add_worktree("feat-1")
-    git(path, "checkout", "-q", "--detach")
+    path = repo.add_worktree(branch or "feat-1")
+    if branch is None:
+        git(path, "checkout", "-q", "--detach")
     written = ledger.card_path(path)
-    assert len(written.stem) > len("detached-") + 7  # else this test can't catch a name rebuilt from the label
+    if branch is None:
+        assert len(written.stem) > len("detached-") + 7  # else this test can't catch a name rebuilt from the label
 
-    assert cli.main(["state"]) == 0
-    (row,) = [line for line in capsys.readouterr().out.splitlines() if line.endswith(f" | {path}")]
+    assert cli.main(["scan", "--no-github"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    folder = next(line.removeprefix("LEDGER: ") for line in lines if line.startswith("LEDGER: "))
+    (row,) = [line for line in lines if line.endswith(f" | {path}")]
+    (card_file,) = [field.removeprefix("card_file: ") for field in row.split(" | ") if field.startswith("card_file: ")]
 
-    assert f" | card_file: {written.name} | " in row
+    assert Path(folder) / card_file == written
 
 
 def shared_fixture(repo: Fixture) -> None:
