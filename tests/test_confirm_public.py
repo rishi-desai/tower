@@ -1578,6 +1578,61 @@ def test_setup_sh_of_this_project_is_behind_the_floor_however_its_answers_come(
     assert asks(decision) == expect_ask
 
 
+# Reading setup.sh or the policy module isn't running it (#100): a worker on tower greps them all the time.
+POLICY_SOURCE_READS = [
+    "grep -n setup.sh README.md",
+    'grep -n "policy-context\\|hooks.json\\|session-env" -r src tests plugin/tests setup.sh README.md',  # #93's
+    "cat setup.sh",
+    "sed -n 1,20p setup.sh",
+    "sed -n -e 1,20p setup.sh src/tower/policy.py",
+    "git diff origin/main -- setup.sh src/tower/policy.py",
+    "git log -p setup.sh",
+    "git add setup.sh src/tower/policy.py",
+    "wc -l setup.sh 2>/dev/null",
+    "grep -c tower setup.sh 2>&1 | head -5",
+    "echo 'run ./setup.sh to install'",
+]
+# What may run setup.sh, or use the policy module, however it is written.
+POLICY_SOURCE_RUNS = [
+    "env ./setup.sh",
+    "echo x | xargs ./setup.sh",
+    "find . -name x -exec ./setup.sh {} +",
+    'S=./setup.sh; bash "$S"',
+    "GIT_PAGER=./setup.sh git log",
+    "git -c core.pager=./setup.sh log",
+    "git bisect run ./setup.sh",
+    "git rebase -x ./setup.sh HEAD~1",
+    "git grep -O./setup.sh x",
+    # sed's script, a copy that can run under another name, and code, which can run anything it names
+    'sed -n "1e ./setup.sh" README.md',
+    "cat setup.sh > x.sh",
+    "cp setup.sh x.sh",
+    "awk 'BEGIN{system(\"./setup.sh\")}'",
+    "python3 -c 'import os; os.system(\"./setup.sh --profile sandbox\")'",
+    "python3 <<'EOF'\nimport os\nos.system('./setup.sh')\nEOF",
+    "python3 <<'EOF'\nfrom tower import policy\npolicy.use('sandbox')\nEOF",
+]
+
+
+def in_tower_checkout(tmp_path: Path, command: str, profile: str) -> dict[str, object] | None:
+    """The hook's decision on COMMAND for a session in a tower checkout, under PROFILE."""
+    cwd = tmp_path / "tower"
+    cwd.mkdir(exist_ok=True)
+    return run_hook(tmp_path, {**bash(command), "cwd": str(cwd)}, policy=f'default_profile = "{profile}"\n')
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("command", POLICY_SOURCE_READS)
+def test_reading_setup_sh_or_the_policy_module_passes(tmp_path: Path, profile: str, command: str) -> None:
+    assert in_tower_checkout(tmp_path, command, profile) is None
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("command", POLICY_SOURCE_RUNS)
+def test_running_setup_sh_or_using_the_policy_module_asks(tmp_path: Path, profile: str, command: str) -> None:
+    assert asks(in_tower_checkout(tmp_path, command, profile))
+
+
 def test_migrated_pr_approval_none_still_asks_before_locking_a_pr(tmp_path: Path) -> None:
     """pr_approval=none never let gh pr lock/unlock through, so the migrated profile doesn't either (finding 12)."""
     conf = "push_approval=force\npr_approval=none\n"

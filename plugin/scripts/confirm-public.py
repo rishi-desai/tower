@@ -69,6 +69,15 @@ output, a glob or brace expansion or a ~name, a relative one after a cd to a bar
 anywhere), any one beside such an argument, any one in code for python, node, awk, vim and the like (which can
 build a path at run time), and any one in a line that may make a link (ln).
 
+Reading tower's setup.sh isn't running it: a word naming it counts unless its program only reads that word, as an
+argument of cat, grep or another read-only program, an operand of a git subcommand that only reads, stages or
+commits files (diff, log, show, add, ...), or an input file of sed with only options that print. Anything else may
+run it: the program itself or a wrapper's, a shell's script, find, xargs, a git subcommand that runs commands (bisect
+run, rebase -x), a -c setting before git's subcommand, an assignment (its variable can run it later), and a reader
+that writes its output into a file (a copy that runs under another name). Code for python, node, awk, sed and the
+like, a heredoc's included, runs setup.sh wherever it mentions it, and uses the policy module wherever it imports it.
+Writing setup.sh or src/tower/policy.py isn't judged: neither changes the policy until something runs it, which asks.
+
 Rule files are standing instructions loaded into every session, tower.conf and the policy file set the approvals
 above, and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook
 runs at all, so a prompt injection must not be able to change them silently: an agent can't loosen its own rules.
@@ -121,7 +130,9 @@ Limits: this sees only the command text. These are not caught:
   - the safety floor sees only the command, so a protected file reached by a path built at run time (pieces joined
     in python, a glob of a .claude/tower folder, a copy or unpack into the folder above .claude, a symlink
     inside it, a hard link, an argument folder written as an option's value glued to another option) isn't
-    caught. Claude
+    caught, and neither is setup.sh run by a name or text a reader prints (bash "$(ls setup.sh)", cat setup.sh piped
+    into python code that runs what it reads), like one run through a glob or a variable set outside the command.
+    Claude
     Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
   - Claude Code run another way to turn tower's plugin off (npx @anthropic-ai/claude-code, a script), a
     nested session started with hooks off (claude --bare, --settings with disableAllHooks; #87), and an edit
@@ -2036,6 +2047,20 @@ SETUP_MENTION = re.compile(r"setup\.sh", re.IGNORECASE)
 POLICY_CODE = re.compile(
     r"from\s+tower(?:\.\w+)*\s+import\b[^\n;]*\bpolicy\b|\btower\.policy\b|\bimport\s+tower\b|\btower\s+policy\s+use\b"
 )
+# Programs whose code can run setup.sh wherever it names it: PATH_BUILDERS' (awk's system()) and sed's (GNU's e).
+SETUP_CODE_PROGRAMS = PATH_BUILDERS | {"sed"}
+# git subcommands that read, stage or commit the files their operands name and take no option whose separate value is
+# a command to run (git grep's pager is -O<pager>, one word with the option): a setup.sh operand of one is a file.
+GIT_FILE_READERS = {"add", "blame", "commit", "diff", "grep", "log", "ls-files", "show", "status"}
+# sed's options that only change what it prints, GNU's and BSD's; any other (-i edits in place, -f reads its script
+# from a file, GNU's -l takes a value) may make an operand its script or a file it writes.
+SED_SWITCHES = re.compile(
+    r"-[nErsuz]+|--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox)"
+)
+# sed's -e/--expression, which gives its script: attached (-e1p, -ne1p, --expression=1p) or as the next word.
+SED_EXPRESSION = re.compile(r"-[nErsuz]*e(?P<short>.+)?|--expression(?P<long>=.*)?")
+# A redirect's target that is another file descriptor (2>&1, >&-), not a file.
+DESCRIPTOR = re.compile(r"\d+|-")
 
 
 def check_protected_edit(file_path: str) -> str | None:
@@ -2133,7 +2158,7 @@ def protected_reasons(
     of FOLDERS the line cds into (see names_tower_file); in code for an interpreter or a PATH_BUILDERS program, which
     can build any path, or when BY_TEXT (the line may make a link), the name alone does. Each lookup on disk is paid
     for with SPEND, which raises TooComplex once the budget is gone."""
-    if changes_policy(command.words, cwd):
+    if changes_policy(command, cwd):
         return [POLICY_COMMAND_REASON]
     if turns_tower_off(command.words):
         return [TOWER_PLUGIN_REASON]
@@ -2185,19 +2210,33 @@ def protected_reasons(
     return [] if reads_only else [TOWER_FILE_REASON]  # only assignments (their $( ) are checked alone), or a read
 
 
-def changes_policy(words: list[Word], cwd: str) -> bool:
-    """Whether a simple command's WORDS may change tower's policy: run `tower policy use` (a word naming tower, then
-    `policy`, then `use` or a word from a variable: `uv run tower ...`, `python3 -m tower ...` and run-tower.py all
-    count), give python, node or another interpreter code that uses tower's policy module or runs `tower policy use`,
-    or run tower's setup.sh (named with a path holding "tower", or from a session folder that does) for anything but
-    --dry-run or --help, since it rewrites tower.conf and can set the profile from its prompt."""
+def changes_policy(command: SimpleCommand, cwd: str) -> bool:
+    """Whether a simple COMMAND may change tower's policy: run `tower policy use` (a word naming tower, then `policy`,
+    then `use` or a word from a variable: `uv run tower ...`, `python3 -m tower ...` and run-tower.py all count), give
+    python, node or another interpreter code (in its words or a heredoc) that uses tower's policy module or runs
+    `tower policy use`, or run tower's setup.sh for anything but --dry-run or --help, since it rewrites tower.conf and
+    can set the profile from its prompt. setup.sh is tower's when named with a path holding "tower", or from a session
+    folder (CWD) that does. A word naming it runs it unless the program only reads that word (see setup_reads: grep
+    setup.sh, git diff -- setup.sh), and code for an interpreter, sed or a PATH_BUILDERS program runs it wherever the
+    code mentions it, since code can build the path and run it."""
+    words = command.words
     texts = [word.text for word in words]
-    for index, text in enumerate(texts):
-        rest = words[index + 1 :]
-        if LANGUAGE_RUNNER.fullmatch(program_name(words[index])) and any(
-            POLICY_CODE.search(later) for later in texts[index + 1 :]
-        ):
-            return True
+    reads = setup_reads(command)
+    unread = [index for index in range(len(words)) if index not in reads]
+    languages = [index for index in unread if LANGUAGE_RUNNER.fullmatch(program_name(words[index]))]
+    coders = [index for index in unread if index in languages or program_name(words[index]) in SETUP_CODE_PROGRAMS]
+
+    def code_after(start: int) -> list[str]:
+        """The unread words after word START, and standard input's text: the code a program there may run."""
+        return [texts[index] for index in unread if index > start] + [command.stdin_text or ""]
+
+    # The first program that runs code sees all the later ones' code too, so one look at it is enough.
+    if languages and any(POLICY_CODE.search(code) for code in code_after(languages[0])):
+        return True
+    if coders and any(SETUP_MENTION.search(code) and "tower" in (code + cwd).lower() for code in code_after(coders[0])):
+        return True
+    for index in unread:
+        text, rest = texts[index], words[index + 1 :]
         is_tower_setup = os.path.basename(text).lower() == "setup.sh" and "tower" in (text + cwd).lower()
         if is_tower_setup and not any(word.text in ("--dry-run", "-h", "--help") for word in rest):
             return True
@@ -2206,6 +2245,70 @@ def changes_policy(words: list[Word], cwd: str) -> bool:
             if any(word.text == "use" or word.dynamic for word in after_policy):
                 return True
     return False
+
+
+def setup_reads(command: SimpleCommand) -> set[int]:
+    """Indexes of COMMAND's words that its program only reads as files, so a setup.sh among them isn't run: every
+    argument of a READ_ONLY_PROGRAMS program (grep, cat), the operands after a GIT_FILE_READERS subcommand (git diff --
+    setup.sh, not an option like -O./setup.sh), and sed's input files (see sed_inputs). None when the command writes
+    its output into a file, where it can run under another name (cat setup.sh > x.sh); /dev/null and another file
+    descriptor (2>&1) aren't files it can run from."""
+    copies = any(
+        redirect.writes
+        and redirect.target.text != "/dev/null"
+        and not (redirect.operator.endswith("&") and DESCRIPTOR.fullmatch(redirect.target.text))
+        for redirect in command.redirects
+    )
+    words = command.words
+    program = program_position(words)
+    if copies or program >= len(words):
+        return set()
+    name, first_arg = program_name(words[program]), program + 1
+    if name in READ_ONLY_PROGRAMS:
+        return set(range(first_arg, len(words)))
+    if name == "git":
+        subcommand = first_arg + git_subcommand_at(words[first_arg:])
+        if subcommand < len(words) and words[subcommand].text in GIT_FILE_READERS:
+            return {index for index in range(subcommand + 1, len(words)) if not words[index].text.startswith("-")}
+    if name == "sed":
+        return {first_arg + index for index in sed_inputs(words[first_arg:])}
+    return set()
+
+
+def git_subcommand_at(args: list[Word]) -> int:
+    """Index in git's ARGS of its subcommand, past its global options (len(ARGS) if it has none)."""
+    index = 0
+    while index < len(args) and args[index].text.startswith("-"):
+        index += 2 if args[index].text in GIT_OPTIONS_WITH_VALUE else 1
+    return index
+
+
+def sed_inputs(args: list[Word]) -> list[int]:
+    """Indexes of sed's ARGS that are input files it only reads: its operands after its script (the first operand,
+    unless -e gives the script). None when it has an option that isn't one of SED_SWITCHES or -e, or a word from a
+    variable, since either may make a file operand its script or a file it writes."""
+    if any(arg.dynamic for arg in args):
+        return []
+    operands: list[int] = []
+    script_given = False
+    index = 0
+    while index < len(args):
+        text = args[index].text
+        expression = SED_EXPRESSION.fullmatch(text)
+        if text == "--":
+            operands += range(index + 1, len(args))
+            break
+        if expression:
+            script_given = True
+            attached = expression.group("short") is not None or expression.group("long") is not None
+            index += 1 if attached else 2
+            continue
+        if text.startswith("-") and text != "-" and not SED_SWITCHES.fullmatch(text):
+            return []
+        if not SED_SWITCHES.fullmatch(text):
+            operands.append(index)
+        index += 1
+    return operands if script_given else operands[1:]
 
 
 def turns_tower_off(words: list[Word]) -> bool:
