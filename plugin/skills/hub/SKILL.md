@@ -177,6 +177,8 @@ When Orca isn't reachable, the user creates the worktree in their worktree app w
 
 **Step 2: then, as a separate message:** the kickoff prompt above.
 
+When the user says the session is running, ask for the worktree's path if you don't know it, and do step 4 of "Start it through Orca" with it: the starter card, then the kickoff, from a kickoff file holding the Step 2 text (write it with the Write tool as in step 2 there). Without the kickoff in its card, the worker loses it at compaction.
+
 Never write `/effort <level>` for the user to paste: a level typed after `/effort` is saved as the default for every new session, not just this one. And never put both steps in one block: pasted together, Claude Code reads the `/implement` line as `/effort`'s argument and rejects the whole message.
 
 ## Gotchas

@@ -192,7 +192,8 @@ def add_card_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser
     kickoff.add_argument(
         "--replace",
         action="store_true",
-        help="the card is an orphan from earlier work on this branch name: replace its kickoff, archive its decisions",
+        help="the card is an orphan from earlier work on this branch name: replace its kickoff, archive its decisions"
+        " log",
     )
 
 
@@ -250,7 +251,7 @@ def run_card_kickoff(args: argparse.Namespace) -> int:
     return 0
 
 
-def add_decision(directory: Path, text: str) -> int:
+def run_decisions_add(directory: Path, text: str) -> int:
     """Run `tower decisions add`: print the log's path. Exit 1, writing nothing, when the decision or the worktree is
     wrong or the log can't be written."""
     try:
@@ -471,7 +472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "card" and args.card_command == "kickoff":
         return run_card_kickoff(args)
     if args.command == "decisions" and args.decisions_command == "add":
-        return add_decision(args.dir, args.text)
+        return run_decisions_add(args.dir, args.text)
     if args.command == "rules":
         return run_or_explain(link_rules)
     if args.command == "env":

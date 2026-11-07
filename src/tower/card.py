@@ -388,7 +388,7 @@ def write_card(
     warnings += status_warnings
     if note:
         why += f"; {note}"
-    old_lines, old_body, warning = old_card(path)
+    old_lines, old_body, warning = previous_card(path)
     if warning:
         warnings.append(warning)
     kickoff = split_kickoff(old_body)[1]
@@ -407,7 +407,7 @@ def write_card(
     return Written(path, status, why, warnings)
 
 
-def old_card(path: Path) -> tuple[list[str], str, str]:
+def previous_card(path: Path) -> tuple[list[str], str, str]:
     """The frontmatter lines and body of the card being replaced (none when there's no card), and a warning when it
     exists but can't be read, so its ticket, extra properties and kickoff are lost."""
     try:
@@ -430,7 +430,7 @@ def previous_ticket(lines: list[str]) -> str | None:
 
 def set_kickoff(worktree: Path, text: str, replace: bool = False) -> tuple[Path, Path | None]:
     """Put the hub's kickoff into the card of the worktree holding worktree, as its last section, keeping everything
-    else: (the card's path, where the old decisions log was archived or None). The same kickoff again changes nothing.
+    else: (the card's path, where the earlier work's decisions log was archived or None). The same kickoff again changes nothing.
     replace is for an orphan card from earlier work on the same branch name: it replaces a different kickoff and
     archives that work's decisions log. Raises NotARepo, LedgerError, OSError, or CardError (an empty kickoff, the
     main checkout, no card yet, a different kickoff without replace; nothing written)."""
@@ -453,11 +453,7 @@ def set_kickoff(worktree: Path, text: str, replace: bool = False) -> tuple[Path,
             f"{path} already has a different kickoff. Pass --replace only when it's an orphan card from earlier work"
             " on this branch name (that also archives the earlier work's decisions log)"
         )
-    archived = None
-    if replace:
-        log = ledger.decisions_path(worktree)
-        if log.exists():
-            archived = ledger.archive(log, path.parent, f"{path.stem}.decisions.md")
+    archived = ledger.archive_decisions(path) if replace else None
     prefix = card_text[: len(card_text) - len(body)]
     write_atomically(path, prefix + with_kickoff(rest, kickoff), if_absent=False)
     return path, archived

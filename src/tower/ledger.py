@@ -124,10 +124,24 @@ def card_path(worktree_dir: Path) -> Path:
 
 
 def decisions_path(worktree_dir: Path) -> Path:
-    """Where the worktree holding worktree_dir keeps its decisions log: Ledger/_decisions/<its card's name>. Creates
-    the Ledger folder if needed, not the _decisions folder."""
-    card = card_path(worktree_dir)
+    """Where the worktree holding worktree_dir keeps its decisions log (decisions_log of its card). Creates the Ledger
+    folder if needed, not the _decisions folder."""
+    return decisions_log(card_path(worktree_dir))
+
+
+def decisions_log(card: Path) -> Path:
+    """The decisions log that goes with card: Ledger/_decisions/<the card's name>."""
     return card.parent / DECISIONS / card.name
+
+
+def archive_decisions(card: Path) -> Path | None:
+    """Move card's decisions log into the Ledger's _archive folder as <card stem>.decisions.md, beside where the card
+    is archived, so a later worktree on the same branch name starts with an empty log. Where it went, or None when
+    there is no log. Raises OSError when it can't be moved."""
+    log = decisions_log(card)
+    if not log.exists():
+        return None
+    return archive(log, card.parent, f"{card.stem}.decisions.md")
 
 
 def archive(note: Path, ledger_folder: Path, name: str | None = None) -> Path:

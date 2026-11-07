@@ -412,7 +412,14 @@ def remove(
         except OSError as error:
             say(f"{label}: couldn't archive its card {target.card} ({error.strerror or type(error).__name__})")
             worked = False
-        worked = archive_decisions(label, target.card, ledger_folder, say) and worked
+        try:
+            log = ledger.archive_decisions(target.card)
+        except OSError as error:
+            say(f"{label}: couldn't archive its decisions log ({error.strerror or type(error).__name__})")
+            worked = False
+        else:
+            if log is not None:
+                say(f"{label}: archived its decisions log to {log}")
     if target.idle_sessions and not via_orca:
         say(f"{label}: session(s) {', '.join(target.idle_sessions)} still open in {path}, which is gone: close them")
     return True, worked
@@ -461,20 +468,6 @@ def remove_worktree(target: Target, main: Path, via_orca: bool, orca: Run, say: 
         say(f"{label}: the worktree is still listed by git after removing it, so nothing else was removed")
         return False
     say(f"{label}: removed the worktree {path} {how}")
-    return True
-
-
-def archive_decisions(label: str, card: Path, ledger_folder: Path, say: Say) -> bool:
-    """Archive the worktree's decisions log (Ledger/_decisions/<card name>) as <card stem>.decisions.md beside its
-    card, so a later worktree on the same branch name starts with an empty log. True when there was none or it moved."""
-    log = ledger_folder / ledger.DECISIONS / card.name
-    if not log.exists():
-        return True
-    try:
-        say(f"{label}: archived its decisions log to {ledger.archive(log, ledger_folder, f'{card.stem}.decisions.md')}")
-    except OSError as error:
-        say(f"{label}: couldn't archive its decisions log {log} ({error.strerror or type(error).__name__})")
-        return False
     return True
 
 

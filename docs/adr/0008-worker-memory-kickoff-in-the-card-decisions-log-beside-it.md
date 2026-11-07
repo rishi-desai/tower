@@ -38,3 +38,9 @@ There is no PreCompact hook. Claude Code runs only scripts there (`command`, `ht
   card's frontmatter. The approval hook doesn't guard either file.
 - A worker that writes its own card before the hub's starter card still gets the kickoff: `card kickoff` adds it to
   whichever card is there.
+- Card writes take no lock, as before: if the worker's `card write` reads its card just before the hub's `card kickoff`
+  lands and writes just after, the kickoff is lost. The window is milliseconds right after the start, and `card
+  kickoff` run again restores it (the same kickoff changes nothing otherwise). A card that exists but can't be read
+  loses its kickoff on the next `card write`, with a warning, the same as its ticket.
+- A card far past its ~30 lines is cut in the hook's output (the kickoff never is), and the log keeps its newest lines;
+  both name the file to read for the rest.

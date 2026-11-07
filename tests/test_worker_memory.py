@@ -298,3 +298,43 @@ def test_the_status_card_skill_tells_workers_when_to_add_a_decision_with_a_comma
     log = repo.ledger / "_decisions" / "feat__42-search.md"
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, f"{log}\n", "")
     assert log.read_text(encoding="utf-8").endswith(" chose X over Y because Z\n")
+
+
+def test_a_card_too_long_for_claude_codes_cap_is_cut_but_the_kickoff_stays_whole(
+    repo: Fixture, remembered: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    long_done = NARRATIVE.replace(
+        "- The search box finds alerts by ticker.", "\n".join(f"- step {i:03d} " + "z" * 90 for i in range(120))
+    )
+    assert write(capsys, monkeypatch, stdin=long_done)[0] == 0
+
+    printed = session_start(remembered, "compact")
+
+    card = repo.ledger / "feat__42-search.md"
+    assert len(printed) < 10_000
+    assert f"# Kickoff\n{KICKOFF}\n" in printed
+    assert "- step 000 " in printed
+    assert "- step 119 " not in printed
+    assert f"(the card is cut here to stay under Claude Code's limit: read {card})" in printed
+    assert "chose SQLite FTS over a LIKE scan" in printed  # the room kept for the log's notes holds its newest line
+
+
+def test_the_hub_skill_fixes_the_kickoff_in_the_card_with_a_command_that_works(
+    repo: Fixture, worker: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    skill = (SCRIPTS.parent / "skills" / "hub" / "SKILL.md").read_text(encoding="utf-8")
+    command = next(line.strip() for line in skill.splitlines() if "run-tower.py card kickoff" in line)
+    kickoff_file = tmp_path / "kickoff-42.txt"
+    kickoff_file.write_text(KICKOFF + "\n", encoding="utf-8")
+    filled = (
+        command.replace("<plugin>", str(SCRIPTS.parent))
+        .replace("<new worktree path>", str(worker))
+        .replace("<kickoff file>", str(kickoff_file))
+    )
+    assert write(capsys, monkeypatch, "--if-absent")[0] == 0  # step 4's starter card, just before it
+
+    proc = subprocess.run(filled, shell=True, cwd=repo.main, capture_output=True, text=True, timeout=30, check=False)
+
+    card = repo.ledger / "feat__42-search.md"
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, f"{card}\n", "")
+    assert body(card).endswith(f"## Kickoff\n{KICKOFF}\n")

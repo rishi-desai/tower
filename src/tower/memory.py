@@ -26,7 +26,9 @@ from tower.gitrepo import is_main_checkout
 
 MAX_DECISION = 300  # characters: a line, not a paragraph; every line is re-read on each restart
 BUDGET = 9_500  # characters; Claude Code's cap is 10,000, measured on the whole output
-LEFT_OUT_NOTE = 300  # characters kept free for the "older decisions left out" line, whose path can be long
+# What SessionStart's source says about the restart; any other source (resume, fork) still has its transcript.
+RESTARTS = {"compact": "after compaction", "clear": "after /clear", "startup": "in a new session"}
+LEFT_OUT_ROOM = 300  # characters kept free for the "older decisions left out" line, whose path can be long
 
 
 class DecisionError(Exception):
@@ -66,9 +68,6 @@ def ends_with_newline(path: Path) -> bool:
         return handle.read(1) == b"\n"
 
 
-RESTARTS = {"compact": "after compaction", "clear": "after /clear", "startup": "in a new session"}
-
-
 def session_context(worktree: Path, source: str) -> str:
     """What a session starting in worktree gets back (SessionStart's source: compact, clear or startup): its kickoff,
     its card and its decisions log, under BUDGET characters; "" for any other source (a resumed or forked session still
@@ -78,7 +77,7 @@ def session_context(worktree: Path, source: str) -> str:
     if source not in RESTARTS or is_main_checkout(worktree):
         return ""
     card_file = ledger.card_path(worktree)
-    log_file = card_file.parent / ledger.DECISIONS / card_file.name
+    log_file = ledger.decisions_log(card_file)
     card_text = read_or_none(card_file)
     log_text = read_or_none(log_file)
     if card_text is None and log_text is None:
@@ -96,7 +95,11 @@ def session_context(worktree: Path, source: str) -> str:
         "\n".join(front) + "\n\n" + rest.strip("\n") if card_text is not None else "(none yet)"
     )
     log_heading = f"# Decisions log ({log_file}, oldest first)"
-    room = BUDGET - len(f"{header}\n\n{kickoff_part}\n\n{card_part}\n\n{log_heading}") - LEFT_OUT_NOTE
+    card_room = BUDGET - len(f"{header}\n\n{kickoff_part}\n\n\n\n{log_heading}") - 2 * LEFT_OUT_ROOM
+    if len(card_part) > card_room:  # a card far past its ~30 lines; the kickoff, before it, always stays whole
+        cut = card_part[: max(card_room, 0)].rsplit("\n", 1)[0]
+        card_part = f"{cut}\n(the card is cut here to stay under Claude Code's limit: read {card_file})"
+    room = BUDGET - len(f"{header}\n\n{kickoff_part}\n\n{card_part}\n\n{log_heading}") - LEFT_OUT_ROOM
     decisions = [line for line in (log_text or "").splitlines() if line.strip()]
     kept = newest_that_fit(decisions, room)
     log_part = log_heading + "\n" + ("\n".join(kept) if kept else "(none yet)")
