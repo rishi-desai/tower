@@ -318,9 +318,12 @@ def test_each_repo_heading_names_its_ledger_so_the_hub_can_open_a_rows_card_file
     assert cli.main(["state", "--all"]) == 0
     text = capsys.readouterr().out
 
-    rows = section(text, f"== REPO: repo | {repo.main} | {repo.ledger} ==")
-    assert any("card_file: feat-1.md" in row for row in rows)
-    assert (repo.ledger / "feat-1.md").is_file()
+    heading = next(line for line in text.splitlines() if line.startswith("== REPO: repo |"))
+    assert heading == f"== REPO: repo | {repo.main} | {repo.ledger} =="
+    ledger_folder = Path(heading.removesuffix(" ==").split(" | ")[2])
+    row = next(r for r in section(text, heading) if r.startswith("- feat-1 |"))
+    card_file = next(f.removeprefix("card_file: ") for f in row.split(" | ") if f.startswith("card_file: "))
+    assert "status: needs-you" in (ledger_folder / card_file).read_text(encoding="utf-8")
 
 
 def test_a_repo_with_no_ledger_folder_says_so_in_its_heading(
@@ -332,4 +335,5 @@ def test_a_repo_with_no_ledger_folder_says_so_in_its_heading(
     assert cli.main(["state", "--all"]) == 0
     text = capsys.readouterr().out
 
-    assert f"== REPO: repo | {repo.main} | no Ledger folder (see NOTE) ==" in text.splitlines()
+    assert f"== REPO: repo | {repo.main} | Ledger folder unknown (see NOTE) ==" in text.splitlines()
+    assert any(line.startswith("NOTE: no projects_dir in") for line in text.splitlines())

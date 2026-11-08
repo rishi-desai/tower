@@ -28,7 +28,7 @@ NO_CHECKOUT = (
     "(no checkout of this project tower could read: none in the event log yet, or its folder moved or is gone"
     " (see NOTE); start a session there, or run tower state --repo)"
 )
-NO_LEDGER = "no Ledger folder (see NOTE)"  # a repo heading's Ledger field when tower.conf can't say where it is
+NO_LEDGER = "Ledger folder unknown (see NOTE)"  # a repo heading's Ledger field when tower.conf can't say where it is
 GONE_LISTED = 5  # the "folder is gone" note names this many paths, then counts the rest: the log is never pruned
 
 
@@ -250,6 +250,6 @@ def entry_section(entry: state.Report | CardsOnly) -> list[str]:
             NO_CHECKOUT,
             *rows,
         ]
-    folder = entry.ledger if entry.ledger is not None else NO_LEDGER
-    heading = f"== REPO: {state.cell(entry.repo)} | {entry.main_checkout} | {folder} =="
+    ledger_field = entry.ledger if entry.ledger is not None else NO_LEDGER
+    heading = f"== REPO: {state.cell(entry.repo)} | {entry.main_checkout} | {ledger_field} =="
     return [heading, state.render_text(entry).rstrip("\n")]
