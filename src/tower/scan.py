@@ -23,6 +23,7 @@ GitHub section (Refresh GitHub), never on its 30-second refresh.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -35,6 +36,7 @@ PR_TEMPLATE = (
 )
 ISSUE_LIMIT = 30  # gh issue list's --limit; the pane shows "+" when a list is this long (SCAN_ISSUE_LIMIT)
 ISSUE_TEMPLATE = '{{range .}}- #{{.number}} {{.title}}{{range .labels}} [{{.name}}]{{end}}{{"\\n"}}{{end}}'
+ISSUE_ROW = re.compile(r"- (#\d+) ")  # the start of a row ISSUE_TEMPLATE prints: its ticket
 
 
 def hub_scan(repo_dir: Path, github: bool = True) -> str:
@@ -118,8 +120,8 @@ def github_section(repo_dir: Path, in_progress: dict[str, str]) -> list[str]:
 def marked_in_progress(line: str, in_progress: dict[str, str]) -> str:
     """An issue row, with where it runs after its labels when it's in progress: "- #93 title [bug] [in progress:
     running in feat-93-x]". The mark is one more bracket at the end, so the pane still reads the title and labels."""
-    ticket = line[2:].split(" ", 1)[0] if line.startswith("- #") else ""
-    return f"{line} [in progress: {in_progress[ticket]}]" if ticket in in_progress else line
+    row = ISSUE_ROW.match(line)
+    return f"{line} [in progress: {in_progress[row[1]]}]" if row and row[1] in in_progress else line
 
 
 def gh_list(repo_dir: Path, title: str, *args: str) -> list[str]:

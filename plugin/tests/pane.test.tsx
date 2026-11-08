@@ -409,6 +409,9 @@ test('parseGithub reads PRs and every issue, ready or not', () => {
   ])
   expect(github.note).toBe('(gh failed: rate limited)')
   expect(parseGithub(['-- open issues assigned to you --', '(none)']).issues).toEqual([])
+  // `tower scan` marks an issue in progress with one more bracket at the end: the title and labels still read.
+  const marked = parseGithub(['-- open issues (all — your repo) --', '- #2 two [ready-for-agent] [in progress: running in feat-2-x]'])
+  expect(marked.issues).toEqual([{ number: '2', title: 'two', isReady: true }])
 })
 
 test('a ready-for-agent issue older than the newest ten still gets its start button', () => {
