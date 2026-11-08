@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { StateWorktree, TowerState } from '../types'
-import { issuesToShow, parseGithub } from '../hooks/register'
+import { inProgressNotes, issuesToShow, parseGithub } from '../hooks/register'
 import { SHARED } from './fixtures/tower-state'
 
 // SHARED is `tower state --json`'s real output for the fixture in tests/test_state.py, which checks it: feat-3's card
@@ -314,6 +314,38 @@ test('every open issue is listed, ten at most: ready ones start, the rest are di
   expect(w.argvs.filter(isScan).length).toBe(1)
   expect(await ui.find({ type: 'Button', key: 'start-61' })).toBeTruthy()
   await ui.unmount()
+})
+
+test('an issue in progress shows where it runs, with no start or discuss button', async ($, on) => {
+  // feat-7's card names #61 (ready for an agent), feat-3's names #60 (not ready); the other issues have no worktree.
+  // The row says the worktree's effective state, not its card's claim: feat-7's card says needs-you, but it runs.
+  const tickets: Record<string, string> = { 'feat-7': '#61', 'feat-3': '#60' }
+  const inProgress = variant(w => {
+    const ticket = tickets[w.label]
+    return w.card && ticket ? { ...w, card: { ...w.card, ticket } } : w
+  })
+  world(on, inProgress)
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'github' })
+
+  expect(await ui.find({ type: 'Button', key: 'start-61' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'discuss-60' })).toBeUndefined()
+  expect((await ui.findAll({ type: 'Text', text: /^#61$/ })).length).toBe(2) // feat-7's Worktrees row, and the issue's
+  expect(await ui.find({ type: 'Text', text: /^Copilot: analyst \[level\] calls · running in feat-7$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^idea 60 · needs-you in feat-3$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'discuss-59' })).toBeTruthy() // not in progress: unchanged
+  await ui.unmount()
+})
+
+test("inProgressNotes names each worktree on a ticket and matches whole tickets", () => {
+  const card = SHARED.worktrees.find(w => w.label === 'feat-3')?.card
+  if (!card) throw new Error("the SHARED fixture lost feat-3's card")
+  const state = variant(w => w.label === 'feat-3' || w.label === 'feat-7' ? { ...w, card: { ...card, ticket: '#61' } } : w)
+  const notes = inProgressNotes(state)
+  expect(notes.get('#61')).toBe('needs-you in feat-3, running in feat-7')
+  expect(notes.has('#6')).toBe(false) // #6 isn't #61
+  expect([...inProgressNotes(SHARED).keys()]).toEqual(['#3', '#7', '#8', '#9']) // cardless feat-1 and feat-5 are on nothing
 })
 
 // ---------- interactions ----------
