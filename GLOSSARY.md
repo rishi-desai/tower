@@ -82,8 +82,10 @@ worktree's worker moves between its branches), keeping its first name.
 _Avoid_: status file, report
 
 **Ticket guess**:
-The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess wherever tower shows it. It can miss or
-be wrong, so it is a guess, never a fact.
+The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess wherever tower shows it. A number names
+the ticket when an issue word or a type comes right before it, even behind a user or version prefix (`issue-42`,
+`rishi-fix-64`, `v2-fix-42`), or when it starts the name or a part after a `/` (`42-x`, `rishi/42-x`). A year and month
+(`2026-11-notes`, `release-2026-11`) never name one. It can miss or be wrong, so it is a guess, never a fact.
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
 **Issue in progress**:

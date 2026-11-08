@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
-# A ticket guess needs a known type before the number (feat-42-x, fix/42-x, or just 42-x), so release-2026-11 isn't #2026.
-BRANCH_TICKET = re.compile(
-    r"(?:^|/)(?:(?:feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix)[-/])?(\d+)(?:-|$)"
-)
+# A ticket guess takes the number after an issue word or a known type (issue-42, feat-42-x, fix/42-x), even behind a
+# user or version prefix (rishi-fix-64, v2-fix-42), or a bare number starting the name or a /-part (42-x). A version or
+# date isn't one: release-2026-11 and 2026-11-notes guess none.
+_TICKET_WORDS = r"issue|gh|feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix"
+_YEAR_MONTH = r"\d{4}-(?:0?[1-9]|1[0-2])(?:-|$)"
+BRANCH_TICKET = re.compile(rf"(?:(?:^|[-/])(?:{_TICKET_WORDS})[-/]|(?:^|/)(?!{_YEAR_MONTH}))(\d+)(?:-|$)")
 
 
 class NotARepo(Exception):
@@ -88,6 +90,6 @@ def repo_name(repo_dir: Path) -> str:
 
 
 def guess_ticket(branch: str) -> str:
-    """The ticket a branch name points at (rishi/feat-42-x, fix/42-x, 42-x -> #42), or none."""
+    """The ticket a branch name points at (rishi/feat-42-x, rishi-fix-42, issue-42, 42-x -> #42), or none."""
     match = BRANCH_TICKET.search(branch)
     return f"#{match.group(1)}" if match else "none"
