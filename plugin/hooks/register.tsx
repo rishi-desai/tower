@@ -63,30 +63,6 @@ export function worktreeAt(state: TowerState, cwd: string): StateWorktree | unde
 }
 
 /**
- * Where each issue in progress runs, by the ticket its cards name: "#93" -> "running in feat-93-x" (each worktree on it,
- * in its effective state, comma-joined), and by the ticket guess of each unmerged stack branch: "#41" -> "in the stack
- * in feat-40-x". A worktree without a card is on no issue.
- */
-export function inProgressNotes(state: TowerState): Map<string, string> {
-  const notes = new Map<string, string>()
-  for (const w of state.worktrees) {
-    const ticket = w.card?.ticket
-    if (!ticket || ticket === 'none') continue
-    const note = `${w.status} in ${w.label}`
-    notes.set(ticket, notes.has(ticket) ? `${notes.get(ticket)}, ${note}` : note)
-  }
-  // A stack worktree's card names only its first ticket: the others are its branches' tickets.
-  for (const stack of state.stacks ?? []) {
-    const holder = stack.worktrees.map(path => state.worktrees.find(w => w.path === path)?.label).find(Boolean)
-    for (const b of stack.branches) {
-      if (b.ticket === 'none' || b.merged || notes.has(b.ticket)) continue
-      notes.set(b.ticket, `in the stack in ${holder ?? b.name}`)
-    }
-  }
-  return notes
-}
-
-/**
  * A stack as the pane draws it: a header (its base, the worktree holding it by label, never a path, and the core's
  * word on who merges next) and one row per branch in merge order: its mark, the merge-order number indented by depth ("  2."), and its
  * text ("feat-b #12 · needs restack: ...").
@@ -133,13 +109,21 @@ export function parseGithub(lines: string[]): Github {
   return github
 }
 
+/** Whether an issue is in progress: the core's in_progress (`tower state --json`) names its ticket. */
+export function isInProgress(issue: Issue, inProgress: Record<string, string>): boolean {
+  return Boolean(inProgress[`#${issue.number}`]) // every key starts with #, so none is an Object property
+}
+
 /**
- * The issue rows the pane draws: every ready-for-agent issue (each must stay startable), then the newest others until
- * there are ISSUES_SHOWN rows. Within each group, the newest first, as `tower scan` lists them.
+ * The issue rows the pane draws: every ready-for-agent issue not in progress (each must stay startable), then the
+ * newest others not in progress, then the newest in progress, until there are ISSUES_SHOWN rows. Within each group,
+ * the newest first, as `tower scan` lists them.
  */
-export function issuesToShow(issues: Issue[]): Issue[] {
-  const ready = issues.filter(i => i.isReady)
-  return [...ready, ...issues.filter(i => !i.isReady).slice(0, Math.max(0, ISSUES_SHOWN - ready.length))]
+export function issuesToShow(issues: Issue[], inProgress: Record<string, string>): Issue[] {
+  const open = issues.filter(i => !isInProgress(i, inProgress))
+  const ready = open.filter(i => i.isReady)
+  const rest = [...open.filter(i => !i.isReady), ...issues.filter(i => isInProgress(i, inProgress))]
+  return [...ready, ...rest.slice(0, Math.max(0, ISSUES_SHOWN - ready.length))]
 }
 
 /** "#45 title [branch] review:APPROVED DRAFT" -> "#45 title · approved · draft"; review:none is dropped. */
@@ -516,10 +500,19 @@ export const register: Register = on => {
     const housekeeping = state.housekeeping.map(item => `${item.label}: ${item.note}`) // the hub's own list
     const stacks = state.stacks ?? [] // an older core reports none
     const issues = github?.issues ?? []
-    const shownIssues = issuesToShow(issues)
-    const moreIssues = issues.length - shownIssues.length
     // An issue in progress gets no button: its number, then where it runs after its title ("… · running in feat-93-x").
-    const inProgress = inProgressNotes(state)
+    // It's read from tower state, not the stored scan's marks: the 30-second refresh keeps it current between scans.
+    const inProgress = state.in_progress ?? {} // an older core reports none
+    const shownIssues = issuesToShow(issues, inProgress)
+    const runningIssues = issues.filter(i => isInProgress(i, inProgress)).length
+    const shownRunning = shownIssues.filter(i => isInProgress(i, inProgress)).length
+    // Below the rows, the hidden ones: "+ 2 more", "+ 2 more in progress", or both, as the header counts them.
+    const hiddenOpen = issues.length - runningIssues - (shownIssues.length - shownRunning)
+    const hiddenRunning = runningIssues - shownRunning
+    const moreIssues = [
+      hiddenOpen > 0 ? `${hiddenOpen}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more` : '',
+      hiddenRunning > 0 ? `${hiddenRunning} more in progress` : '',
+    ].filter(Boolean).join(', ')
     let hotkey = 0 // 1-9 on the Needs you rows
     const nextHotkey = () => (hotkey < 9 ? String(++hotkey) : undefined)
 
@@ -604,19 +597,19 @@ export const register: Register = on => {
           const [number = '', ...words] = prLine(pr).split(' ')
           return bullet(`pr-${number}`, ` ${number}`, words.join(' '))
         })}
-        {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length}${issues.length >= SCAN_ISSUE_LIMIT ? '+' : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
+        {github !== null && <Text weight="bold" wrap="wrap">{`Open issues (${issues.length - runningIssues}${issues.length >= SCAN_ISSUE_LIMIT ? '+' : ''}${runningIssues ? `, plus ${runningIssues} in progress` : ''}): start a ready-for-agent one, discuss the rest`}</Text>}
         {shownIssues.map(issue => (
           <Box key={`issue-${issue.number}`} flexDirection="row" columnGap={1}>
             <Box flexShrink={0}>
               <Text> </Text>
-              {inProgress.has(`#${issue.number}`) ? <Text>{`#${issue.number}`}</Text> : issue.isReady
+              {isInProgress(issue, inProgress) ? <Text>{`#${issue.number}`}</Text> : issue.isReady
                 ? <Button key={`start-${issue.number}`} plain label={`start #${issue.number}`} onPress={() => void askClaude($, `start #${issue.number}`)} />
                 : <Button key={`discuss-${issue.number}`} plain dimColor label={`discuss #${issue.number}`} onPress={() => void askClaude($, `discuss #${issue.number}`)} />}
             </Box>
-            <Text wrap="wrap">{[issue.title, inProgress.get(`#${issue.number}`)].filter(Boolean).join(' · ')}</Text>
+            <Text wrap="wrap">{[issue.title, inProgress[`#${issue.number}`]].filter(Boolean).join(' · ')}</Text>
           </Box>
         ))}
-        {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
+        {moreIssues && <Text>{`  + ${moreIssues}`}</Text>}
         {storedGithub && <Text italic>{`as of ${clockTime(storedGithub.at)}`}</Text>}
 
         {gap()}

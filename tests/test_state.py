@@ -76,6 +76,55 @@ def test_a_busy_worker_with_a_stale_needs_you_card_is_running(
     assert row["card"] == {"status": "needs-you", "ticket": "#42", "updated": "2026-11-06T09:00", "pr": "none"}
 
 
+def test_a_hand_edited_ticket_is_read_as_card_write_writes_it(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`ticket: 93` (no #, unquoted) names #93, as `tower card write --ticket 93` would have written it, and so does
+    `093`, so feat-93-x and feat-93-y are both on it; a ticket that isn't one stays as written, naming no issue."""
+    for branch, ticket in (("feat-93-x", "93"), ("feat-93-y", "093"), ("feat-x", "soon")):
+        repo.add_worktree(branch)
+        card = repo.write_card(branch, "running")
+        card.write_text(
+            card.read_text(encoding="utf-8").replace('ticket: "#42"', f"ticket: {ticket}"), encoding="utf-8"
+        )
+
+    result = tower_state(capsys)
+
+    tickets = {label: row["card"]["ticket"] for label, row in rows(result).items() if row["card"]}  # type: ignore[index]
+    assert tickets == {"feat-93-x": "#93", "feat-93-y": "#93", "feat-x": "soon"}
+    assert result["in_progress"] == {"#93": "running in feat-93-x, running in feat-93-y"}
+
+
+def test_finished_work_and_a_stack_branchs_guess_name_issues_as_github_numbers_them(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """feat-95-x is done with every commit on main (ready to clean up), so #95 is free again; the stack feat-041-a's
+    worktree holds puts #41 and #42 in progress, not #041 and #042."""
+    repo.add_worktree("feat-95-x", commits=0)
+    repo.write_card("feat-95-x", "done", ticket="#95")
+    stack = repo.add_worktree("feat-041-a")
+    git(stack, "commit", "-q", "--allow-empty", "-m", "a")
+    git(repo.main, "branch", "feat-042-b", "feat-041-a")
+    track(repo.main, {"feat-041-a": ("main", None), "feat-042-b": ("feat-041-a", None)})
+
+    result = tower_state(capsys)
+
+    assert rows(result)["feat-95-x"]["status"] == "ready-to-clean"
+    assert result["in_progress"] == {"#41": "in the stack in feat-041-a", "#42": "in the stack in feat-041-a"}
+
+
+def test_a_stack_no_worktree_holds_puts_no_issue_in_progress(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """git-spice can still track branches nobody has checked out: their ticket guesses aren't issues in progress."""
+    git(repo.main, "branch", "fix-45-old")
+    git(repo.main, "branch", "fix-46-old")
+    track(repo.main, {"fix-45-old": ("main", None), "fix-46-old": ("fix-45-old", None)})
+
+    result = tower_state(capsys)
+
+    assert result["stacks"]  # the stack is reported, so in_progress left it out on purpose
+    assert result["in_progress"] == {}
+
+
 def test_a_waiting_session_beats_a_running_card_and_is_named(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     path = repo.add_worktree("feat-8")
     repo.write_card("feat-8", "running")
@@ -444,6 +493,15 @@ def test_the_pane_is_tested_on_tower_states_own_output(repo: Fixture, capsys: py
         "feat-7": "running",
         "feat-8": "needs-you",
         "feat-9": "needs-you",
+    }
+    # Cardless feat-5 is on no issue; feat-1's worktree holds the stack feat-0 (#0) and feat-1 (#1), so both are in it.
+    assert pasted["in_progress"] == {
+        "#3": "needs-you in feat-3",
+        "#7": "running in feat-7",
+        "#8": "needs-you in feat-8",
+        "#9": "needs-you in feat-9",
+        "#0": "in the stack in feat-1",
+        "#1": "in the stack in feat-1",
     }
 
 

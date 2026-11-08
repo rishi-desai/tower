@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive
 
-from tower import cli, gitrepo
+from tower import cli, gitrepo, scan
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
@@ -414,6 +414,37 @@ def test_scan_lists_all_issues_on_your_own_repo(
         "repo: me/repo | you: me\n-- my open PRs --\n- #5 slash work [feat/12-slash] review:none\n"
         "-- open issues (all — your repo) --\n- #1 one [bug]\n- #2 two\n\n== BACKLOG (parked ideas) ==\n- an idea"
     )
+
+
+def test_scan_marks_each_issue_in_progress_with_where_it_runs(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """An issue a card names (hand-edited without its #) is marked after its labels, so the hub skips it; the pane
+    still reads the row's title and labels."""
+    repo.add_worktree("feat-2-x")
+    card = repo.write_card("feat-2-x", "running", ticket="#2")
+    card.write_text(card.read_text(encoding="utf-8").replace('ticket: "#2"', "ticket: 2"), encoding="utf-8")
+    fake_gh(
+        tmp_path,
+        """  "auth status") exit 0 ;;
+  "repo view") echo "me/repo me" ;;
+  "api user") echo me ;;
+  "pr list") ;;
+  "issue list") printf -- '- #12 twelve [ready-for-agent]\\n- #2 two [ready-for-agent] [bug]\\n- #1 one\\n' ;;""",
+    )
+
+    issues = run(capsys, "scan")[1].split("-- open issues (all — your repo) --\n")[1].split("\n\n")[0]
+
+    assert issues == (
+        "- #12 twelve [ready-for-agent]\n- #2 two [ready-for-agent] [bug] [in progress: running in feat-2-x]\n- #1 one"
+    )
+
+
+def test_a_bracket_in_a_branch_name_cant_end_the_in_progress_mark_early() -> None:
+    marked = scan.marked_in_progress("- #2 two [bug]", {"#2": "running in feat-2-a]b"})
+
+    assert marked == "- #2 two [bug] [in progress: running in feat-2-ab]"
+    assert scan.marked_in_progress("- #20 twenty", {"#2": "running in feat-2-x"}) == "- #20 twenty"
 
 
 def test_scan_lists_only_your_issues_on_someone_elses_repo_and_shows_gh_errors(

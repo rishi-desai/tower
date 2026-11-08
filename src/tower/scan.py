@@ -10,7 +10,8 @@ Prints, from anywhere inside the repo:
                    need a restack (stacks.py)
   4. GROUPS        every worktree in the hub's report order (Needs you, Blocked, Running, Waiting on CI or review,
                    Done, Housekeeping), each with the reason for its state, so the hub never regroups
-  5. GITHUB        your open PRs, and open issues (all of them on your own repo, assigned to you otherwise)
+  5. GITHUB        your open PRs, and open issues (all of them on your own repo, assigned to you otherwise), each
+                   issue in progress marked with where it runs (state.issues_in_progress)
   6. BACKLOG       parked ideas waiting for a slot (only used when there's no GitHub)
 
 Sections 1, 3, STACKS and 4 are `tower state`'s report (state.py, the one place a worktree's status is decided), and section 2
@@ -22,6 +23,7 @@ GitHub section (Refresh GitHub), never on its 30-second refresh.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -34,6 +36,7 @@ PR_TEMPLATE = (
 )
 ISSUE_LIMIT = 30  # gh issue list's --limit; the pane shows "+" when a list is this long (SCAN_ISSUE_LIMIT)
 ISSUE_TEMPLATE = '{{range .}}- #{{.number}} {{.title}}{{range .labels}} [{{.name}}]{{end}}{{"\\n"}}{{end}}'
+ISSUE_ROW = re.compile(r"- (#\d+) ")  # the start of a row ISSUE_TEMPLATE prints: its ticket
 
 
 def hub_scan(repo_dir: Path, github: bool = True) -> str:
@@ -53,7 +56,8 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
         lines += sessions.render(report.agents, [(f.label, f.path) for f, _ in report.worktrees])
     lines += ["", *state.orphans_section(report), "", *state.stacks_section(report)]
     lines += ["", *state.groups_section(report), ""]
-    lines += ["== GITHUB ==", *(github_section(repo_dir) if github else ["(skipped: --no-github)"]), ""]
+    github_lines = github_section(repo_dir, state.issues_in_progress(report)) if github else ["(skipped: --no-github)"]
+    lines += ["== GITHUB ==", *github_lines, ""]
     lines.append("== BACKLOG (parked ideas) ==")
     return "\n".join(lines) + "\n" + backlog(folder / "_backlog.md")
 
@@ -80,9 +84,10 @@ def adopt_line(report: state.Report) -> str:
     return f"ADOPT: yes — {'; '.join(reasons)}" if reasons else "ADOPT: no"
 
 
-def github_section(repo_dir: Path) -> list[str]:
+def github_section(repo_dir: Path, in_progress: dict[str, str]) -> list[str]:
     """Your open PRs, and the open issues: all of them on your own repo (tickets from /to-tickets are usually
-    unassigned), only those assigned to you on someone else's (work)."""
+    unassigned), only those assigned to you on someone else's (work). An issue in progress (in_progress, from
+    state.issues_in_progress) is marked with where it runs."""
     if shutil.which("gh") is None:
         return ["(gh not installed — skipping)"]
     if try_gh(repo_dir, "auth", "status")[0] is None:
@@ -104,12 +109,22 @@ def github_section(repo_dir: Path) -> list[str]:
     )  # fmt: skip
     issues = ("issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT), "--json", "number,title,labels")
     if me and owner == me:
-        lines += gh_list(repo_dir, "open issues (all — your repo)", *issues, "--template", ISSUE_TEMPLATE)
+        listed = gh_list(repo_dir, "open issues (all — your repo)", *issues, "--template", ISSUE_TEMPLATE)
     else:
-        lines += gh_list(
+        listed = gh_list(
             repo_dir, "open issues assigned to you", *issues, "--assignee", "@me", "--template", ISSUE_TEMPLATE
         )
-    return lines
+    return lines + [marked_in_progress(line, in_progress) for line in listed]
+
+
+def marked_in_progress(line: str, in_progress: dict[str, str]) -> str:
+    """An issue row, with where it runs after its labels when it's in progress: "- #93 title [bug] [in progress:
+    running in feat-93-x]". The mark is one more bracket at the end, so the pane still reads the title and labels; a
+    "]" in a branch name is dropped from it, or it would end the bracket early."""
+    row = ISSUE_ROW.match(line)
+    if row is None or row[1] not in in_progress:
+        return line
+    return f"{line} [in progress: {in_progress[row[1]].replace(']', '')}]"
 
 
 def gh_list(repo_dir: Path, title: str, *args: str) -> list[str]:

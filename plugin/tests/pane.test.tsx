@@ -3,7 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { StateWorktree, TowerState } from '../types'
-import { inProgressNotes, issuesToShow, parseGithub } from '../hooks/register'
+import { issuesToShow, parseGithub } from '../hooks/register'
 import { SHARED } from './fixtures/tower-state'
 
 // SHARED is `tower state --json`'s real output for the fixture in tests/test_state.py, which checks it: feat-3's card
@@ -324,13 +324,18 @@ test('every open issue is listed, ten at most: ready ones start, the rest are di
 
 test('an issue in progress shows where it runs, with no start or discuss button', async ($, on) => {
   // feat-7's card names #61 (ready for an agent), feat-3's names #60 (not ready); the other issues have no worktree.
-  // The row says the worktree's effective state, not its card's claim: feat-7's card says needs-you, but it runs.
+  // The core's in_progress says the worktree's effective state, not its card's claim: feat-7's card says needs-you,
+  // but it runs.
   const tickets: Record<string, string> = { 'feat-7': '#61', 'feat-3': '#60' }
-  const inProgress = variant(w => {
-    const ticket = tickets[w.label]
-    return w.card && ticket ? { ...w, card: { ...w.card, ticket } } : w
-  })
-  world(on, inProgress)
+  const inProgress = {
+    ...variant(w => {
+      const ticket = tickets[w.label]
+      return w.card && ticket ? { ...w, card: { ...w.card, ticket } } : w
+    }),
+    in_progress: { '#61': 'running in feat-7', '#60': 'needs-you in feat-3' },
+  }
+  const w = world(on, inProgress)
+  w.issues = ISSUES.slice(0, 5) // few enough that the issues in progress get rows after the others
   await $.command.run({ command: 'tower' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'github' })
@@ -344,16 +349,24 @@ test('an issue in progress shows where it runs, with no start or discuss button'
   await ui.unmount()
 })
 
-test("inProgressNotes names each worktree on a ticket and matches whole tickets", () => {
-  const card = SHARED.worktrees.find(w => w.label === 'feat-3')?.card
-  if (!card) throw new Error("the SHARED fixture lost feat-3's card")
-  const state = variant(w => w.label === 'feat-3' || w.label === 'feat-7' ? { ...w, card: { ...card, ticket: '#61' } } : w)
-  const notes = inProgressNotes(state)
-  expect(notes.get('#61')).toBe('needs-you in feat-3, running in feat-7')
-  expect(notes.has('#6')).toBe(false) // #6 isn't #61
-  // Cardless feat-5 is on nothing; feat-1's worktree holds the stack feat-0 (#0) and feat-1 (#1), so both are in it.
-  expect([...inProgressNotes(SHARED).keys()]).toEqual(['#3', '#7', '#8', '#9', '#0', '#1'])
-  expect(inProgressNotes(SHARED).get('#0')).toBe('in the stack in feat-1')
+test('issues in progress take rows only after the ones to start or discuss, and the header counts them apart', async ($, on) => {
+  // Twelve ready-for-agent issues, three of them in progress: the nine startable ones come first, then the newest in
+  // progress; the other two are counted below as in progress.
+  const ready = Array.from({ length: 12 }, (_, i) => `- #${61 - i} ready ${61 - i} [ready-for-agent]`)
+  const in_progress = { '#61': 'running in feat-7', '#58': 'needs-you in feat-3', '#55': 'in the stack in feat-1' }
+  const shown = issuesToShow(parseGithub(['-- open issues (all — your repo) --', ...ready]).issues, in_progress)
+  expect(shown.map(i => i.number)).toEqual(['60', '59', '57', '56', '54', '53', '52', '51', '50', '61'])
+
+  const w = world(on, { ...SHARED, in_progress })
+  w.issues = ready
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'github' })
+  expect(await ui.find({ type: 'Text', text: /^Open issues \(9, plus 3 in progress\): start a ready-for-agent one, discuss the rest$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Button', key: 'start-50' })).toBeTruthy() // the ninth startable one
+  expect(await ui.find({ type: 'Text', text: /^ready 61 · running in feat-7$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^ {2}\+ 2 more in progress$/ })).toBeTruthy()
+  await ui.unmount()
 })
 
 // ---------- interactions ----------
@@ -396,11 +409,14 @@ test('parseGithub reads PRs and every issue, ready or not', () => {
   ])
   expect(github.note).toBe('(gh failed: rate limited)')
   expect(parseGithub(['-- open issues assigned to you --', '(none)']).issues).toEqual([])
+  // `tower scan` marks an issue in progress with one more bracket at the end: the title and labels still read.
+  const marked = parseGithub(['-- open issues (all — your repo) --', '- #2 two [ready-for-agent] [in progress: running in feat-2-x]'])
+  expect(marked.issues).toEqual([{ number: '2', title: 'two', isReady: true }])
 })
 
 test('a ready-for-agent issue older than the newest ten still gets its start button', () => {
   const issues = parseGithub(['-- open issues (all — your repo) --', ...ISSUES.slice(1), '- #12 old but ready [ready-for-agent]']).issues
-  const shown = issuesToShow(issues)
+  const shown = issuesToShow(issues, {})
   expect(shown.map(i => i.number)).toEqual(['12', '60', '59', '58', '57', '56', '55', '54', '53', '52'])
 })
 
