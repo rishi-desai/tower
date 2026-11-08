@@ -56,8 +56,8 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
         lines += sessions.render(report.agents, [(f.label, f.path) for f, _ in report.worktrees])
     lines += ["", *state.orphans_section(report), "", *state.stacks_section(report)]
     lines += ["", *state.groups_section(report), ""]
-    in_progress = state.issues_in_progress(report)
-    lines += ["== GITHUB ==", *(github_section(repo_dir, in_progress) if github else ["(skipped: --no-github)"]), ""]
+    github_lines = github_section(repo_dir, state.issues_in_progress(report)) if github else ["(skipped: --no-github)"]
+    lines += ["== GITHUB ==", *github_lines, ""]
     lines.append("== BACKLOG (parked ideas) ==")
     return "\n".join(lines) + "\n" + backlog(folder / "_backlog.md")
 
@@ -119,9 +119,12 @@ def github_section(repo_dir: Path, in_progress: dict[str, str]) -> list[str]:
 
 def marked_in_progress(line: str, in_progress: dict[str, str]) -> str:
     """An issue row, with where it runs after its labels when it's in progress: "- #93 title [bug] [in progress:
-    running in feat-93-x]". The mark is one more bracket at the end, so the pane still reads the title and labels."""
+    running in feat-93-x]". The mark is one more bracket at the end, so the pane still reads the title and labels; a
+    "]" in a branch name is dropped from it, or it would end the bracket early."""
     row = ISSUE_ROW.match(line)
-    return f"{line} [in progress: {in_progress[row[1]]}]" if row and row[1] in in_progress else line
+    if row is None or row[1] not in in_progress:
+        return line
+    return f"{line} [in progress: {in_progress[row[1]].replace(']', '')}]"
 
 
 def gh_list(repo_dir: Path, title: str, *args: str) -> list[str]:

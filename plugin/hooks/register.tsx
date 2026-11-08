@@ -503,8 +503,14 @@ export const register: Register = on => {
     // An issue in progress gets no button: its number, then where it runs after its title ("… · running in feat-93-x").
     const inProgress = state.in_progress ?? {} // an older core reports none
     const shownIssues = issuesToShow(issues, inProgress)
-    const moreIssues = issues.length - shownIssues.length
     const runningIssues = issues.filter(i => isInProgress(i, inProgress)).length
+    // Below the rows, the hidden ones: "+ 2 more", "+ 2 more in progress", or both, as the header counts them.
+    const hiddenRunning = runningIssues - shownIssues.filter(i => isInProgress(i, inProgress)).length
+    const hiddenOpen = issues.length - shownIssues.length - hiddenRunning
+    const moreIssues = [
+      hiddenOpen > 0 ? `${hiddenOpen}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more` : '',
+      hiddenRunning > 0 ? `${hiddenRunning} more in progress` : '',
+    ].filter(Boolean).join(', ')
     let hotkey = 0 // 1-9 on the Needs you rows
     const nextHotkey = () => (hotkey < 9 ? String(++hotkey) : undefined)
 
@@ -601,7 +607,7 @@ export const register: Register = on => {
             <Text wrap="wrap">{[issue.title, inProgress[`#${issue.number}`]].filter(Boolean).join(' · ')}</Text>
           </Box>
         ))}
-        {moreIssues > 0 && <Text>{`  + ${moreIssues}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more`}</Text>}
+        {moreIssues && <Text>{`  + ${moreIssues}`}</Text>}
         {storedGithub && <Text italic>{`as of ${clockTime(storedGithub.at)}`}</Text>}
 
         {gap()}

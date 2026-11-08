@@ -351,7 +351,7 @@ test('an issue in progress shows where it runs, with no start or discuss button'
 
 test('issues in progress take rows only after the ones to start or discuss, and the header counts them apart', async ($, on) => {
   // Twelve ready-for-agent issues, three of them in progress: the nine startable ones come first, then the newest in
-  // progress; the other two are counted below.
+  // progress; the other two are counted below as in progress.
   const ready = Array.from({ length: 12 }, (_, i) => `- #${61 - i} ready ${61 - i} [ready-for-agent]`)
   const in_progress = { '#61': 'running in feat-7', '#58': 'needs-you in feat-3', '#55': 'in the stack in feat-1' }
   const shown = issuesToShow(parseGithub(['-- open issues (all — your repo) --', ...ready]).issues, in_progress)
@@ -365,7 +365,7 @@ test('issues in progress take rows only after the ones to start or discuss, and 
   expect(await ui.find({ type: 'Text', text: /^Open issues \(9, plus 3 in progress\): start a ready-for-agent one, discuss the rest$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Button', key: 'start-50' })).toBeTruthy() // the ninth startable one
   expect(await ui.find({ type: 'Text', text: /^ready 61 · running in feat-7$/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /^ {2}\+ 2 more$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^ {2}\+ 2 more in progress$/ })).toBeTruthy()
   await ui.unmount()
 })
 

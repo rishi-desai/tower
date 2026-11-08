@@ -79,9 +79,9 @@ def test_a_busy_worker_with_a_stale_needs_you_card_is_running(
 def test_a_hand_edited_ticket_is_read_as_card_write_writes_it(
     repo: Fixture, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`ticket: 93` (no #, unquoted) names #93, as `tower card write --ticket 93` would have written it, so feat-93-x
-    and feat-93-y are both on it; a ticket that isn't one stays as written, naming no issue."""
-    for branch, ticket in (("feat-93-x", "93"), ("feat-93-y", '"#93"'), ("feat-x", "soon")):
+    """`ticket: 93` (no #, unquoted) names #93, as `tower card write --ticket 93` would have written it, and so does
+    `093`, so feat-93-x and feat-93-y are both on it; a ticket that isn't one stays as written, naming no issue."""
+    for branch, ticket in (("feat-93-x", "93"), ("feat-93-y", "093"), ("feat-x", "soon")):
         repo.add_worktree(branch)
         card = repo.write_card(branch, "running")
         card.write_text(
@@ -93,6 +93,18 @@ def test_a_hand_edited_ticket_is_read_as_card_write_writes_it(
     tickets = {label: row["card"]["ticket"] for label, row in rows(result).items() if row["card"]}  # type: ignore[index]
     assert tickets == {"feat-93-x": "#93", "feat-93-y": "#93", "feat-x": "soon"}
     assert result["in_progress"] == {"#93": "running in feat-93-x, running in feat-93-y"}
+
+
+def test_a_stack_no_worktree_holds_puts_no_issue_in_progress(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
+    """git-spice can still track branches nobody has checked out: their ticket guesses aren't issues in progress."""
+    git(repo.main, "branch", "fix-45-old")
+    git(repo.main, "branch", "fix-46-old")
+    track(repo.main, {"fix-45-old": ("main", None), "fix-46-old": ("fix-45-old", None)})
+
+    result = tower_state(capsys)
+
+    assert result["stacks"]  # the stack is reported, so in_progress left it out on purpose
+    assert result["in_progress"] == {}
 
 
 def test_a_waiting_session_beats_a_running_card_and_is_named(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:

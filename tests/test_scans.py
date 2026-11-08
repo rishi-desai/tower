@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive
 
-from tower import cli, gitrepo
+from tower import cli, gitrepo, scan
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
@@ -438,6 +438,13 @@ def test_scan_marks_each_issue_in_progress_with_where_it_runs(
     assert issues == (
         "- #12 twelve [ready-for-agent]\n- #2 two [ready-for-agent] [bug] [in progress: running in feat-2-x]\n- #1 one"
     )
+
+
+def test_a_bracket_in_a_branch_name_cant_end_the_in_progress_mark_early() -> None:
+    marked = scan.marked_in_progress("- #2 two [bug]", {"#2": "running in feat-2-a]b"})
+
+    assert marked == "- #2 two [bug] [in progress: running in feat-2-ab]"
+    assert scan.marked_in_progress("- #20 twenty", {"#2": "running in feat-2-x"}) == "- #20 twenty"
 
 
 def test_scan_lists_only_your_issues_on_someone_elses_repo_and_shows_gh_errors(
