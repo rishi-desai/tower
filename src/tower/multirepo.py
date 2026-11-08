@@ -28,6 +28,7 @@ NO_CHECKOUT = (
     "(no checkout of this project tower could read: none in the event log yet, or its folder moved or is gone"
     " (see NOTE); start a session there, or run tower state --repo)"
 )
+NO_LEDGER = "Ledger folder unknown (see NOTE)"  # a repo heading's Ledger field when tower.conf can't say where it is
 GONE_LISTED = 5  # the "folder is gone" note names this many paths, then counts the rest: the log is never pruned
 
 
@@ -212,8 +213,8 @@ def to_json(report: AllReport) -> dict[str, object]:
 
 def render_text(report: AllReport) -> str:
     """The report as `tower state --all` prints it: an ALL REPOS summary, then each repo's own `tower state` sections
-    under a `== REPO: <name> ==` line, or a cards-only project's cards under `== CARDS ONLY: <name> ==`, most urgent
-    first (a cards-only project ranks by what its cards claim)."""
+    under a `== REPO: <name> | <main checkout> | <ledger> ==` line, or a cards-only project's cards under
+    `== CARDS ONLY: <name> | <ledger> ==`, most urgent first (a cards-only project ranks by what its cards claim)."""
     entries: list[state.Report | CardsOnly] = sorted([*report.repos, *report.cards_only], key=urgency)
     out = ["== ALL REPOS (most urgent first) =="]
     out += [summary_row(entry) for entry in entries]
@@ -240,7 +241,8 @@ def summary_row(entry: state.Report | CardsOnly) -> str:
 
 
 def entry_section(entry: state.Report | CardsOnly) -> list[str]:
-    """A repo's own `tower state` sections, or a cards-only project's cards, under its heading line."""
+    """A repo's own `tower state` sections, or a cards-only project's cards, under its heading line. A repo's heading
+    names its Ledger folder, so the hub can open <Ledger>/<card_file> for a row."""
     if isinstance(entry, CardsOnly):
         rows = [f"- {state.cell(o.name)} | card: {state.cell(o.status) or '?'} | {o.path}" for o in entry.cards]
         return [
@@ -248,4 +250,6 @@ def entry_section(entry: state.Report | CardsOnly) -> list[str]:
             NO_CHECKOUT,
             *rows,
         ]
-    return [f"== REPO: {state.cell(entry.repo)} | {entry.main_checkout} ==", state.render_text(entry).rstrip("\n")]
+    ledger_field = entry.ledger if entry.ledger is not None else NO_LEDGER
+    heading = f"== REPO: {state.cell(entry.repo)} | {entry.main_checkout} | {ledger_field} =="
+    return [heading, state.render_text(entry).rstrip("\n")]

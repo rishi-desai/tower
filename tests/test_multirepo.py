@@ -160,12 +160,13 @@ def test_the_hub_report_groups_each_repo_and_lists_the_urgent_one_first(
     assert summary[1].startswith("- repo | needs-you: 0 | blocked: 0 | running: 1 |")
     assert "WIP across repos: 2 (the limit counts per repo)" in summary
 
-    other_report = section(text, f"== REPO: other | {other} ==")
+    other_ledger = repo.ledger.parent.parent / "other" / "Ledger"
+    other_report = section(text, f"== REPO: other | {other} | {other_ledger} ==")
     assert group(other_report, "NEEDS YOU") == [
         "- fix-2 | ticket: #2 | session asker is waiting on you (input needed); the card says running"
     ]
     assert group(other_report, "RUNNING") == ["(none)"]
-    repo_report = section(text, f"== REPO: repo | {repo.main} ==")
+    repo_report = section(text, f"== REPO: repo | {repo.main} | {repo.ledger} ==")
     assert group(repo_report, "NEEDS YOU") == ["(none)"]
     assert group(repo_report, "RUNNING") == ["- feat-1 | ticket: #42 | session builder is busy"]
     assert text.index("== REPO: other") < text.index("== REPO: repo")
@@ -304,3 +305,36 @@ def test_the_gone_note_names_five_folders_and_counts_the_rest(
     assert len(gone) == 1
     assert gone[0].startswith("skipped 7 repos from the event log whose folder is gone: ")
     assert gone[0].endswith("deleted-4 and 2 more")
+
+
+def test_each_repo_heading_names_its_ledger_so_the_hub_can_open_a_rows_card_file(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each WORKTREES row names its card_file; the hub opens <Ledger>/<card_file>, so the heading names the Ledger."""
+    repo.add_worktree("feat-1")
+    repo.write_card("feat-1", "needs-you")
+    log_event(repo, repo.main)
+
+    assert cli.main(["state", "--all"]) == 0
+    text = capsys.readouterr().out
+
+    heading = next(line for line in text.splitlines() if line.startswith("== REPO: repo |"))
+    assert heading == f"== REPO: repo | {repo.main} | {repo.ledger} =="
+    ledger_folder = Path(heading.removesuffix(" ==").split(" | ")[2])
+    row = next(r for r in section(text, heading) if r.startswith("- feat-1 |"))
+    card_file = next(f.removeprefix("card_file: ") for f in row.split(" | ") if f.startswith("card_file: "))
+    assert "status: needs-you" in (ledger_folder / card_file).read_text(encoding="utf-8")
+
+
+def test_a_repo_with_no_ledger_folder_says_so_in_its_heading(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """tower.conf can't say where the repo's Ledger is: the heading says so, and the repo's own NOTE says why."""
+    monkeypatch.setenv("TOWER_CONF", str(repo.agents_json.parent / "missing.conf"))
+
+    assert cli.main(["state", "--all"]) == 0
+    text = capsys.readouterr().out
+
+    heading = f"== REPO: repo | {repo.main} | Ledger folder unknown (see NOTE) =="
+    assert heading in text.splitlines()
+    assert any(line.startswith("NOTE: ") and "so no cards were read" in line for line in section(text, heading))
