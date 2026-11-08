@@ -1594,6 +1594,7 @@ SETUP_OR_POLICY_MODULE_READS = [
     "git log -p setup.sh",
     "git show HEAD -- setup.sh",
     "git status setup.sh",
+    "git blame setup.sh",
     "git add setup.sh src/tower/policy.py",
     "wc -l setup.sh 2>/dev/null",  # 2>/dev/null isn't a copy into a file
     "grep def src/tower/policy.py",
@@ -1646,6 +1647,10 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "sed -n 'w x.sh' setup.sh",
     "sed -n 'w x.sh' -e 1p setup.sh",
     "awk 'BEGIN{system(\"./setup.sh\")}'",
+    # awk or sed reading its program from standard input, which names or writes setup.sh
+    "awk -f - <<'EOF'\nBEGIN{system(\"./setup.sh\")}\nEOF",
+    "awk -f /dev/stdin <<'EOF'\nBEGIN{print > \"setup.sh\"}\nEOF",
+    "sed -f - setup.sh <<'EOF'\nw x.sh\nEOF",
     "python3 -c 'import os; os.system(\"./setup.sh --profile sandbox\")'",
     "python3 <<'EOF'\nimport os\nos.system('./setup.sh')\nEOF",
     "python3 <<'EOF'\nfrom tower import policy\npolicy.use('sandbox')\nEOF",
@@ -1662,7 +1667,7 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "git diff --output=src/tower/policy.py HEAD",
     "dd of=setup.sh if=/dev/null",
     "dd of=src/tower/policy.py",
-    "python3 -c 'open(\"src/tower/policy.py\", \"w\").write(\"x\")'",
+    'python3 -c \'open("src/tower/policy.py", "w").write("x")\'',
 ]
 
 
@@ -1689,12 +1694,14 @@ def test_running_setup_sh_or_using_the_policy_module_asks(tmp_path: Path, profil
     "command",
     [
         pytest.param("echo " + "diff." * 40000 + "; ./setup.sh --profile sandbox", id="git config key scan"),
-        pytest.param("sed -n 'p" + "\n" * 40000 + "x' README.md; ./setup.sh", id="sed print script"),
+        # one sed command, so sed_only_prints runs its scanner over 40000 print statements; the w makes it ask
+        pytest.param("sed -n '" + "p;" * 40000 + "w x.sh' setup.sh", id="sed print script"),
     ],
 )
 def test_the_setup_sh_check_stays_linear_on_crafted_lines(tmp_path: Path, command: str) -> None:
     """The git-config-key and sed-print-script checks run on the whole line before the work budget is charged, so a
-    backtracking one (the first drafts had both) would run past the hook timeout and let the line through unchecked."""
+    backtracking one (the first drafts had both) would run past the hook timeout and let the line through unchecked.
+    The sed case is one command so read_only_words reaches sed_only_prints, which the scanner is in."""
     start = time.monotonic()
     assert asks(tower_checkout_decision(tmp_path, command, "sandbox"))
     assert time.monotonic() - start < 10

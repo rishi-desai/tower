@@ -44,3 +44,7 @@ them — a known limit, below).
   module is known by its repo path, and a bare `policy.py` is too common to claim. A sed `w`/`r` filename inside the
   script word is likewise not parsed, nor is a path a program builds at run time (`open(os.path.join(...), "w")`); a
   literal `src/tower/policy.py` or `setup.sh` in interpreter code is caught.
+- Reading the file's contents into a variable or substitution and then executing them (`read x < setup.sh; eval "$x"`,
+  `eval "$(< setup.sh)"`) isn't caught: the `< setup.sh` is an input redirect, and the hook can't trace that data into
+  the later `eval`. A reader piped straight into a shell (`cat setup.sh | bash`) is caught, since that is one
+  pipeline. `rg` and `ag` searches ask (not whitelisted, above), as does any read in a pipeline or compound line.

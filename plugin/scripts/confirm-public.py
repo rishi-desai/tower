@@ -2095,8 +2095,9 @@ FILE_READERS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "nl", "od
 FILE_READERS |= {"diff", "cmp"}
 # git subcommands that only read, stage or show the files their operands name. grep (its -O opens files in a pager),
 # commit (its -F/-t go to the editor) and the rest are left out, so they ask: a clean git line with one of these and a
-# setup.sh operand is the only git read that passes.
-GIT_FILE_READERS = {"add", "diff", "log", "ls-files", "show", "status"}
+# setup.sh operand is the only git read that passes. (rg and ag aren't here: ripgrep's --pre runs a program per file,
+# so a search tool needs its own option filtering, like git's, before it could be trusted.)
+GIT_FILE_READERS = {"add", "blame", "diff", "log", "ls-files", "show", "status"}
 # git options, after the subcommand, that hand a file to a program or write git's output to a file: --ext-diff,
 # --textconv, --output and grep's -O/--open-files-in-pager, with any unambiguous prefix git accepts (--ext, --out).
 GIT_DANGEROUS_OPTION = re.compile(r"-O|--open|--ext|--text|--out")
@@ -2321,9 +2322,9 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
     in_tower = "tower" in cwd.lower()
 
     def code_after(start: int) -> list[str]:
-        """The unread words after word START, and for an interpreter its standard input: the code a program there may
-        run (standard input is only data to sed or awk)."""
-        stdin = [command.stdin_text or ""] if interpreters else []
+        """The unread words after word START, and standard input: the code a program there may run. awk and sed read
+        their program from standard input with `-f -`, so it is scanned too, not only an interpreter's."""
+        stdin = [command.stdin_text or ""] if interpreters or code_runners else []
         return [texts[index] for index in unread if index > start] + stdin
 
     # The first program that runs code sees all the later ones' code too, so one look at it is enough.
