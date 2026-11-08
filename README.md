@@ -218,7 +218,9 @@ PR change.
   with every failed check named. The rest get their terminals closed, the worktree removed (through Orca when it
   manages it, else `git worktree remove`), the branch deleted locally and on GitHub (unless an open PR is based on it),
   and the card moved to `Ledger/_archive/`; then the main checkout runs `git pull --ff-only`. `--dry-run` only checks
-  and lists what would go. Under the policy's `cleanup = "ask"` the hub shows that list and the real run asks once;
+  and lists what would go. If a cleanup stopped after the worktree went (its card is still in the Ledger), `tower clean
+  <branch>` finishes it: it checks the PR is merged at the branch's head, then deletes the branch, archives the card
+  and pulls. Under the policy's `cleanup = "ask"` the hub shows that list and the real run asks once;
   under `"auto"` it just runs. Why it works this way: `docs/adr/0006-tower-clean-checks-then-removes-and-the-hook-judges-it.md`.
 - Stopping for the day: `/handoff` in any session you'll resume. The cards stay either way.
 - Want an agent to remember a preference for this project? Say **"remember for this project: use pytest fixtures"**. It asks before saving it to `~/.claude/tower/rules/`.
