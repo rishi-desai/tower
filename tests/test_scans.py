@@ -253,6 +253,7 @@ def test_adopt_scan_reports_each_worktree_like_the_bash_version(
         ("release/2/fix-42", "#42"),  # a number before a / is a folder, not the ticket
         ("2026/11/notes", "none"),
         ("feature-42-login", "#42"),
+        ("add-feature-2-step", "none"),
         ("feat/42-x", "#42"),
         ("rishi-desai/fix-64-x", "#64"),
         ("42-x", "#42"),

@@ -13,9 +13,9 @@ from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
 # Words that name a ticket when a number follows (fix-42), even behind one user or version prefix (rishi-fix-64).
-TICKET_WORDS = {"issue", "gh", "feat", "feature", "fix", "bugfix", "chore", "refactor", "bug", "hotfix"}
+TICKET_WORDS = {"issue", "gh", "feat", "fix", "chore", "refactor", "bug", "hotfix"}
 # Types that are everyday words too (node-build-18, flaky-test-2), so they name one only starting the name or a /-part.
-TYPE_WORDS = TICKET_WORDS | {"docs", "test", "perf", "ci", "build", "spike"}
+TYPE_WORDS = TICKET_WORDS | {"feature", "bugfix", "docs", "test", "perf", "ci", "build", "spike"}
 NUMBER = re.compile(r"[0-9]+")
 YEAR = re.compile(r"(?:19|20)[0-9][0-9]")
 MONTH = re.compile(r"0?[1-9]|1[0-2]")
