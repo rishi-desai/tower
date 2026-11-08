@@ -12,13 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
-# A ticket guess takes the number after an issue word or a known type, even behind a user or version prefix
+# A ticket guess takes the number after an issue word or a known type, even behind one user or version prefix
 # (issue-42, rishi-fix-64, v2-fix-42), or a bare number (42-x), so release-2026-11 isn't #2026. A year-month never is one.
 _TICKET_WORDS = r"issue|gh|feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix"
-_YEAR_MONTH = r"\d{4}-(?:0?[1-9]|1[0-2])(?:-|$)"
+_YEAR_MONTH = r"(?:19|20)\d\d-(?:0?[1-9]|1[0-2])(?:-|$)"
 BRANCH_TICKET = re.compile(
-    rf"(?:(?:^|[-/])(?:{_TICKET_WORDS})[-/]"  # after an issue word or a type, which may follow a - or / prefix
-    rf"|(?:^|/))"  # or a bare number starting the name or a /-part
+    r"(?:^|/)"  # starting the name or a /-part,
+    rf"(?:(?:[^-/]+-)?(?:{_TICKET_WORDS})[-/])?"  # after an issue word or a type, behind at most one prefix, or bare
     rf"(?!{_YEAR_MONTH})(\d+)(?:-|$)"
 )
 
