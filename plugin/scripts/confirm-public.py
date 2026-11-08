@@ -71,12 +71,15 @@ build a path at run time), and any one in a line that may make a link (ln).
 
 Reading tower's setup.sh isn't running it: a word naming it counts unless its program only reads that word, as an
 argument of cat, grep or another read-only program, an operand of a git subcommand that only reads, stages or
-commits files (diff, log, show, add, ...), or an input file of sed with only options that print. Anything else may
-run it: the program itself or a wrapper's, a shell's script, find, xargs, a git subcommand that runs commands (bisect
-run, rebase -x), a -c setting before git's subcommand, an assignment (its variable can run it later), and a reader
-that writes its output into a file (a copy that runs under another name). Code for python, node, awk, sed and the
-like, a heredoc's included, runs setup.sh wherever it mentions it, and uses the policy module wherever it imports it.
-Writing setup.sh or src/tower/policy.py isn't judged: neither changes the policy until something runs it, which asks.
+commits files (diff, log, show, add, ...), or any word of a sed whose scripts only print lines (1,20p, /re/p).
+Anything else may run it: the program itself or a wrapper's, a shell's script, find, xargs, a git subcommand that
+runs commands (bisect run, rebase -x), git after a -c setting or in a line that can make it hand files to a program
+(an external diff, a pager, grep -O: GIT_HANDS_FILES), an assignment (its variable can run it later), and a reader
+whose output goes into a file (a copy that runs under another name) or becomes another command's words ($( ),
+backticks, <( )). Code for python, node, awk, sed and the like, a heredoc's included, runs setup.sh wherever it
+mentions it, and uses the policy module wherever it imports it. A write to setup.sh or src/tower/policy.py isn't a
+reason to ask by itself: neither changes the policy until something runs it, and a program that isn't a known reader
+asks when it names setup.sh because it may run it, whatever else it does (cp, tee, sed -i).
 
 Rule files are standing instructions loaded into every session, tower.conf and the policy file set the approvals
 above, and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook
@@ -130,10 +133,10 @@ Limits: this sees only the command text. These are not caught:
   - the safety floor sees only the command, so a protected file reached by a path built at run time (pieces joined
     in python, a glob of a .claude/tower folder, a copy or unpack into the folder above .claude, a symlink
     inside it, a hard link, an argument folder written as an option's value glued to another option) isn't
-    caught, and neither is setup.sh run by a name or text a reader prints (bash "$(ls setup.sh)", cat setup.sh piped
-    into python code that runs what it reads), like one run through a glob or a variable set outside the command.
-    Claude
-    Code's own permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
+    caught, and neither is setup.sh run by code that a reader pipes it into (python code that runs what it
+    reads), by git under config set outside the command that hands files to a program (diff.external, a
+    textconv or filter, a pager), or through a glob or a variable set outside the command. Claude Code's own
+    permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
   - Claude Code run another way to turn tower's plugin off (npx @anthropic-ai/claude-code, a script), a
     nested session started with hooks off (claude --bare, --settings with disableAllHooks; #87), and an edit
     of the installed plugin's own files under ~/.claude/plugins/.
@@ -532,6 +535,10 @@ class Word:
     dynamic: bool = False  # holds an expansion ($x, $(...), `...`, $'...'), so its value is only known at run time
 
 
+# A redirect's target that is another file descriptor (2>&1, >&-), not a file.
+DESCRIPTOR = re.compile(r"\d+|-")
+
+
 @dataclass
 class Redirect:
     """One redirection of a simple command: its operator (>, >>, <, ...) and its target."""
@@ -544,6 +551,13 @@ class Redirect:
         """Whether it opens its target for writing (>, >>, >|, &>, <>)."""
         return ">" in self.operator
 
+    @property
+    def writes_file(self) -> bool:
+        """Whether it writes into a file a later command can read or run: not /dev/null or another file descriptor
+        (2>&1, >&-)."""
+        is_descriptor = self.operator.endswith("&") and bool(DESCRIPTOR.fullmatch(self.target.text))
+        return self.writes and self.target.text != "/dev/null" and not is_descriptor
+
 
 @dataclass
 class SimpleCommand:
@@ -553,6 +567,7 @@ class SimpleCommand:
     redirects: list[Redirect] = field(default_factory=list)
     stdin_text: str | None = None  # the bodies of the heredocs (<<) and here-strings (<<<) it reads
     piped: bool = False  # it reads the output of the command before it in a pipeline
+    substituted: bool = False  # it runs inside $( ), backticks or <( ): its output becomes another command's words
 
 
 @dataclass
@@ -663,8 +678,10 @@ class CommandSplitter:
             at_command_start = not command.words
 
     def finish(self, command: SimpleCommand, keep_pipe: bool = False) -> SimpleCommand:
-        """Record COMMAND if it has words and return a fresh one, still reading COMMAND's pipe if KEEP_PIPE."""
+        """Record COMMAND if it has words and return a fresh one, still reading COMMAND's pipe if KEEP_PIPE. Inside a
+        $( ) or <( ) (a level past the line's own), COMMAND is substituted."""
         if command.words or command.redirects:
+            command.substituted = command.substituted or self.level > 1
             self.commands.append(command)
         return SimpleCommand(piped=keep_pipe and command.piped)
 
@@ -814,7 +831,7 @@ class CommandSplitter:
                 inner.append(char)
                 index += 1
         self.pos = index + 1
-        self.commands.extend(split_commands("".join(inner)))
+        self.commands.extend(mark_substituted(split_commands("".join(inner))))
         return self.src[start : self.pos]
 
     def read_process_substitution(self) -> Word:
@@ -877,7 +894,7 @@ class CommandSplitter:
             if heredoc.expanded:
                 expansions = CommandSplitter(body)
                 expansions.split_expansions()
-                self.commands.extend(expansions.commands)
+                self.commands.extend(mark_substituted(expansions.commands))  # all from the body's $( ) and backticks
         self.heredocs = waiting
 
     def split_expansions(self) -> None:
@@ -892,6 +909,13 @@ class CommandSplitter:
                 self.read_backtick()
             else:
                 self.pos += 1
+
+
+def mark_substituted(commands: list[SimpleCommand]) -> list[SimpleCommand]:
+    """COMMANDS, split from a backtick or a heredoc body's $( ) by a splitter of their own, marked substituted."""
+    for command in commands:
+        command.substituted = True
+    return commands
 
 
 def add_stdin(command: SimpleCommand, text: str) -> None:
@@ -930,6 +954,7 @@ class CommandChecker:
         self.names_git_env = False  # the line names GIT_DIR, GIT_WORK_TREE or GIT_COMMON_DIR: git at another repo
         self.git_config_from_env = False  # the line sets GIT_CONFIG_*, HOME, ...: git config the hook can't read
         self.makes_links = False  # the line may run ln: the safety floor judges tower's file names by text
+        self.git_hands_files = False  # the line may make git hand the files it reads to a program (GIT_HANDS_FILES)
         self.cds_by_name = False  # the line cds to a bare name, which CDPATH or zsh's cdpath may send anywhere
 
     def spend(self, units: int) -> None:
@@ -950,6 +975,7 @@ class CommandChecker:
         self.names_gh_env = bool(GH_ENV_MENTION.search(command_line))
         self.names_git_env = bool(GIT_ENV_MENTION.search(command_line))
         self.makes_links = bool(LINK_MENTION.search(command_line))
+        self.git_hands_files = bool(GIT_HANDS_FILES.search(command_line))
         found = self.check(command_line)
         return found + [reason for reason in self.merge_reasons() if reason not in found]
 
@@ -971,7 +997,10 @@ class CommandChecker:
         reasons: list[str] = []
         for command in commands:
             searched = [Word("a bare cd target", dynamic=True)] if self.cds_by_name else []
-            found = protected_reasons(command, self.cwd, self.folders + searched, self.spend, self.makes_links)
+            # git may hand files to a program, or run under config the hook can't read or another repo's
+            git_may_hand_files = self.git_hands_files or self.git_config_from_env or self.names_git_env
+            folders = self.folders + searched
+            found = protected_reasons(command, self.cwd, folders, self.spend, self.makes_links, git_may_hand_files)
             for index in range(len(command.words)):
                 found += self.check_invocation(command, index, depth)
             reasons += [reason for reason in found if reason not in reasons]
@@ -2050,17 +2079,29 @@ POLICY_CODE = re.compile(
 # Programs whose code can run setup.sh wherever it names it: PATH_BUILDERS' (awk's system()) and sed's (GNU's e).
 SETUP_CODE_PROGRAMS = PATH_BUILDERS | {"sed"}
 # git subcommands that read, stage or commit the files their operands name and take no option whose separate value is
-# a command to run (git grep's pager is -O<pager>, one word with the option): a setup.sh operand of one is a file.
+# a command to run (git grep's pager is -O<pager>, one word with the option): a setup.sh operand of one is a file,
+# unless the line can make git hand it to a program (GIT_HANDS_FILES).
 GIT_FILE_READERS = {"add", "blame", "commit", "diff", "grep", "log", "ls-files", "show", "status"}
-# sed's options that only change what it prints, GNU's and BSD's; any other (-i edits in place, -f reads its script
-# from a file, GNU's -l takes a value) may make an operand its script or a file it writes.
+# Bash text that can make git hand the files it reads to a program, or write its output into a file: an external
+# diff, a diff driver's command or textconv, a clean/smudge filter or a pager (variables by their names, config keys
+# in any case), git grep -O (alone or after other short options) and --output. --no-pager isn't one.
+GIT_HANDS_FILES = re.compile(
+    r"GIT_EXTERNAL_DIFF|PAGER"
+    r"|(?i:diff\.\S*(?:external|command|textconv)|filter\.\S*(?:clean|smudge|process)|\bpager\.|core\.pager)"
+    r"|(?<!\S)-[A-Za-z]*O|--open-files-in-pager|--ext-diff|--textconv|--output"
+)
+# sed's options that take no value and can't make it edit a file, write one or read its script from one, GNU's and
+# BSD's; any other (-i, -f, GNU's -l with its value) may make an operand its script or a file it writes.
 SED_SWITCHES = re.compile(
     r"-[nErsuz]+|--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox)"
 )
 # sed's -e/--expression, which gives its script: attached (-e1p, -ne1p, --expression=1p) or as the next word.
 SED_EXPRESSION = re.compile(r"-[nErsuz]*e(?P<short>.+)?|--expression(?P<long>=.*)?")
-# A redirect's target that is another file descriptor (2>&1, >&-), not a file.
-DESCRIPTOR = re.compile(r"\d+|-")
+# A sed script that only prints, deletes or quits on lines picked by number, $ or a /regex/ (1,20p; /^def /p; 5q), so
+# it can't run a command (GNU's e) or write a file (w); a regex holding a / or \ isn't read, so it doesn't count.
+SED_ADDRESS = r"(?:\d+|\$|/[^/\\\n]*/)"
+SED_PRINT_COMMAND = rf"(?:{SED_ADDRESS}(?:,{SED_ADDRESS})?)?[pdq=]"
+SED_PRINT_SCRIPT = re.compile(rf"\s*{SED_PRINT_COMMAND}(?:\s*[;\n]\s*{SED_PRINT_COMMAND})*\s*;?\s*")
 
 
 def check_protected_edit(file_path: str) -> str | None:
@@ -2147,18 +2188,24 @@ def folder_arguments(words: list[Word], bases: list[Word], spend: Callable[[int]
 
 
 def protected_reasons(
-    command: SimpleCommand, cwd: str, folders: list[Word], spend: Callable[[int], None], by_text: bool
+    command: SimpleCommand,
+    cwd: str,
+    folders: list[Word],
+    spend: Callable[[int], None],
+    by_text: bool,
+    git_may_hand_files: bool,
 ) -> list[str]:
-    """Reasons to ask because COMMAND names a rule file or one of tower's files, judged on its words and redirect
-    targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf, the policy
-    file and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any other
-    program naming them, asks, and so does a write to a path under .claude whose text is only known at run time
+    """Reasons to ask because COMMAND may change tower's policy (see changes_policy, which GIT_MAY_HAND_FILES goes to:
+    the line may make git hand files to a program), or names a rule file or one of tower's files, judged on its words
+    and redirect targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf,
+    the policy file and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any
+    other program naming them, asks, and so does a write to a path under .claude whose text is only known at run time
     ($HOME, $'...'), and so does a non-read program naming a .claude folder itself. A path ending in tower.conf or
     policy.toml names them only when it resolves to them from CWD, the session's folder (see changes_policy), or one
     of FOLDERS the line cds into (see names_tower_file); in code for an interpreter or a PATH_BUILDERS program, which
     can build any path, or when BY_TEXT (the line may make a link), the name alone does. Each lookup on disk is paid
     for with SPEND, which raises TooComplex once the budget is gone."""
-    if changes_policy(command, cwd):
+    if changes_policy(command, cwd, git_may_hand_files):
         return [POLICY_COMMAND_REASON]
     if turns_tower_off(command.words):
         return [TOWER_PLUGIN_REASON]
@@ -2210,34 +2257,39 @@ def protected_reasons(
     return [] if reads_only else [TOWER_FILE_REASON]  # only assignments (their $( ) are checked alone), or a read
 
 
-def changes_policy(command: SimpleCommand, cwd: str) -> bool:
+def changes_policy(command: SimpleCommand, cwd: str, git_may_hand_files: bool) -> bool:
     """Whether a simple COMMAND may change tower's policy: run `tower policy use` (a word naming tower, then `policy`,
     then `use` or a word from a variable: `uv run tower ...`, `python3 -m tower ...` and run-tower.py all count), give
     python, node or another interpreter code (in its words or a heredoc) that uses tower's policy module or runs
     `tower policy use`, or run tower's setup.sh for anything but --dry-run or --help, since it rewrites tower.conf and
     can set the profile from its prompt. setup.sh is tower's when named with a path holding "tower", or from a session
-    folder (CWD) that does. A word naming it runs it unless the program only reads that word (see setup_reads: grep
-    setup.sh, git diff -- setup.sh), and code for an interpreter, sed or a PATH_BUILDERS program runs it wherever the
-    code mentions it, since code can build the path and run it."""
+    folder (CWD) that does. A word naming it runs it unless the program only reads that word (see read_only_words;
+    GIT_MAY_HAND_FILES: the line may make git hand files to a program), and code for an interpreter, sed or a
+    PATH_BUILDERS program runs it wherever the code mentions it, since code can build the path and run it."""
     words = command.words
     texts = [word.text for word in words]
-    reads = setup_reads(command)
+    reads = read_only_words(command, git_may_hand_files)
     unread = [index for index in range(len(words)) if index not in reads]
-    languages = [index for index in unread if LANGUAGE_RUNNER.fullmatch(program_name(words[index]))]
-    coders = [index for index in unread if index in languages or program_name(words[index]) in SETUP_CODE_PROGRAMS]
+    interpreters = [index for index in unread if LANGUAGE_RUNNER.fullmatch(program_name(words[index]))]
+    code_runners = [i for i in unread if i in interpreters or program_name(words[i]) in SETUP_CODE_PROGRAMS]
+    in_tower = "tower" in cwd.lower()
 
     def code_after(start: int) -> list[str]:
-        """The unread words after word START, and standard input's text: the code a program there may run."""
-        return [texts[index] for index in unread if index > start] + [command.stdin_text or ""]
+        """The unread words after word START, and for an interpreter its standard input: the code a program there may
+        run (standard input is only data to sed or awk)."""
+        stdin = [command.stdin_text or ""] if interpreters else []
+        return [texts[index] for index in unread if index > start] + stdin
 
     # The first program that runs code sees all the later ones' code too, so one look at it is enough.
-    if languages and any(POLICY_CODE.search(code) for code in code_after(languages[0])):
+    if interpreters and any(POLICY_CODE.search(code) for code in code_after(interpreters[0])):
         return True
-    if coders and any(SETUP_MENTION.search(code) and "tower" in (code + cwd).lower() for code in code_after(coders[0])):
+    if code_runners and any(
+        SETUP_MENTION.search(code) and (in_tower or "tower" in code.lower()) for code in code_after(code_runners[0])
+    ):
         return True
     for index in unread:
         text, rest = texts[index], words[index + 1 :]
-        is_tower_setup = os.path.basename(text).lower() == "setup.sh" and "tower" in (text + cwd).lower()
+        is_tower_setup = os.path.basename(text).lower() == "setup.sh" and (in_tower or "tower" in text.lower())
         if is_tower_setup and not any(word.text in ("--dry-run", "-h", "--help") for word in rest):
             return True
         if "tower" in text.lower() and "policy" in texts[index + 1 :]:
@@ -2247,31 +2299,29 @@ def changes_policy(command: SimpleCommand, cwd: str) -> bool:
     return False
 
 
-def setup_reads(command: SimpleCommand) -> set[int]:
-    """Indexes of COMMAND's words that its program only reads as files, so a setup.sh among them isn't run: every
-    argument of a READ_ONLY_PROGRAMS program (grep, cat), the operands after a GIT_FILE_READERS subcommand (git diff --
-    setup.sh, not an option like -O./setup.sh), and sed's input files (see sed_inputs). None when the command writes
-    its output into a file, where it can run under another name (cat setup.sh > x.sh); /dev/null and another file
-    descriptor (2>&1) aren't files it can run from."""
-    copies = any(
-        redirect.writes
-        and redirect.target.text != "/dev/null"
-        and not (redirect.operator.endswith("&") and DESCRIPTOR.fullmatch(redirect.target.text))
-        for redirect in command.redirects
-    )
+def read_only_words(command: SimpleCommand, git_may_hand_files: bool) -> set[int]:
+    """Indexes of COMMAND's words that its program only reads or prints, so none of them runs (setup.sh, an
+    interpreter's name, tower policy use): every argument of a READ_ONLY_PROGRAMS program (grep, cat), the operands
+    after a GIT_FILE_READERS subcommand (git diff -- setup.sh; not an option like -O./setup.sh), and every word of a sed
+    that only prints (see sed_only_prints). Empty when the command's output goes where another command can run it: a
+    file (cat setup.sh > x.sh; not /dev/null or 2>&1) or another command's words ($( ), backticks, <( )). For git,
+    also empty after a -c or --config-env setting, or when GIT_MAY_HAND_FILES (the line may make git hand its files to
+    a program: an external diff, a pager; see GIT_HANDS_FILES) or run under config the hook can't read."""
     words = command.words
     program = program_position(words)
-    if copies or program >= len(words):
+    copies = any(redirect.writes_file for redirect in command.redirects)
+    if copies or command.substituted or program >= len(words):
         return set()
     name, first_arg = program_name(words[program]), program + 1
-    if name in READ_ONLY_PROGRAMS:
+    if name in READ_ONLY_PROGRAMS or (name == "sed" and sed_only_prints(words[first_arg:])):
         return set(range(first_arg, len(words)))
-    if name == "git":
+    if name == "git" and not git_may_hand_files:
         subcommand = first_arg + git_subcommand_at(words[first_arg:])
-        if subcommand < len(words) and words[subcommand].text in GIT_FILE_READERS:
+        settings = any(
+            word.text == "-c" or word.text.startswith("--config-env") for word in words[first_arg:subcommand]
+        )
+        if not settings and subcommand < len(words) and words[subcommand].text in GIT_FILE_READERS:
             return {index for index in range(subcommand + 1, len(words)) if not words[index].text.startswith("-")}
-    if name == "sed":
-        return {first_arg + index for index in sed_inputs(words[first_arg:])}
     return set()
 
 
@@ -2283,32 +2333,35 @@ def git_subcommand_at(args: list[Word]) -> int:
     return index
 
 
-def sed_inputs(args: list[Word]) -> list[int]:
-    """Indexes of sed's ARGS that are input files it only reads: its operands after its script (the first operand,
-    unless -e gives the script). None when it has an option that isn't one of SED_SWITCHES or -e, or a word from a
-    variable, since either may make a file operand its script or a file it writes."""
+def sed_only_prints(args: list[Word]) -> bool:
+    """Whether sed run with ARGS only prints lines of its input: no word from a variable, every option one of
+    SED_SWITCHES or -e, and every script (-e's, or else the first operand) a SED_PRINT_SCRIPT, which can't run a
+    command (GNU's e runs a line of its input) or write a file."""
     if any(arg.dynamic for arg in args):
-        return []
-    operands: list[int] = []
-    script_given = False
+        return False
+    scripts: list[str] = []
+    operands: list[str] = []
     index = 0
     while index < len(args):
         text = args[index].text
         expression = SED_EXPRESSION.fullmatch(text)
         if text == "--":
-            operands += range(index + 1, len(args))
+            operands += [arg.text for arg in args[index + 1 :]]
             break
-        if expression:
-            script_given = True
-            attached = expression.group("short") is not None or expression.group("long") is not None
-            index += 1 if attached else 2
-            continue
-        if text.startswith("-") and text != "-" and not SED_SWITCHES.fullmatch(text):
-            return []
-        if not SED_SWITCHES.fullmatch(text):
-            operands.append(index)
+        if expression and expression.group("short") is not None:
+            scripts.append(expression.group("short"))
+        elif expression and expression.group("long") is not None:
+            scripts.append(expression.group("long")[1:])
+        elif expression and index + 1 < len(args):
+            scripts.append(args[index + 1].text)
+            index += 1
+        elif text.startswith("-") and text != "-" and not SED_SWITCHES.fullmatch(text):
+            return False  # another option, or -e with no script after it
+        elif not text.startswith("-") or text == "-":
+            operands.append(text)
         index += 1
-    return operands if script_given else operands[1:]
+    scripts = scripts or operands[:1]
+    return bool(scripts) and all(SED_PRINT_SCRIPT.fullmatch(script) for script in scripts)
 
 
 def turns_tower_off(words: list[Word]) -> bool:

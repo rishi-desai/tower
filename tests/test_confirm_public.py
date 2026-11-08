@@ -1579,34 +1579,54 @@ def test_setup_sh_of_this_project_is_behind_the_floor_however_its_answers_come(
 
 
 # Reading setup.sh or the policy module isn't running it (#100): a worker on tower greps them all the time.
-POLICY_SOURCE_READS = [
+SETUP_OR_POLICY_MODULE_READS = [
     "grep -n setup.sh README.md",
     'grep -n "policy-context\\|hooks.json\\|session-env" -r src tests plugin/tests setup.sh README.md',  # #93's
     "cat setup.sh",
     "sed -n 1,20p setup.sh",
     "sed -n -e 1,20p setup.sh src/tower/policy.py",
+    "sed -n '/^def /p;$p' setup.sh",
+    "sed -n '/setup.sh/p' README.md",
     "git diff origin/main -- setup.sh src/tower/policy.py",
+    "git --no-pager diff -- setup.sh",
     "git log -p setup.sh",
+    "git show HEAD -- setup.sh",
+    "git grep -n tower -- setup.sh",
+    "git blame setup.sh",
+    "git status setup.sh",
     "git add setup.sh src/tower/policy.py",
     "wc -l setup.sh 2>/dev/null",
     "grep -c tower setup.sh 2>&1 | head -5",
     "echo 'run ./setup.sh to install'",
 ]
 # What may run setup.sh, or use the policy module, however it is written.
-POLICY_SOURCE_RUNS = [
+SETUP_OR_POLICY_MODULE_RUNS = [
     "env ./setup.sh",
     "echo x | xargs ./setup.sh",
     "find . -name x -exec ./setup.sh {} +",
     'S=./setup.sh; bash "$S"',
-    "GIT_PAGER=./setup.sh git log",
-    "git -c core.pager=./setup.sh log",
-    "git bisect run ./setup.sh",
-    "git rebase -x ./setup.sh HEAD~1",
-    "git grep -O./setup.sh x",
-    # sed's script, a copy that can run under another name, and code, which can run anything it names
-    'sed -n "1e ./setup.sh" README.md',
+    # a reader's output run as a command, or saved as a copy that runs under another name
+    'bash "$(ls setup.sh)"',
+    "bash `ls setup.sh`",
+    'eval "$(cat setup.sh)"',
     "cat setup.sh > x.sh",
     "cp setup.sh x.sh",
+    # git running it, or handing it to a program: a pager, an external diff, grep -O
+    "git bisect run ./setup.sh",
+    "git rebase -x ./setup.sh HEAD~1",
+    "git -c core.pager=./setup.sh log",
+    "GIT_PAGER=./setup.sh git log",
+    "git grep -Obash -e '' -- setup.sh",
+    "git grep --open-files-in-pager=bash -e '' -- setup.sh",
+    "GIT_EXTERNAL_DIFF=bash git diff -- setup.sh",
+    "git -c diff.external=bash diff -- setup.sh",
+    "git config diff.external bash && git diff -- setup.sh",
+    "PAGER=sh git grep -h '' setup.sh",
+    # sed's script (GNU's e runs a line of its input; w writes a copy), and code, which can run anything it names
+    'sed -n "1e ./setup.sh" README.md',
+    "sed -n e setup.sh",
+    "sed 's/.*/&/e' setup.sh",
+    "sed -n 'w x.sh' setup.sh",
     "awk 'BEGIN{system(\"./setup.sh\")}'",
     "python3 -c 'import os; os.system(\"./setup.sh --profile sandbox\")'",
     "python3 <<'EOF'\nimport os\nos.system('./setup.sh')\nEOF",
@@ -1614,7 +1634,7 @@ POLICY_SOURCE_RUNS = [
 ]
 
 
-def in_tower_checkout(tmp_path: Path, command: str, profile: str) -> dict[str, object] | None:
+def tower_checkout_decision(tmp_path: Path, command: str, profile: str) -> dict[str, object] | None:
     """The hook's decision on COMMAND for a session in a tower checkout, under PROFILE."""
     cwd = tmp_path / "tower"
     cwd.mkdir(exist_ok=True)
@@ -1622,15 +1642,15 @@ def in_tower_checkout(tmp_path: Path, command: str, profile: str) -> dict[str, o
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-@pytest.mark.parametrize("command", POLICY_SOURCE_READS)
+@pytest.mark.parametrize("command", SETUP_OR_POLICY_MODULE_READS)
 def test_reading_setup_sh_or_the_policy_module_passes(tmp_path: Path, profile: str, command: str) -> None:
-    assert in_tower_checkout(tmp_path, command, profile) is None
+    assert tower_checkout_decision(tmp_path, command, profile) is None
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-@pytest.mark.parametrize("command", POLICY_SOURCE_RUNS)
+@pytest.mark.parametrize("command", SETUP_OR_POLICY_MODULE_RUNS)
 def test_running_setup_sh_or_using_the_policy_module_asks(tmp_path: Path, profile: str, command: str) -> None:
-    assert asks(in_tower_checkout(tmp_path, command, profile))
+    assert asks(tower_checkout_decision(tmp_path, command, profile))
 
 
 def test_migrated_pr_approval_none_still_asks_before_locking_a_pr(tmp_path: Path) -> None:
