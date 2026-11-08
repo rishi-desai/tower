@@ -51,6 +51,11 @@ export type TowerState = {
   policy?: StatePolicy | null
   /** The stacks git-spice tracks, in merge order (src/tower/stacks.py); missing from a core older than tower 0.16. */
   stacks?: StateStack[]
+  /**
+   * Where each issue in progress runs, by its ticket: "#93" -> "running in feat-93-x" (src/tower/state.py's
+   * issues_in_progress, which `tower scan` marks its issue rows from too); missing from a core older than tower 0.16.
+   */
+  in_progress?: Record<string, string>
 }
 
 /**

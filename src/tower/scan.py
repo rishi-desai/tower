@@ -10,7 +10,8 @@ Prints, from anywhere inside the repo:
                    need a restack (stacks.py)
   4. GROUPS        every worktree in the hub's report order (Needs you, Blocked, Running, Waiting on CI or review,
                    Done, Housekeeping), each with the reason for its state, so the hub never regroups
-  5. GITHUB        your open PRs, and open issues (all of them on your own repo, assigned to you otherwise)
+  5. GITHUB        your open PRs, and open issues (all of them on your own repo, assigned to you otherwise), each
+                   issue in progress marked with where it runs (state.issues_in_progress)
   6. BACKLOG       parked ideas waiting for a slot (only used when there's no GitHub)
 
 Sections 1, 3, STACKS and 4 are `tower state`'s report (state.py, the one place a worktree's status is decided), and section 2
@@ -53,7 +54,8 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
         lines += sessions.render(report.agents, [(f.label, f.path) for f, _ in report.worktrees])
     lines += ["", *state.orphans_section(report), "", *state.stacks_section(report)]
     lines += ["", *state.groups_section(report), ""]
-    lines += ["== GITHUB ==", *(github_section(repo_dir) if github else ["(skipped: --no-github)"]), ""]
+    in_progress = state.issues_in_progress(report)
+    lines += ["== GITHUB ==", *(github_section(repo_dir, in_progress) if github else ["(skipped: --no-github)"]), ""]
     lines.append("== BACKLOG (parked ideas) ==")
     return "\n".join(lines) + "\n" + backlog(folder / "_backlog.md")
 
@@ -80,9 +82,10 @@ def adopt_line(report: state.Report) -> str:
     return f"ADOPT: yes — {'; '.join(reasons)}" if reasons else "ADOPT: no"
 
 
-def github_section(repo_dir: Path) -> list[str]:
+def github_section(repo_dir: Path, in_progress: dict[str, str]) -> list[str]:
     """Your open PRs, and the open issues: all of them on your own repo (tickets from /to-tickets are usually
-    unassigned), only those assigned to you on someone else's (work)."""
+    unassigned), only those assigned to you on someone else's (work). An issue in progress (in_progress, from
+    state.issues_in_progress) is marked with where it runs."""
     if shutil.which("gh") is None:
         return ["(gh not installed — skipping)"]
     if try_gh(repo_dir, "auth", "status")[0] is None:
@@ -104,12 +107,19 @@ def github_section(repo_dir: Path) -> list[str]:
     )  # fmt: skip
     issues = ("issue", "list", "--state", "open", "--limit", str(ISSUE_LIMIT), "--json", "number,title,labels")
     if me and owner == me:
-        lines += gh_list(repo_dir, "open issues (all — your repo)", *issues, "--template", ISSUE_TEMPLATE)
+        listed = gh_list(repo_dir, "open issues (all — your repo)", *issues, "--template", ISSUE_TEMPLATE)
     else:
-        lines += gh_list(
+        listed = gh_list(
             repo_dir, "open issues assigned to you", *issues, "--assignee", "@me", "--template", ISSUE_TEMPLATE
         )
-    return lines
+    return lines + [marked_in_progress(line, in_progress) for line in listed]
+
+
+def marked_in_progress(line: str, in_progress: dict[str, str]) -> str:
+    """An issue row, with where it runs after its labels when it's in progress: "- #93 title [bug] [in progress:
+    running in feat-93-x]". The mark is one more bracket at the end, so the pane still reads the title and labels."""
+    ticket = line[2:].split(" ", 1)[0] if line.startswith("- #") else ""
+    return f"{line} [in progress: {in_progress[ticket]}]" if ticket in in_progress else line
 
 
 def gh_list(repo_dir: Path, title: str, *args: str) -> list[str]:

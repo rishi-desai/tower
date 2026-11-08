@@ -288,5 +288,13 @@ export const SHARED: TowerState = {
         }
       ]
     }
-  ]
+  ],
+  "in_progress": {
+    "#3": "needs-you in feat-3",
+    "#7": "running in feat-7",
+    "#8": "needs-you in feat-8",
+    "#9": "needs-you in feat-9",
+    "#0": "in the stack in feat-1",
+    "#1": "in the stack in feat-1"
+  }
 }

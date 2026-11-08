@@ -76,6 +76,25 @@ def test_a_busy_worker_with_a_stale_needs_you_card_is_running(
     assert row["card"] == {"status": "needs-you", "ticket": "#42", "updated": "2026-11-06T09:00", "pr": "none"}
 
 
+def test_a_hand_edited_ticket_is_read_as_card_write_writes_it(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`ticket: 93` (no #, unquoted) names #93, as `tower card write --ticket 93` would have written it, so feat-93-x
+    and feat-93-y are both on it; a ticket that isn't one stays as written, naming no issue."""
+    for branch, ticket in (("feat-93-x", "93"), ("feat-93-y", '"#93"'), ("feat-x", "soon")):
+        repo.add_worktree(branch)
+        card = repo.write_card(branch, "running")
+        card.write_text(
+            card.read_text(encoding="utf-8").replace('ticket: "#42"', f"ticket: {ticket}"), encoding="utf-8"
+        )
+
+    result = tower_state(capsys)
+
+    tickets = {label: row["card"]["ticket"] for label, row in rows(result).items() if row["card"]}  # type: ignore[index]
+    assert tickets == {"feat-93-x": "#93", "feat-93-y": "#93", "feat-x": "soon"}
+    assert result["in_progress"] == {"#93": "running in feat-93-x, running in feat-93-y"}
+
+
 def test_a_waiting_session_beats_a_running_card_and_is_named(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     path = repo.add_worktree("feat-8")
     repo.write_card("feat-8", "running")
@@ -444,6 +463,15 @@ def test_the_pane_is_tested_on_tower_states_own_output(repo: Fixture, capsys: py
         "feat-7": "running",
         "feat-8": "needs-you",
         "feat-9": "needs-you",
+    }
+    # Cardless feat-5 is on no issue; feat-1's worktree holds the stack feat-0 (#0) and feat-1 (#1), so both are in it.
+    assert pasted["in_progress"] == {
+        "#3": "needs-you in feat-3",
+        "#7": "running in feat-7",
+        "#8": "needs-you in feat-8",
+        "#9": "needs-you in feat-9",
+        "#0": "in the stack in feat-1",
+        "#1": "in the stack in feat-1",
     }
 
 

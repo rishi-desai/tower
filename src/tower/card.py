@@ -62,7 +62,6 @@ NEEDS_REASON = ("needs-you", "blocked")
 PROPERTIES = ("status", "ticket", "updated", "branch", "pr", "base", "reason")  # what the core writes
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
-TICKET = re.compile(r"#?(\d+)")
 TIME_FORMAT = "%Y-%m-%dT%H:%M"
 
 
@@ -236,13 +235,12 @@ def quote_or_none(value: str) -> str:
 
 
 def normalize_ticket(text: str) -> str:
-    """ "42" or "#42" -> "#42"; "none" -> "none". CardError otherwise."""
-    if text.strip().lower() == "none":
-        return "none"
-    match = TICKET.fullmatch(text.strip())
-    if match is None:
+    """ "42" or "#42" -> "#42"; "none" -> "none" (state.normalized_ticket, which reading a card uses too). CardError
+    otherwise."""
+    ticket = state.normalized_ticket(text)
+    if ticket is None:
         raise CardError(f"a ticket is a number like 42 or #42, or none; got {text!r}")
-    return f"#{match.group(1)}"
+    return ticket
 
 
 def choose_status(

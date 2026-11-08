@@ -54,6 +54,7 @@ EVENTS_WINDOW = timedelta(hours=24)  # older events don't stand in for a live se
 EVENTS_READ = 5000  # how many of the log's last lines to read when standing in for live sessions
 LISTED_OVERLAP_FILES = 5  # a Housekeeping row names this many shared files, then says how many more
 COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # a full SHA-1 or SHA-256 commit id, as gh prints headRefOid
+TICKET = re.compile(r"#?(\d+)")  # a card's ticket: 42 or #42 (card write renders #42), or none
 
 
 @dataclass(frozen=True)
@@ -417,6 +418,15 @@ def frontmatter_field(lines: list[str], key: str) -> str:
     return ""
 
 
+def normalized_ticket(text: str) -> str | None:
+    """ "42" or "#42" -> "#42"; "none" -> "none"; None for anything else. Card writing (card.normalize_ticket) and
+    card reading both go through it, so a hand-edited `ticket: 93` names #93."""
+    if text.strip().lower() == "none":
+        return "none"
+    match = TICKET.fullmatch(text.strip())
+    return None if match is None else f"#{match.group(1)}"
+
+
 def read_card(path: Path, now: float) -> Card | None:
     """The card at path, or None if there is none. Fields come from the frontmatter block when there is one.
 
@@ -432,9 +442,10 @@ def read_card(path: Path, now: float) -> Card | None:
         end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), len(lines))
         lines = lines[1:end]
     status = frontmatter_field(lines, "status")
+    ticket = frontmatter_field(lines, "ticket") or "none"
     return Card(
         status=status,
-        ticket=frontmatter_field(lines, "ticket") or "none",
+        ticket=normalized_ticket(ticket) or ticket,  # one that isn't a ticket stays as written: it names no issue
         updated=frontmatter_field(lines, "updated"),
         pr=frontmatter_field(lines, "pr") or "none",
         stale=status == "running" and now - mtime > STALE_AFTER_SECONDS,
@@ -652,6 +663,28 @@ def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
     return found, ""
 
 
+def issues_in_progress(report: Report) -> dict[str, str]:
+    """Where each issue in progress runs, by its ticket: "#93" -> "running in feat-93-x" (each worktree whose card
+    names it, in its effective state, comma-joined), and by the ticket guess of each unmerged branch of a stack:
+    "#41" -> "in the stack in feat-40-x" (a stack worktree's card names only one ticket). A worktree without a card is
+    on no issue. The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
+    notes: dict[str, str] = {}
+    for facts, v in report.worktrees:
+        if facts.card is None or TICKET.fullmatch(facts.card.ticket) is None:
+            continue
+        note = f"{v.status} in {facts.label}"
+        ticket = facts.card.ticket
+        notes[ticket] = f"{notes[ticket]}, {note}" if ticket in notes else note
+    labels = {facts.path: facts.label for facts, _ in report.worktrees}
+    for stack in report.stacks:
+        holder = next((labels[path] for path in stack.worktrees if path in labels), None)
+        for branch in stack.branches:
+            if branch.ticket == "none" or branch.merged or branch.ticket in notes:
+                continue
+            notes[branch.ticket] = f"in the stack in {holder or branch.name}"
+    return notes
+
+
 # ---------- output ----------
 
 
@@ -706,6 +739,7 @@ def to_json(report: Report) -> dict[str, object]:
             }
             for stack in report.stacks
         ],
+        "in_progress": issues_in_progress(report),
     }
 
 
