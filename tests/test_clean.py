@@ -659,7 +659,10 @@ def test_a_worktree_orca_never_removes_stops_the_cleanup_after_a_bounded_wait(re
     said = run_clean(repo, worker, "feat-1")
 
     assert said[-2:] == [
-        "feat-1: the worktree is still listed by git after removing it, so nothing else was removed",
+        (
+            "feat-1: the worktree is still listed by git after removing it, so nothing else was removed: once git no"
+            " longer lists it, tower clean feat-1 finishes the rest"
+        ),
         "result: False",
     ]
     assert branch_exists(repo, "feat-1") and "feat-1" in worker.github.branches
@@ -766,6 +769,7 @@ def test_a_local_branch_deleted_while_clean_deletes_it_is_said_as_gone(
     real_git = gitrepo.git
 
     def git_racing_orca(cwd: Path, *args: str) -> str | None:
+        """Run git, deleting feat-1 first when tower is about to delete it."""
         if args[:1] == ("update-ref",):  # Orca deletes the branch between tower's read and its delete
             real_git(cwd, "update-ref", "-d", "refs/heads/feat-1")
         return real_git(cwd, *args)
@@ -783,6 +787,7 @@ class RacingGitHub(CleanGitHub):
     """CleanGitHub where the head branch is deleted (by Orca) just before tower's DELETE, which GitHub then refuses."""
 
     def __call__(self, args: list[str]) -> GhResult:
+        """Answer like CleanGitHub, but a DELETE finds the branch already gone."""
         if "DELETE" in args:
             self.calls.append(args)
             self.branches.pop("feat-1", None)
@@ -798,3 +803,57 @@ def test_a_github_branch_deleted_while_clean_deletes_it_is_said_as_gone(repo: Fi
 
     assert "feat-1: feat-1 is already deleted on GitHub" in said
     assert said[-1] == "result: True"
+
+
+def test_a_half_done_cleanup_isnt_confused_by_branches_under_its_name(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    half_done(repo, worker)
+    git(repo.main, "branch", "-q", "-D", "feat-1")
+    git(repo.main, "branch", "-q", "feat-1/next", "main")  # matches for-each-ref's refs/heads/feat-1 pattern
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[-1] == "result: True"
+    assert "feat-1: the local branch is already gone" in said
+    assert branch_exists(repo, "feat-1/next")
+
+
+def test_a_git_worktree_list_that_fails_during_the_wait_keeps_waiting(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = merged_worker(repo)
+    worker.orca.removes_after = 2.0
+    calls = {"n": 0}
+
+    def list_failing_once(repo_dir: Path) -> list[gitrepo.GitWorktree]:
+        """git's worktree list, failing on the first call after the one clean starts with."""
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise gitrepo.NotARepo("git worktree list timed out")
+        return gitrepo.list_worktrees(repo_dir)
+
+    monkeypatch.setattr(clean, "list_worktrees", list_failing_once)
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[-1] == "result: True"
+    assert (repo.ledger / "_archive" / "feat-1.md").exists()
+
+
+def test_orca_failing_to_list_still_lets_a_half_done_cleanup_finish(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    second = merged_worker(repo, branch="feat-2", number=2)
+    worker.github.pulls += second.github.pulls
+    worker.github.branches["feat-2"] = second.sha
+    half_done(repo, worker)
+    worker.orca.list_error = "runtime timed out"
+
+    said = run_clean(repo, worker, "feat-2", "feat-1")
+
+    assert (
+        "Orca couldn't say which worktrees it manages (runtime timed out), so no worktree was removed: run it again"
+        in said
+    )
+    assert said[-1] == "result: False"
+    assert (repo.ledger / "_archive" / "feat-1.md").exists() and "feat-1" not in worker.github.branches
+    assert str(second.path) in worktree_paths(repo) and (repo.ledger / "feat-2.md").exists()

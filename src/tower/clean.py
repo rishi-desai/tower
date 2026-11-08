@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tower import ledger, merge, sessions, state
-from tower.gitrepo import GitWorktree, git, list_worktrees, repo_name
+from tower.gitrepo import GitWorktree, NotARepo, git, list_worktrees, repo_name
 from tower.merge import Gh, GhResult, Say
 
 ORCA_TIMEOUT_SECONDS = 60  # one orca call; removing a worktree is the slowest
@@ -145,7 +145,7 @@ def clean(
     if not chosen and not gone:
         say("no worktrees besides the main checkout, so nothing to clean up")
         return True
-    listed, live_note = sessions.read_agents()
+    listed, live_note = sessions.read_agents() if chosen else ([], "")  # a half-done cleanup has no sessions
     live = None if listed is None else state.live_sessions(listed, [os.path.realpath(w.path) for w in chosen])
     targets = [check(w, gh, live, live_note, ledger_folder, ledger_note, here) for w in chosen]
     targets += [check_gone(branch, Path(main.path), gh, ledger_folder, ledger_note) for branch in gone]
@@ -174,9 +174,14 @@ def clean(
     if any(t.worktree for t in ready):  # a half-done cleanup has no worktree for Orca to manage
         found, orca_error = orca_worktrees(orca)
         if found is None:
-            say(f"Orca couldn't say which worktrees it manages ({orca_error}), so nothing was removed: run it again")
-            return False
-        managed = found
+            ready = [t for t in ready if t.worktree is None]  # half-done cleanups don't need Orca
+            what = "no worktree was removed" if ready else "nothing was removed"
+            say(f"Orca couldn't say which worktrees it manages ({orca_error}), so {what}: run it again")
+            if not ready:
+                return False
+            all_passed = False
+        else:
+            managed = found
     if dry_run:
         for target in ready:
             say(f"{target.label}: would {plan(target, managed_by_orca(target, managed))}")
@@ -300,7 +305,7 @@ def check_gone(branch: str, main: Path, gh: Gh, ledger_folder: Path | None, ledg
     pr_number, head, pr_failure, pr_known = merged_pr(gh, branch)
     if pr_failure:
         failures.append(pr_failure)
-    tip = git(main, "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}")  # "" when it is gone
+    tip = local_tip(main, branch)
     if tip is None:
         failures.append(f"git couldn't say where the local branch {branch} points")
     elif head is not None and tip and tip != head:
@@ -352,6 +357,16 @@ def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str, 
     if not isinstance(head, str) or not state.COMMIT_ID.fullmatch(head):
         return None, None, f"GitHub didn't give PR #{newest['number']}'s head commit", False
     return int(newest["number"]), head, "", True
+
+
+def local_tip(main: Path, branch: str) -> str | None:
+    """The commit the local branch points at, "" when there is no such branch, or None when git can't say. (Only the
+    exact ref counts: for-each-ref's pattern would also match branches under BRANCH/.)"""
+    ref = f"refs/heads/{branch}"
+    listed = git(main, "for-each-ref", "--format=%(refname) %(objectname)", ref)
+    if listed is None:
+        return None
+    return next((line.split()[1] for line in listed.splitlines() if line.split()[0] == ref), "")
 
 
 def stashed_on(path: Path, branch: str | None) -> str:
@@ -471,11 +486,8 @@ def remove(
         worked = False
     else:
         worked = merge.delete_head_branch(pull, gh, lambda line: say(f"{label}: {line}"), sleep, clock) and worked
-    tip = git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    if tip is None:
-        say(f"{label}: the local branch is already gone")
-    elif git(main, "update-ref", "-d", f"refs/heads/{branch}", str(target.head)) is None:
-        if git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}") is None:  # Orca deleted it meanwhile
+    if git(main, "update-ref", "-d", f"refs/heads/{branch}", str(target.head)) is None:
+        if git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}") is None:  # Orca may delete it too
             say(f"{label}: the local branch is already gone")
         else:
             say(f"{label}: kept the local branch {branch}: it no longer points at {str(target.head)[:7]}")
@@ -559,7 +571,12 @@ def remove_worktree(
     deadline = clock() + wait
     while still_listed(path, main):
         if clock() >= deadline:
-            say(f"{label}: the worktree is still listed by git after removing it, so nothing else was removed")
+            finish = (
+                f": once git no longer lists it, tower clean {worktree.branch} finishes the rest"
+                if worktree.branch
+                else ""
+            )
+            say(f"{label}: the worktree is still listed by git after removing it, so nothing else was removed{finish}")
             return False
         sleep(ORCA_REMOVE_POLL_SECONDS)
     say(f"{label}: removed the worktree {path} {how}")
@@ -567,8 +584,13 @@ def remove_worktree(
 
 
 def still_listed(path: str, main: Path) -> bool:
-    """Whether git still lists a worktree at path."""
-    return any(os.path.realpath(w.path) == os.path.realpath(path) for w in list_worktrees(main))
+    """Whether git still lists a worktree at path; True when git can't list them (Orca may be mid-removal), so the
+    wait goes on rather than calling it gone."""
+    try:
+        listed = list_worktrees(main)
+    except NotARepo:
+        return True
+    return any(os.path.realpath(w.path) == os.path.realpath(path) for w in listed)
 
 
 def pull_main(main: Path, say: Say) -> None:
