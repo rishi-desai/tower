@@ -22,12 +22,17 @@ and the core writes the frontmatter, so no model ever writes YAML (an unquoted `
     updated   now, local time, to the minute (the pane counts the card's age from it)
     branch    git's; none on a detached HEAD
     pr        this branch's PR from GitHub (gh); unknown when gh can't be asked, and then never done or waiting-ci
-    base      the branch the PR merges into, else the repo's base branch (state.base_ref)
+    base      the branch the PR merges into, else the branch's parent in its git-spice stack (stacks.py), else the
+              repo's base branch (state.base_ref)
     reason    only on needs-you and blocked: why the agent asked for it
 
 A merged PR counts only when its head contains the worktree's HEAD: a branch name reused after an old PR merged is new
 work. PRs from forks never count. Properties the user adds in Obsidian (tags) are kept across writes. `tower state` reads the card back like any other (state.read_card), and the card-resume.py hook
 re-renders a needs-you card as running once the user answers (resume()).
+
+A card stays with its worktree, not its branch: the worktree's own git folder records the card's name
+(ledger.remember_card), so a stack worktree's worker keeps its card, kickoff and decisions log when it moves to the
+stack's next branch.
 
 Runs under whatever `python3` the plugin's scripts find (3.9 on a stock Mac), like the rest of the core.
 """
@@ -42,9 +47,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tower import ledger, state
+from tower import ledger, stacks, state
 from tower.github import from_this_repo, try_gh
-from tower.gitrepo import git, is_main_checkout, list_worktrees
+from tower.gitrepo import git, guess_ticket, is_main_checkout, list_worktrees
 
 SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
 REQUIRED = ("Done", "Why it matters", "Needs you", "Verify")
@@ -58,10 +63,6 @@ PROPERTIES = ("status", "ticket", "updated", "branch", "pr", "base", "reason")  
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 TICKET = re.compile(r"#?(\d+)")
-# A ticket guess needs a known type before the number (feat-42-x, fix/42-x, or just 42-x), so release-2026-11 isn't #2026.
-BRANCH_TICKET = re.compile(
-    r"(?:^|/)(?:(?:feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix)[-/])?(\d+)(?:-|$)"
-)
 TIME_FORMAT = "%Y-%m-%dT%H:%M"
 
 
@@ -244,18 +245,22 @@ def normalize_ticket(text: str) -> str:
     return f"#{match.group(1)}"
 
 
-def guess_ticket(branch: str) -> str:
-    """The ticket a branch name points at (rishi/feat-42-x, fix/42-x, 42-x -> #42), or none."""
-    match = BRANCH_TICKET.search(branch)
-    return f"#{match.group(1)}" if match else "none"
-
-
-def choose_status(requested: str | None, pr: BranchPr | None, pr_known: bool) -> tuple[str, str, list[str]]:
+def choose_status(
+    requested: str | None, pr: BranchPr | None, pr_known: bool, stack_open: tuple[str, ...] | None = ()
+) -> tuple[str, str, list[str]]:
     """(status, why, warnings) from the agent's request and this branch's PR. needs-you and blocked are honoured as
-    asked; a merged PR is done whatever else is asked; an open PR is waiting-ci unless the agent says it's running, or
-    done (ready for the user to merge). CardError when done is asked for without an open or merged PR."""
+    asked; a merged PR is done whatever else is asked, unless the worktree's stack still has unmerged branches
+    (stack_open), or whether it has any couldn't be checked (None): then the stack's work goes on, running unless done
+    is asked for; an open PR is waiting-ci unless the
+    agent says it's running, or done (ready for the user to merge). CardError when done is asked for without an open
+    or merged PR."""
     if requested in NEEDS_REASON:
         return str(requested), "you asked for it", []
+    if pr is not None and pr.state == "MERGED" and stack_open != ():
+        unsure = "whether its stack is finished couldn't be checked"
+        unmerged = f"its stack still has unmerged branches: {', '.join(stack_open)}" if stack_open else unsure
+        still = f"PR #{pr.number} is merged; {unmerged}"
+        return ("done" if requested == "done" else "running"), still, []
     if pr is not None and pr.state == "MERGED":
         warnings = [f"PR #{pr.number} is merged, so the card says done, not running"] if requested == "running" else []
         return "done", f"PR #{pr.number} is merged", warnings
@@ -304,6 +309,17 @@ def branch_pr(worktree: Path, branch: str) -> tuple[BranchPr | None, str, str]:
     if git(worktree, "merge-base", "--is-ancestor", "HEAD", pr.head) is None:
         return None, f"PR #{pr.number} {pr.state.lower()} earlier work on this branch name", ""
     return pr, "", ""
+
+
+def pr_done(worktree: Path, branch: str) -> bool | None:
+    """Whether GitHub has branch's PR merged or closed and none open (a stack branch that needs nothing more); None
+    when gh couldn't be asked."""
+    out, _ = try_gh(worktree, "pr", "list", "--head", branch, "--state", "all", "--json", "state,isCrossRepository")
+    try:
+        states = [str(p["state"]) for p in json.loads(out or "") if from_this_repo(p)]
+    except (ValueError, TypeError, KeyError):
+        return None
+    return bool(states) and "OPEN" not in states
 
 
 def repo_base(worktree: Path) -> str:
@@ -388,7 +404,13 @@ def write_card(
     pr, note, gh_error = (None, "", "") if not branch else branch_pr(worktree, branch)
     if gh_error:
         warnings.append(f"couldn't read this branch's PR ({gh_error}), so the card says pr: unknown")
-    status, why, status_warnings = choose_status(requested, pr, pr_known=not gh_error)
+    stack_open: tuple[str, ...] | None = ()
+    if pr is not None and pr.state == "MERGED":
+        unmerged, stack_note = stacks.open_besides(worktree, branch, lambda name: pr_done(worktree, name))
+        stack_open = None if unmerged is None else tuple(unmerged)
+        if stack_note:
+            warnings.append(f"whether this worktree's stack is finished couldn't be checked: {stack_note}")
+    status, why, status_warnings = choose_status(requested, pr, pr_known=not gh_error, stack_open=stack_open)
     warnings += status_warnings
     if note:
         why += f"; {note}"
@@ -404,10 +426,13 @@ def write_card(
         updated=time.strftime(TIME_FORMAT),
         branch=branch or "none",
         pr="unknown" if gh_error else f"#{pr.number}" if pr else "none",
-        base=pr.base if pr else repo_base(worktree),
+        base=pr.base if pr else (stacks.parent_of(worktree, branch) if branch else None) or repo_base(worktree),
         reason=reason if status in NEEDS_REASON else "",
     )
     write_atomically(path, render(front, body, extra_properties(old_lines)), if_absent)
+    recorded = ledger.record_card(worktree, path)
+    if recorded:
+        warnings.append(recorded)
     return Written(path, status, why, warnings)
 
 
@@ -460,6 +485,7 @@ def set_kickoff(worktree: Path, text: str, replace: bool = False) -> tuple[Path,
         )
     prefix = card_text[: len(card_text) - len(body)]
     write_atomically(path, prefix + with_kickoff(rest, kickoff), if_absent=False)
+    ledger.record_card(worktree, path)  # the hub's starter card may not have been recorded (it existed already)
     return path, ledger.archive_decisions(path) if replace else None  # only once the new kickoff is in
 
 
@@ -476,13 +502,19 @@ def resume(worktree: Path) -> Path | None:
     fields = read_frontmatter(lines)
     if fields.get("status") != "needs-you":
         return None
+    # A detached HEAD (a restack stopped on a conflict) is the same work: keep the card's branch, PR and base.
+    branch = git(worktree, "branch", "--show-current") or fields.get("branch") or "none"
+    moved = branch != (fields.get("branch") or "none")  # the card followed its worktree to another branch
     front = Frontmatter(
         status="running",
         ticket=fields.get("ticket") or "none",
         updated=time.strftime(TIME_FORMAT),
-        branch=git(worktree, "branch", "--show-current") or "none",
-        pr=fields.get("pr") or "none",
-        base=fields.get("base") or repo_base(worktree),
+        branch=branch,
+        # The last branch's PR and base aren't this one's, and GitHub isn't asked here: the next card write fills them.
+        pr="unknown" if moved else fields.get("pr") or "none",
+        base=(stacks.parent_of(worktree, branch) if branch != "none" else None) or repo_base(worktree)
+        if moved
+        else fields.get("base") or repo_base(worktree),
     )
     write_atomically(path, render(front, body, extra_properties(lines)), if_absent=False)
     return path

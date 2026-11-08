@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { GithubSection, Scan, StateSession, StateWorktree, Status, TowerState } from '../types'
+import type { GithubSection, Scan, StateSession, StateStack, StateWorktree, Status, TowerState } from '../types'
 
 // The pane mod: tower's hub report as a live pane beside the chat, a status-line summary, a toast when something new
 // needs the user, and in each worker a "0: back to the hub" band. Read-only by design: it only ever runs tower's own
@@ -64,7 +64,8 @@ export function worktreeAt(state: TowerState, cwd: string): StateWorktree | unde
 
 /**
  * Where each issue in progress runs, by the ticket its cards name: "#93" -> "running in feat-93-x" (each worktree on it,
- * in its effective state, comma-joined). A worktree without a card is on no issue.
+ * in its effective state, comma-joined), and by the ticket guess of each unmerged stack branch: "#41" -> "in the stack
+ * in feat-40-x". A worktree without a card is on no issue.
  */
 export function inProgressNotes(state: TowerState): Map<string, string> {
   const notes = new Map<string, string>()
@@ -74,7 +75,31 @@ export function inProgressNotes(state: TowerState): Map<string, string> {
     const note = `${w.status} in ${w.label}`
     notes.set(ticket, notes.has(ticket) ? `${notes.get(ticket)}, ${note}` : note)
   }
+  // A stack worktree's card names only its first ticket: the others are its branches' tickets.
+  for (const stack of state.stacks ?? []) {
+    const holder = stack.worktrees.map(path => state.worktrees.find(w => w.path === path)?.label).find(Boolean)
+    for (const b of stack.branches) {
+      if (b.ticket === 'none' || b.merged || notes.has(b.ticket)) continue
+      notes.set(b.ticket, `in the stack in ${holder ?? b.name}`)
+    }
+  }
   return notes
+}
+
+/**
+ * A stack as the pane draws it: a header (its base, the worktree holding it by label, never a path, and the core's
+ * word on who merges next) and one row per branch in merge order: its mark, the merge-order number indented by depth ("  2."), and its
+ * text ("feat-b #12 · needs restack: ...").
+ */
+export function stackLines(state: TowerState, stack: StateStack): { header: string; rows: Array<{ mark: string; text: string }> } {
+  const labels = stack.worktrees.map(path => state.worktrees.find(w => w.path === path)?.label).filter(Boolean)
+  const header = [`on ${stack.base}`, ...labels.map(label => `in ${label}`), stack.next_note].join(' · ')
+  const rows = stack.branches.map((b, i) => {
+    const flags = [b.merged ? 'merged' : '', b.next ? 'next to merge' : '', b.restack ? `needs restack: ${b.restack}` : '']
+    const pr = b.pr === null ? 'no PR' : `#${b.pr}${b.pr_state ? ` ${b.pr_state.toLowerCase()}` : ''}`
+    return { mark: `${'  '.repeat(b.depth)}${i + 1}.`, text: [`${b.name} ${pr}`, ...flags.filter(Boolean)].join(' · ') }
+  })
+  return { header, rows }
 }
 
 // ---------- reading `tower scan`'s GitHub section ----------
@@ -489,6 +514,7 @@ export const register: Register = on => {
     const needs = needsYou(state)
     const others = state.worktrees.filter(w => w.status !== 'needs-you')
     const housekeeping = state.housekeeping.map(item => `${item.label}: ${item.note}`) // the hub's own list
+    const stacks = state.stacks ?? [] // an older core reports none
     const issues = github?.issues ?? []
     const shownIssues = issuesToShow(issues)
     const moreIssues = issues.length - shownIssues.length
@@ -551,6 +577,18 @@ export const register: Register = on => {
           ]
           const detail = [w.card ? cardDetail(w) : '', sessionsOf(w)].filter(Boolean).join(' · ')
           return row(`wt-${w.label}`, w.status, w.stale, top, detail)
+        })}
+
+        {stacks.length > 0 && gap()}
+        {stacks.length > 0 && title('Stacks (merge order, bottom first)')}
+        {stacks.map((stack, i) => {
+          const { header, rows } = stackLines(state, stack)
+          return (
+            <Box key={`stack-${i}-${header}`} flexDirection="column">
+              <Text wrap="wrap">{header}</Text>
+              {rows.map(row => bullet(`stack-${row.text}`, row.mark, row.text))}
+            </Box>
+          )
         })}
 
         {housekeeping.length > 0 && gap()}

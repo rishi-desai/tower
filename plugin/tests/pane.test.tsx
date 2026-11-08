@@ -166,6 +166,12 @@ test('the pane draws tower state: what needs you, the WIP count, and every workt
   // Housekeeping is the core's own list (the hub's Housekeeping group), drawn as it comes.
   expect(await ui.find({ type: 'Text', text: /^feat-5: no card$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^feat__2-gone: orphan card \(worktree gone\), status: done$/ })).toBeTruthy()
+  // Stacks: feat-1's worktree holds feat-1 on feat-0; feat-0 was amended since, so feat-1 needs a restack.
+  expect(await ui.find({ type: 'Text', text: /^on main · in feat-1 · next to merge: feat-0, PR #10 \(merge_to_main is ask: it waits for you\)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^feat-0 #10 · next to merge$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^feat-1 #11 · needs restack: its parent feat-0 moved$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^ {2}2\.$/ })).toBeTruthy() // feat-1 is indented under feat-0
+  expect(await ui.find({ type: 'Text', text: /^feat-1: feat-1 needs a restack \(its parent feat-0 moved\): run git-spice stack restack there$/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /worm theme for the dashboard/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /\/p\/worktrees/ })).toBeUndefined() // no paths in the pane
   expect(await ui.find({ type: 'Text', text: /Press Refresh GitHub/ })).toBeTruthy()
@@ -345,7 +351,9 @@ test("inProgressNotes names each worktree on a ticket and matches whole tickets"
   const notes = inProgressNotes(state)
   expect(notes.get('#61')).toBe('needs-you in feat-3, running in feat-7')
   expect(notes.has('#6')).toBe(false) // #6 isn't #61
-  expect([...inProgressNotes(SHARED).keys()]).toEqual(['#3', '#7', '#8', '#9']) // cardless feat-1 and feat-5 are on nothing
+  // Cardless feat-5 is on nothing; feat-1's worktree holds the stack feat-0 (#0) and feat-1 (#1), so both are in it.
+  expect([...inProgressNotes(SHARED).keys()]).toEqual(['#3', '#7', '#8', '#9', '#0', '#1'])
+  expect(inProgressNotes(SHARED).get('#0')).toBe('in the stack in feat-1')
 })
 
 // ---------- interactions ----------

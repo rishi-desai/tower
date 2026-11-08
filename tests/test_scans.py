@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive
 
-from tower import card, cli
+from tower import cli, gitrepo
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugin"
@@ -243,9 +243,9 @@ def test_adopt_scan_guesses_tickets_like_a_card_does(repo: Fixture, capsys: pyte
         row.split(" | ")[0]: row.rsplit(" | ticket guess: ", 1)[1] for row in adopt_rows(capsys) if row.startswith("- ")
     }
 
-    assert guesses["- [worktree] release-2026-11"] == card.guess_ticket("release-2026-11") == "none"
-    assert guesses["- [worktree] v2-fix-42"] == card.guess_ticket("v2-fix-42") != "#2"
-    assert guesses["- [worktree] fix/7-x"] == card.guess_ticket("fix/7-x") == "#7"
+    assert guesses["- [worktree] release-2026-11"] == gitrepo.guess_ticket("release-2026-11") == "none"
+    assert guesses["- [worktree] v2-fix-42"] == gitrepo.guess_ticket("v2-fix-42") != "#2"
+    assert guesses["- [worktree] fix/7-x"] == gitrepo.guess_ticket("fix/7-x") == "#7"
 
 
 def test_an_untracked_file_next_to_the_nested_worktrees_still_counts(

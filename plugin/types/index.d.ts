@@ -49,6 +49,39 @@ export type TowerState = {
   housekeeping: Array<{ label: string; note: string }>
   /** The repo's approval policy (src/tower/policy.py); missing from a core older than tower 0.13. */
   policy?: StatePolicy | null
+  /** The stacks git-spice tracks, in merge order (src/tower/stacks.py); missing from a core older than tower 0.16. */
+  stacks?: StateStack[]
+}
+
+/**
+ * One stack git-spice tracks: the branch its bottom is built on, the policy key its merges are judged by, the
+ * worktrees holding its branches (one, for a stack worktree), and its branches in merge order, bottom first.
+ */
+export type StateStack = {
+  base: string
+  merge_key: 'merge_to_main' | 'merge_to_branch'
+  /** Which branch merges next and whether that waits for the user, as the hub's STACKS header says it. */
+  next_note: string
+  worktrees: string[]
+  branches: StateStackBranch[]
+}
+
+/**
+ * One branch of a stack. depth: 0 for the bottom. worktree: the path holding it checked out. pr_state: GitHub's,
+ * null when PRs weren't read. restack: why it needs a restack, '' when it doesn't. next: the one that may merge now.
+ */
+export type StateStackBranch = {
+  name: string
+  /** The ticket guess from its name ("#41", or "none"). */
+  ticket: string
+  parent: string
+  depth: number
+  worktree: string | null
+  pr: number | null
+  pr_state: string | null
+  merged: boolean
+  restack: string
+  next: boolean
 }
 
 /** Which of an agent's actions ask you first in this repo: its profile, why it applies, and each key's value. */

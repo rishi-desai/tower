@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import Fixture, git, interactive
+from conftest import Fixture, git, interactive, track
 
 from tower import cli, events, ledger
 
@@ -384,11 +384,17 @@ def shared_fixture(repo: Fixture) -> None:
     feat-1 is busy with no card; feat-3's card says needs-you and no session contradicts it; feat-5 has an idle
     session and no card; feat-7 is busy with a stale needs-you card (you already answered); feat-8 waits on an
     approval and feat-9 on a question, both with running cards. feat/2-gone's card outlived its worktree. The
-    machine's policy is the personal profile.
+    machine's policy is the personal profile. feat-1's worktree holds a stack git-spice tracks: feat-1 (PR #11) on
+    feat-0 (PR #10), which was amended since, so feat-1 needs a restack.
     """
     repo.tower_dir.mkdir(exist_ok=True)
     (repo.tower_dir / "policy.toml").write_text('default_profile = "personal"\n', encoding="utf-8")
     paths = {name: repo.add_worktree(name) for name in ("feat-1", "feat-3", "feat-5", "feat-7", "feat-8", "feat-9")}
+    git(repo.main, "branch", "feat-0", "feat-1")
+    git(paths["feat-1"], "commit", "-q", "--allow-empty", "-m", "feat-1 on feat-0")
+    track(repo.main, {"feat-0": ("main", 10), "feat-1": ("feat-0", 11)})
+    amended = git(repo.main, "commit-tree", "feat-0^{tree}", "-p", "feat-0~1", "-m", "feat-0 amended").strip()
+    git(repo.main, "update-ref", "refs/heads/feat-0", amended)
     repo.write_card("feat-3", "needs-you", ticket="#3")
     repo.write_card("feat-7", "needs-you", ticket="#7")
     repo.write_card("feat-8", "running", ticket="#8")

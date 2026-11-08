@@ -9,6 +9,9 @@ node = "24"
 uv = "0.13.4"
 shellcheck = "0.11.0"
 gitleaks = "8.30.1"
+# Only for tests/test_git_spice_contract.py: tower reads git-spice's tracking ref itself (ADR 0010), so CI checks
+# that format against this real git-spice. The test is skipped where it isn't installed.
+"aqua:abhinav/git-spice" = "0.33.0"
 # Claude Code's CLI, for `claude plugin validate` and the pane's `claude plugin test`. Neither needs a login.
 "aqua:anthropics/claude-code" = "2.1.304"
 

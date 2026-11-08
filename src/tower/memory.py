@@ -48,7 +48,9 @@ def add_decision(worktree: Path, text: str) -> Path:
         )
     if is_main_checkout(worktree):
         raise DecisionError("the main checkout has no decisions log: tower starts every worker in its own worktree")
-    path = ledger.decisions_path(worktree)
+    card_file = ledger.card_path(worktree)
+    ledger.record_card(worktree, card_file)  # before the first card write too, so the log follows the worktree
+    path = ledger.decisions_log(card_file)
     path.parent.mkdir(exist_ok=True)
     line = f"- {time.strftime(card.TIME_FORMAT)} {decision}\n"
     fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)

@@ -6,12 +6,14 @@ Prints, from anywhere inside the repo:
                    line, which switches the hub into its adopt flow)
   2. LIVE SESSIONS the Claude sessions open in each worktree right now (from agent view)
   3. ORPHAN CARDS  cards whose worktree no longer exists (finished or deleted work)
+     STACKS        the stacks git-spice tracks, as trees in merge order, with which branch merges next and which
+                   need a restack (stacks.py)
   4. GROUPS        every worktree in the hub's report order (Needs you, Blocked, Running, Waiting on CI or review,
                    Done, Housekeeping), each with the reason for its state, so the hub never regroups
   5. GITHUB        your open PRs, and open issues (all of them on your own repo, assigned to you otherwise)
   6. BACKLOG       parked ideas waiting for a slot (only used when there's no GitHub)
 
-Sections 1, 3 and 4 are `tower state`'s report (state.py, the one place a worktree's status is decided), and section 2
+Sections 1, 3, STACKS and 4 are `tower state`'s report (state.py, the one place a worktree's status is decided), and section 2
 draws the same `claude agents --json` snapshot, so the hub, the pane (which reads `tower state --json`) and the WIP count
 always agree. Each GitHub call that fails prints its real error and the scan goes on. The pane runs this only for its
 GitHub section (Refresh GitHub), never on its 30-second refresh.
@@ -49,7 +51,8 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
         lines.append("(no live sessions: tower couldn't read agent view; see the NOTE lines under WORKTREES)")
     else:
         lines += sessions.render(report.agents, [(f.label, f.path) for f, _ in report.worktrees])
-    lines += ["", *state.orphans_section(report), "", *state.groups_section(report), ""]
+    lines += ["", *state.orphans_section(report), "", *state.stacks_section(report)]
+    lines += ["", *state.groups_section(report), ""]
     lines += ["== GITHUB ==", *(github_section(repo_dir) if github else ["(skipped: --no-github)"]), ""]
     lines.append("== BACKLOG (parked ideas) ==")
     return "\n".join(lines) + "\n" + backlog(folder / "_backlog.md")

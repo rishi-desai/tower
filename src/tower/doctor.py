@@ -181,9 +181,17 @@ def check_installed(name: str, commands: tuple[str, ...], install: str, version_
 
 
 def check_git_spice() -> Check:
-    """git-spice, which submits and restacks stacked PRs, is installed (brew names its command gs)."""
+    """git-spice, which submits and restacks stacked PRs, is installed as `git-spice`, the name tower's kickoffs and
+    Housekeeping lines run. Before 0.25 it was also `gs`: one found only under that name is a warning."""
     install = "brew install git-spice (or: mise use -g aqua:abhinav/git-spice)"
-    return check_installed("git-spice", ("git-spice", "gs"), install, version_must_mention="git-spice")
+    found = check_installed("git-spice", ("git-spice",), install, version_must_mention="git-spice")
+    if found.status == OK:
+        return found
+    as_gs = check_installed("git-spice", ("gs",), install, version_must_mention="git-spice")
+    if as_gs.status != OK:
+        return check_installed("git-spice", ("git-spice", "gs"), install, version_must_mention="git-spice")
+    fix = "upgrade it (brew upgrade git-spice, or mise use -g aqua:abhinav/git-spice), so git-spice is on PATH"
+    return Check("git-spice", WARN, f"{as_gs.detail}, but only as gs: tower's kickoffs run git-spice", fix)
 
 
 def check_mise() -> Check:
