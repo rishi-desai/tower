@@ -243,6 +243,7 @@ def test_adopt_scan_reports_each_worktree_like_the_bash_version(
         ("release-2026-11", "none"),  # #64: a year in a release name isn't a ticket
         ("2026-11-notes", "none"),  # #76: nor is a date at the start
         ("notes/2026-11-recap", "none"),
+        ("release-fix-2026-11", "none"),  # a year-month after a type isn't one either
         ("feat/42-x", "#42"),
         ("rishi-desai/fix-64-x", "#64"),
         ("42-x", "#42"),
@@ -263,6 +264,7 @@ def test_adopt_scan_guesses_tickets_like_a_card_does(repo: Fixture, capsys: pyte
         "issue-43": "#43",
         "gh-44": "#44",
         "rishi-fix-64": "#64",
+        "2026-11-notes": "none",
     }
     for branch in branches:
         repo.add_worktree(branch)
@@ -272,7 +274,7 @@ def test_adopt_scan_guesses_tickets_like_a_card_does(repo: Fixture, capsys: pyte
     }
 
     for branch, ticket in branches.items():
-        assert guesses[f"- [worktree] {branch}"] == ticket, branch
+        assert guesses[f"- [worktree] {branch}"] == gitrepo.guess_ticket(branch) == ticket, branch
 
 
 def test_an_untracked_file_next_to_the_nested_worktrees_still_counts(

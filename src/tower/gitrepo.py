@@ -12,12 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
-# A ticket guess takes the number after an issue word or a known type (issue-42, feat-42-x, fix/42-x), even behind a
-# user or version prefix (rishi-fix-64, v2-fix-42), or a bare number starting the name or a /-part (42-x). A version or
-# date isn't one: release-2026-11 and 2026-11-notes guess none.
+# A ticket guess takes the number after an issue word or a known type, even behind a user or version prefix
+# (issue-42, rishi-fix-64, v2-fix-42), or a bare number (42-x), so release-2026-11 isn't #2026. A year-month never is one.
 _TICKET_WORDS = r"issue|gh|feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix"
 _YEAR_MONTH = r"\d{4}-(?:0?[1-9]|1[0-2])(?:-|$)"
-BRANCH_TICKET = re.compile(rf"(?:(?:^|[-/])(?:{_TICKET_WORDS})[-/]|(?:^|/)(?!{_YEAR_MONTH}))(\d+)(?:-|$)")
+BRANCH_TICKET = re.compile(
+    rf"(?:(?:^|[-/])(?:{_TICKET_WORDS})[-/]"  # after an issue word or a type, which may follow a - or / prefix
+    rf"|(?:^|/))"  # or a bare number starting the name or a /-part
+    rf"(?!{_YEAR_MONTH})(\d+)(?:-|$)"
+)
 
 
 class NotARepo(Exception):
