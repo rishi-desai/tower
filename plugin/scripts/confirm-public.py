@@ -2047,9 +2047,11 @@ LINK_MENTION = re.compile(r"(?<![\w.-])ln(?![\w.-])")
 # (cp settings.json ~/.claude/); only READ_ONLY_PROGRAMS may name it. A whole word, or an option's attached value
 # (--output-dir=.claude, -C.claude), so prose naming it doesn't count.
 CLAUDE_FOLDER = re.compile(r"(?:\S*[/=]|-[A-Za-z]+)?\.claude", re.IGNORECASE)
-# Programs that can't write a file except through a redirection.
-READ_ONLY_PROGRAMS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "ls", "stat", "file", "diff", "cmp"}
-READ_ONLY_PROGRAMS |= {"echo", "printf", "test", "[", "true", ":", "jq"}
+# Programs that read the files given to them and write only to standard output, shared by the two reader sets below so
+# they can't drift. FILE_READERS adds a couple more; READ_ONLY_PROGRAMS adds programs that read no file at all.
+BASE_READERS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "ls", "stat", "file", "diff", "cmp"}
+# Programs that can't write a file except through a redirection (BASE_READERS plus ones that read no file).
+READ_ONLY_PROGRAMS = BASE_READERS | {"echo", "printf", "test", "[", "true", ":", "jq"}
 RULE_FILE_REASON = "the command touches a personal rule file (CLAUDE.local.md or ~/.claude/tower/rules)"
 TOWER_FILE_REASON = (
     "the command may change tower.conf, the policy file (which sets these approvals), tower's files or Claude Code's "
@@ -2093,10 +2095,10 @@ POLICY_CODE = re.compile(
 # Programs whose code can run setup.sh wherever it names it: PATH_BUILDERS' (awk's system()) and sed's (GNU's e).
 SETUP_CODE_PROGRAMS = PATH_BUILDERS | {"sed"}
 # Programs that only read the files given to them and write to standard output, so a setup.sh or policy-module path
-# among their arguments is read, not run. Not echo/printf (they don't read files, and printf -v assigns a variable),
-# nor awk/sed (they run a script of their own), nor xxd (`xxd in out` writes its second operand).
-FILE_READERS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "nl", "od", "ls", "stat", "file"}
-FILE_READERS |= {"diff", "cmp"}
+# among their arguments is read, not run. BASE_READERS plus nl and od; not echo/printf (they don't read files, and
+# printf -v assigns a variable), nor awk/sed (they run a script of their own), nor xxd (`xxd in out` writes its second
+# operand).
+FILE_READERS = BASE_READERS | {"nl", "od"}
 # git subcommands that only read, stage or show the files their operands name. grep (its -O opens files in a pager),
 # commit (its -F/-t go to the editor) and the rest are left out, so they ask: a clean git line with one of these and a
 # setup.sh operand is the only git read that passes. (rg and ag aren't here: ripgrep's --pre runs a program per file,
@@ -2105,9 +2107,10 @@ GIT_FILE_READERS = {"add", "blame", "diff", "log", "ls-files", "show", "status"}
 # git diff's --output=<file> / --output <file>, which writes its output to a file (a copy of the read). The program
 # routes that run a program on the file (an external diff, a textconv, a pager) come from config or the environment,
 # which git_runs_program covers, so they aren't options to match here; grep's -O is moot (grep isn't a read subcommand).
-# Environment variables, assigned on the line, that name a program git runs: an external diff, a pager, an editor.
+# Environment variables, assigned on the line, that name a program git runs or a folder it runs helpers from: an
+# external diff, a pager, an editor, or the exec path.
 GIT_RUN_PROGRAM_ENV = re.compile(
-    r"^(?:GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|EDITOR|VISUAL|GIT_SEQUENCE_EDITOR)="
+    r"^(?:GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|EDITOR|VISUAL|GIT_SEQUENCE_EDITOR|GIT_EXEC_PATH)="
 )
 # The last part of a git config key that names a program git runs (diff.external, diff.<driver>.command,
 # filter.<name>.clean); core.pager/editor, sequence.editor and any pager.* are named in git_key_runs_program.
@@ -2116,11 +2119,15 @@ GIT_PROGRAM_KEY_LEAVES = {"external", "command", "textconv", "pager", "clean", "
 # isn't a plain read, asks (#100). A bare basename (policy.py), which many repos have, is not it.
 POLICY_MODULE_PATH = os.path.join("src", "tower", "policy.py")
 # sed's options that take no value and can't make it edit a file, write one or read its script from one, GNU's and
-# BSD's; any other (-i edits in place, -f reads a script file, -e mixes scripts and files, GNU's -l takes a value)
-# makes sed unsafe, so it asks.
+# BSD's; -e gives a script (SED_EXPRESSION); any other (-i edits in place, -f reads a script file, GNU's -l takes a
+# value) makes sed unsafe, so it asks.
 SED_SWITCHES = re.compile(
     r"-[nErsuz]+|--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox)"
 )
+# sed's -e/--expression, which gives a script: a short cluster ending in e with the script attached (-e1p, -ne1p) or
+# in the next word (-e, -ne), or the long form (--expression=1p, --expression 1p). group 1 or 2 is the attached
+# script, empty/None when it is the next word.
+SED_EXPRESSION = re.compile(r"-[nErsuz]*e(.*)|--expression(?:=(.*))?")
 # One sed statement that only prints, deletes or quits lines picked by number, $ or a /regex/ (1,20p; /^def /p; 5q;
 # /a;b/p). A regex may hold an escaped delimiter (\/). sed_statements splits the script first, so matching one
 # statement never backtracks over a long script.
@@ -2332,11 +2339,13 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
         stdin = [command.stdin_text or ""] if interpreters or code_runners else []
         return [texts[index] for index in unread if index > start] + stdin
 
-    # The first program that runs code sees all the later ones' code too, so one look at it is enough.
-    if interpreters and any(POLICY_CODE.search(code) for code in code_after(interpreters[0])):
-        return True
+    # The first program that runs code sees all the later ones' code too, so one look at it is enough. awk, sed, vim
+    # and the like (code_runners) get the same tower-policy-use check as python/node (POLICY_CODE), not only the
+    # setup.sh and policy-module ones; interpreters are a subset of code_runners, so this covers them too.
     if code_runners and any(
-        (SETUP_MENTION.search(code) and (in_tower or "tower" in code.lower())) or POLICY_MODULE_MENTION.search(code)
+        POLICY_CODE.search(code)
+        or POLICY_MODULE_MENTION.search(code)
+        or (SETUP_MENTION.search(code) and (in_tower or "tower" in code.lower()))
         for code in code_after(code_runners[0])
     ):
         return True
@@ -2394,10 +2403,13 @@ def git_subcommand_at(args: list[Word]) -> int:
 
 def git_runs_program(words: list[Word]) -> bool:
     """Whether a simple command's WORDS set git up to run a program on the files it reads: an environment variable for
-    an external diff, a pager or an editor (GIT_RUN_PROGRAM_ENV), a `git config` of such a key, or a -c/--config-env of
-    one (git_key_runs_program). Checked over the whole line, so an earlier command's `git config` counts too."""
+    an external diff, a pager, an editor or the exec path (GIT_RUN_PROGRAM_ENV), --exec-path, a `git config` of such a
+    key, or a -c/--config-env of one (git_key_runs_program). Checked over the whole line, so an earlier command's
+    `git config` counts too."""
     if any(GIT_RUN_PROGRAM_ENV.match(word.text) for word in words):
         return True
+    if any(word.text == "--exec-path" or word.text.startswith("--exec-path=") for word in words):
+        return True  # git runs its helpers from this folder
     for index in range(len(words)):
         setting = config_setting(words, index)
         if setting is not None and git_key_runs_program(setting.text):
@@ -2417,26 +2429,40 @@ def git_key_runs_program(setting: str) -> bool:
 
 def sed_only_prints(args: list[Word]) -> bool:
     """Whether sed run with ARGS only selects lines to print, delete or quit on, never running a command or writing a
-    file: no word from a variable, no option but SED_SWITCHES (so no -e, which mixes scripts and files differently on
-    GNU and BSD sed, no -i and no -f), and its one script — the first non-option argument — only SED_PRINT_STATEMENTs.
-    A write (w), a run (GNU's e) or an edit (-i) makes it unsafe, and so does an operand standing in for the script it
-    lacks."""
+    file. No word from a variable, and no option but SED_SWITCHES or -e (an -i edit, -f script file or -l makes it
+    unsafe). Every script must be only SED_PRINT_STATEMENTs. The scripts are the -e values and, since GNU and BSD sed
+    disagree on whether a bare operand before -e is a script or a file, the first bare operand when it comes before any
+    -e; bare operands after an -e are files. A write (w), a run (GNU's e) or an edit makes a script fail the check."""
     if any(arg.dynamic for arg in args):
         return False
-    script = None
-    for arg in args:
-        text = arg.text
+    scripts: list[str] = []
+    saw_expression = False
+    saw_operand = False
+    index = 0
+    while index < len(args):
+        text = args[index].text
+        expression = SED_EXPRESSION.fullmatch(text)
         if text == "--":
+            index += 1
             continue
-        if text.startswith("-") and text != "-":
-            if SED_SWITCHES.fullmatch(text):
-                continue
-            return False  # -e, -i, -f, -l<n> or another option: not a plain print
-        script = text
-        break
-    if script is None:
-        return False
-    statements = sed_statements(script)
+        if expression:
+            attached = expression.group(1) if expression.group(1) is not None else expression.group(2)
+            if attached:
+                scripts.append(attached)
+            elif index + 1 < len(args):
+                scripts.append(args[index + 1].text)
+                index += 1
+            else:
+                return False  # -e with nothing after it
+            saw_expression = True
+        elif text.startswith("-") and text != "-" and not SED_SWITCHES.fullmatch(text):
+            return False  # -i, -f, -l<n> or another option: not a plain print
+        elif not text.startswith("-") or text == "-":
+            if not saw_expression and not saw_operand:
+                scripts.append(text)  # the first bare operand is the script when no -e came first
+            saw_operand = True
+        index += 1
+    statements = [part for script in scripts for part in sed_statements(script)]
     return any(part.strip() for part in statements) and all(
         not part.strip() or SED_PRINT_STATEMENT.fullmatch(part) for part in statements
     )

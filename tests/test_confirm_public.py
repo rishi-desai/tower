@@ -1587,6 +1587,8 @@ SETUP_OR_POLICY_MODULE_READS = [
     "cat setup.sh",
     "head -20 setup.sh",
     "sed -n 1,20p setup.sh",
+    "sed -ne '1,20p' setup.sh",  # -e gives the script, setup.sh is the file
+    "sed -n -e '/^def /p' setup.sh",
     "sed -n '/^def /p;$p' setup.sh",
     "sed -n '/setup.sh/p' README.md",  # setup.sh only inside the print script, not a file it touches
     "git diff origin/main -- setup.sh src/tower/policy.py",
@@ -1616,6 +1618,11 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     'S=./setup.sh; bash "$S"',
     "tower policy use sandbox",
     "echo 'tower policy use sandbox' | bash",
+    # tower policy use run from awk/sed/vim/ex code, like it is caught in python/node code
+    "awk 'BEGIN{system(\"tower policy use sandbox\")}'",
+    "vim -c '!tower policy use sandbox'",
+    "ex -sc '!tower policy use sandbox' README.md",
+    "sed 's/.*/tower policy use sandbox/e' README.md",
     # a reader whose output is run or saved: through a pipe, a substitution, a group redirect, printf -v, nesting
     "ls setup.sh | xargs -I{} bash {}",
     "cat setup.sh | sudo -s",
@@ -1641,6 +1648,8 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "git -c diff.external=bash diff -- setup.sh",
     "git config diff.external bash && git diff -- setup.sh",
     "PAGER=sh git grep -h '' setup.sh",
+    "git --exec-path=/tmp/evil diff -- setup.sh",  # git runs helpers from the exec path
+    "GIT_EXEC_PATH=/tmp/evil git diff -- setup.sh",
     "GIT_EDITOR=bash git commit --allow-empty -e -F setup.sh",
     "printf '[diff]\\n\\texternal = bash\\n' >> .git/config; git diff -- setup.sh",
     "find . -name setup.sh -exec sh {} ';' -o -name --dry-run",  # --dry-run is find's, not setup.sh's own arg
@@ -1649,7 +1658,8 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "sed -n e setup.sh",
     "sed 's/.*/&/e' setup.sh",
     "sed -n 'w x.sh' setup.sh",
-    "sed -n 'w x.sh' -e 1p setup.sh",
+    "sed -n 'w x.sh' -e 1p setup.sh",  # bare script before -e: GNU/BSD disagree, so ask
+    "sed -ne 'w x.sh' setup.sh",  # the -e script itself writes
     "awk 'BEGIN{system(\"./setup.sh\")}'",
     # awk or sed reading its program from standard input, which names or writes setup.sh
     "awk -f - <<'EOF'\nBEGIN{system(\"./setup.sh\")}\nEOF",
