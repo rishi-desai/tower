@@ -250,6 +250,9 @@ def test_adopt_scan_reports_each_worktree_like_the_bash_version(
         ("node-build-18", "none"),
         ("test-42", "#42"),  # though starting a name it's a type
         ("64-fix-2-bugs", "#64"),  # a leading number wins, as GitHub names a branch made from an issue
+        ("release/2/fix-42", "#42"),  # a number before a / is a folder, not the ticket
+        ("2026/11/notes", "none"),
+        ("feature-42-login", "#42"),
         ("feat/42-x", "#42"),
         ("rishi-desai/fix-64-x", "#64"),
         ("42-x", "#42"),
