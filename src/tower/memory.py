@@ -12,9 +12,9 @@ Claude Code caps what a SessionStart hook adds to the context at 10,000 characte
 character preview and a file path), so session_context() stays under BUDGET: the kickoff and card come whole, and the
 log keeps its newest lines that fit and names the file for the rest (docs/research/precompact-hook.md).
 
-Before compaction, the PreCompact hook (plugin/scripts/precompact-decisions.py) prints compaction_instructions(): the
-log, under the same cap, and a request that the summary keep word for word every decision or discovery not yet in it,
-and the exact next step (#97, ADR 0011). A decision the worker never logged is otherwise only summarised.
+Before compaction, the PreCompact hook (plugin/scripts/precompact-decisions.py) prints compaction_instructions(): a
+request that the summary keep word for word every decision or discovery not yet in the log, and the exact next step,
+then the log itself under the same cap (#97, ADR 0011). A decision the worker never logged is otherwise only summarised.
 
 Runs under whatever `python3` the plugin's scripts find (3.9 on a stock Mac), like the rest of the core.
 """
