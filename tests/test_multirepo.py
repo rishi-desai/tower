@@ -329,11 +329,12 @@ def test_each_repo_heading_names_its_ledger_so_the_hub_can_open_a_rows_card_file
 def test_a_repo_with_no_ledger_folder_says_so_in_its_heading(
     repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """tower.conf can't say where the repo's Ledger is: the heading says so, and the repo's own NOTE says why."""
     monkeypatch.setenv("TOWER_CONF", str(repo.agents_json.parent / "missing.conf"))
-    os.chdir(repo.main)
 
     assert cli.main(["state", "--all"]) == 0
     text = capsys.readouterr().out
 
-    assert f"== REPO: repo | {repo.main} | Ledger folder unknown (see NOTE) ==" in text.splitlines()
-    assert any(line.startswith("NOTE: no projects_dir in") for line in text.splitlines())
+    heading = f"== REPO: repo | {repo.main} | Ledger folder unknown (see NOTE) =="
+    assert heading in text.splitlines()
+    assert any(line.startswith("NOTE: ") and "so no cards were read" in line for line in section(text, heading))
