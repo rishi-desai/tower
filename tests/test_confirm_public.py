@@ -1578,6 +1578,154 @@ def test_setup_sh_of_this_project_is_behind_the_floor_however_its_answers_come(
     assert asks(decision) == expect_ask
 
 
+# Reading setup.sh or the policy module isn't running it (#100): a worker on tower greps them all the time. The read
+# exemption is narrow (ADR 0010): one top-level simple command, a plain reader, no pipe/substitution/write, so these
+# pass while every run, write and clever variant below asks.
+SETUP_OR_POLICY_MODULE_READS = [
+    "grep -n setup.sh README.md",
+    'grep -n "policy-context\\|hooks.json\\|session-env" -r src tests plugin/tests setup.sh README.md',  # #93's stall
+    "cat setup.sh",
+    "head -20 setup.sh",
+    "sed -n 1,20p setup.sh",
+    "sed -ne '1,20p' setup.sh",  # -e gives the script, setup.sh is the file
+    "sed -n -e '/^def /p' setup.sh",
+    "sed -n '/^def /p;$p' setup.sh",
+    "sed -n '/setup.sh/p' README.md",  # setup.sh only inside the print script, not a file it touches
+    "git diff origin/main -- setup.sh src/tower/policy.py",
+    "git --no-pager diff -- setup.sh",
+    "git log -p setup.sh",
+    "git show HEAD -- setup.sh",
+    "git status setup.sh",
+    "git blame setup.sh",
+    "git add setup.sh src/tower/policy.py",
+    "wc -l setup.sh 2>/dev/null",  # 2>/dev/null isn't a copy into a file
+    "grep foo setup.sh 2>err.log",  # stderr to a file isn't a copy of the read's output
+    "git diff --text -- setup.sh",  # --text ('treat as text'), not --textconv
+    "git diff -O orderfile -- setup.sh",  # diff's read-only orderfile
+    "sed -n '/a;b/p' setup.sh",  # a ; inside the /regex/ address isn't a statement break
+    "grep def src/tower/policy.py",
+    "cat src/tower/policy.py",
+    "echo 'run ./setup.sh to install'",  # a mention in prose, basename isn't setup.sh
+]
+# What may run setup.sh, write it or the policy module, or use the policy module, however it is written. Each asks in
+# every profile. Grouped by the xhigh review's findings, which found these passing after the first draft.
+SETUP_OR_POLICY_MODULE_RUNS = [
+    "./setup.sh",
+    "bash setup.sh",
+    "env ./setup.sh",
+    "echo x | xargs ./setup.sh",
+    "find . -name x -exec ./setup.sh {} +",
+    'S=./setup.sh; bash "$S"',
+    "tower policy use sandbox",
+    "echo 'tower policy use sandbox' | bash",
+    # tower policy use run from awk/sed/vim/ex code, like it is caught in python/node code
+    "awk 'BEGIN{system(\"tower policy use sandbox\")}'",
+    "vim -c '!tower policy use sandbox'",
+    "ex -sc '!tower policy use sandbox' README.md",
+    "sed 's/.*/tower policy use sandbox/e' README.md",
+    # a reader whose output is run or saved: through a pipe, a substitution, a group redirect, printf -v, nesting
+    "ls setup.sh | xargs -I{} bash {}",
+    "cat setup.sh | sudo -s",
+    "cat setup.sh | tee x.sh >/dev/null; bash x.sh",
+    'ls setup.sh | while read f; do bash "$f"; done',
+    'bash "$(ls setup.sh)"',
+    "bash `ls setup.sh`",
+    'eval "$(cat setup.sh)"',
+    "eval \"$(bash -c 'cat setup.sh')\"",
+    "{ cat setup.sh; } > x.sh; bash x.sh",
+    "cat setup.sh > x.sh",
+    "cp setup.sh x.sh",
+    'printf -v S ./setup.sh; bash "$S"',
+    # git running it, or handing it to a program: a pager, an external diff, grep -O, an editor, config set on the line
+    "git bisect run ./setup.sh",
+    "git rebase -x ./setup.sh HEAD~1",
+    "git -c core.pager=./setup.sh log",
+    "GIT_PAGER=./setup.sh git log",
+    "git grep -Obash -e '' -- setup.sh",
+    "git grep --open-files-in-pager=bash -e '' -- setup.sh",
+    "git grep --open=bash -e '' -- setup.sh",
+    "GIT_EXTERNAL_DIFF=bash git diff -- setup.sh",
+    "git -c diff.external=bash diff -- setup.sh",
+    "git config diff.external bash && git diff -- setup.sh",
+    "PAGER=sh git grep -h '' setup.sh",
+    "git --exec-path=/tmp/evil diff -- setup.sh",  # git runs helpers from the exec path
+    "GIT_EXEC_PATH=/tmp/evil git diff -- setup.sh",
+    "git --paginate diff -- setup.sh",  # --paginate forces the configured pager to run
+    "GIT_EDITOR=bash git commit --allow-empty -e -F setup.sh",
+    "printf '[diff]\\n\\texternal = bash\\n' >> .git/config; git diff -- setup.sh",
+    "find . -name setup.sh -exec sh {} ';' -o -name --dry-run",  # --dry-run is find's, not setup.sh's own arg
+    # sed's script (GNU's e runs a line of its input; w writes a copy; -e mixes files and scripts), and code
+    'sed -n "1e ./setup.sh" README.md',
+    "sed -n e setup.sh",
+    "sed 's/.*/&/e' setup.sh",
+    "sed -n 'w x.sh' setup.sh",
+    "sed -n 'w x.sh' -e 1p setup.sh",  # bare script before -e: GNU/BSD disagree, so ask
+    "sed -ne 'w x.sh' setup.sh",  # the -e script itself writes
+    "awk 'BEGIN{system(\"./setup.sh\")}'",
+    # awk or sed reading its program from standard input, which names or writes setup.sh
+    "awk -f - <<'EOF'\nBEGIN{system(\"./setup.sh\")}\nEOF",
+    "awk -f /dev/stdin <<'EOF'\nBEGIN{print > \"setup.sh\"}\nEOF",
+    "sed -f - setup.sh <<'EOF'\nw x.sh\nEOF",
+    "python3 -c 'import os; os.system(\"./setup.sh --profile sandbox\")'",
+    "python3 <<'EOF'\nimport os\nos.system('./setup.sh')\nEOF",
+    "python3 <<'EOF'\nfrom tower import policy\npolicy.use('sandbox')\nEOF",
+    # writing setup.sh or the policy module (#100 acceptance): a redirect, an in-place edit, a copy, a glued
+    # destination option (git --output=, dd of=), a literal module path in code
+    "echo x >> setup.sh",
+    "cat x > setup.sh",
+    "tee setup.sh < /tmp/x",
+    "sed -i '' s/a/b/ setup.sh",
+    "echo 'import os' > src/tower/policy.py",
+    "sed -i '' s/a/b/ src/tower/policy.py",
+    "cp x src/tower/policy.py",
+    "git diff --output=setup.sh",
+    "git diff --output=src/tower/policy.py HEAD",
+    "git diff --output setup.sh",
+    "dd of=setup.sh if=/dev/null",
+    "dd of=src/tower/policy.py",
+    'python3 -c \'open("src/tower/policy.py", "w").write("x")\'',
+    "xxd anydata setup.sh",  # xxd's second operand is written
+    "xxd -r payload.hex src/tower/policy.py",
+    "grep foo bar 2> setup.sh",  # stderr into setup.sh overwrites it
+]
+
+
+def tower_checkout_decision(tmp_path: Path, command: str, profile: str) -> dict[str, object] | None:
+    """The hook's decision on COMMAND for a session in a tower checkout, under PROFILE."""
+    cwd = tmp_path / "tower"
+    cwd.mkdir(exist_ok=True)
+    return run_hook(tmp_path, {**bash(command), "cwd": str(cwd)}, policy=f'default_profile = "{profile}"\n')
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("command", SETUP_OR_POLICY_MODULE_READS)
+def test_reading_setup_sh_or_the_policy_module_passes(tmp_path: Path, profile: str, command: str) -> None:
+    assert tower_checkout_decision(tmp_path, command, profile) is None
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("command", SETUP_OR_POLICY_MODULE_RUNS)
+def test_running_setup_sh_or_using_the_policy_module_asks(tmp_path: Path, profile: str, command: str) -> None:
+    assert asks(tower_checkout_decision(tmp_path, command, profile))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("echo " + "diff." * 40000 + "; ./setup.sh --profile sandbox", id="git config key scan"),
+        # one sed command, so sed_only_prints runs its scanner over 40000 print statements; the w makes it ask
+        pytest.param("sed -n '" + "p;" * 40000 + "w x.sh' setup.sh", id="sed print script"),
+    ],
+)
+def test_the_setup_sh_check_stays_linear_on_crafted_lines(tmp_path: Path, command: str) -> None:
+    """The git-config-key and sed-print-script checks run on the whole line before the work budget is charged, so a
+    backtracking one (the first drafts had both) would run past the hook timeout and let the line through unchecked.
+    The sed case is one command so read_only_words reaches sed_only_prints, which the scanner is in."""
+    start = time.monotonic()
+    assert asks(tower_checkout_decision(tmp_path, command, "sandbox"))
+    assert time.monotonic() - start < 10
+
+
 def test_migrated_pr_approval_none_still_asks_before_locking_a_pr(tmp_path: Path) -> None:
     """pr_approval=none never let gh pr lock/unlock through, so the migrated profile doesn't either (finding 12)."""
     conf = "push_approval=force\npr_approval=none\n"
