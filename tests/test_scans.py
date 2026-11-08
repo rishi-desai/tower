@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -304,8 +306,9 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
         tmp_path,
         """  "auth status"|"repo view") exit 0 ;;
   "pr list") case "$*" in
-    *feat/12-slash*) printf '#5 OPEN slash work' ;;
+    *feat/12-slash*) printf '[{"number":5,"state":"OPEN","title":"slash work","isCrossRepository":false}]' ;;
     *parked/x*) echo "HTTP 502" >&2; exit 1 ;;
+    *) printf '[]' ;;
   esac ;;""",
     )
 
@@ -317,6 +320,58 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
     assert "    PR: none\n" in out  # merged has no PR; the main checkout and the detached HEAD aren't asked
     assert out.count("    PR: ") == 2
     assert "- parked/x | 1 commit(s) not on main | PR: gh failed: HTTP 502 | last: " in out
+
+
+def fake_gh_prs_by_head(tmp_path: Path, prs: dict[str, list[dict[str, object]]]) -> None:
+    """Put a `gh` on PATH that answers like GitHub for these PRs per head branch (newest first, as gh lists them):
+    `pr list --head B` keeps --limit's first N, prints only the --json fields asked for, and renders a
+    `{{range .}}...{{.field}}...{{end}}` --template; `auth status` and `repo view` succeed."""
+    program = (
+        "import json, re, sys\n"
+        "args = sys.argv[1:]\n"
+        "sys.exit(0) if args[:2] in (['auth', 'status'], ['repo', 'view']) else None\n"
+        "sys.exit(9) if args[:2] != ['pr', 'list'] else None\n"
+        "opt = lambda name, default: args[args.index(name) + 1] if name in args else default\n"
+        f"listed = {prs!r}.get(opt('--head', ''), [])[: int(opt('--limit', '30'))]\n"
+        "fields = opt('--json', '').split(',')\n"
+        "listed = [{f: pr[f] for f in fields} for pr in listed]\n"
+        "template = opt('--template', '')\n"
+        "body = template.removeprefix('{{range .}}').removesuffix('{{end}}')\n"
+        "render = lambda pr: re.sub(r'{{\\.(\\w+)}}', lambda m: str(pr[m.group(1)]), body)\n"
+        "print(''.join(render(pr) for pr in listed) if template else json.dumps(listed), end='')\n"
+    )
+    gh = tmp_path / "bin" / "gh"
+    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(program)} "$@"\n', encoding="utf-8")
+    gh.chmod(0o755)
+
+
+def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """#77: a stranger's fork can push a branch with any name (patch-1): only a PR from this repo is the worktree's,
+    as in card.branch_pr, and a newer fork PR on the same branch name doesn't hide this repo's own."""
+    repo.add_worktree("shared")
+    repo.add_worktree("patch-1")
+    git(repo.main, "branch", "parked-fork", "shared")  # parked work: no worktree, commits not on main
+    fake_gh_prs_by_head(
+        tmp_path,
+        {
+            "shared": [
+                {"number": 23, "state": "OPEN", "title": "a stranger's fix", "isCrossRepository": True},
+                {"number": 22, "state": "MERGED", "title": "own work", "isCrossRepository": False},
+            ],
+            "patch-1": [{"number": 20, "state": "OPEN", "title": "typo", "isCrossRepository": True}],
+            "parked-fork": [{"number": 24, "state": "OPEN", "title": "x", "isCrossRepository": True}],
+        },
+    )
+
+    code, out, _ = run(capsys, "adopt-scan")
+
+    assert code == 0
+    pr_rows = {row.split(" | ")[0]: next_row for row, next_row in zip(out.splitlines(), out.splitlines()[1:])}
+    assert pr_rows["- [worktree] shared"] == "    PR: #22 MERGED own work"
+    assert pr_rows["- [worktree] patch-1"] == "    PR: none"
+    assert "- parked-fork | 1 commit(s) not on main | PR: none | last: " in out
 
 
 def test_the_plugin_runs_adopt_scan(repo: Fixture) -> None:
