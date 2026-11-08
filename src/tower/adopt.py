@@ -16,11 +16,12 @@ those worktrees still count.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from tower import ledger, policy, sessions, state
-from tower.github import try_gh
+from tower.github import from_this_repo, try_gh
 from tower.gitrepo import GitWorktree, git, guess_ticket, list_worktrees, repo_name
 
 SHOWN_CHANGES = 8  # uncommitted entries listed under a worktree; the rest are counted
@@ -123,12 +124,21 @@ def worktree_rows(
 
 
 def branch_pr(repo_dir: Path, branch: str, with_title: bool) -> tuple[str | None, str]:
-    """The branch's newest PR as "#N STATE[ title]", "none" when it has none, or None and gh's error."""
-    fields, title = ("number,state,title", " {{.title}}") if with_title else ("number,state", "")
-    template = "{{range .}}#{{.number}} {{.state}}" + title + "{{end}}"
-    found, error = try_gh(repo_dir, "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-                          "--json", fields, "--template", template)  # fmt: skip
-    return (None, error) if found is None else (found.strip() or "none", "")
+    """The branch's newest PR as "#N STATE[ title]", "none" when it has none, or None and gh's error. A fork's PR is
+    never it (a stranger's patch-1 isn't this work), so forks are dropped before the newest is chosen (#77). Newest,
+    not open first as card.branch_pr chooses: #78 unifies that."""
+    out, error = try_gh(repo_dir, "pr", "list", "--head", branch, "--state", "all",
+                        "--json", "number,state,title,isCrossRepository")  # fmt: skip
+    if out is None:
+        return None, error
+    try:
+        prs = [(int(p["number"]), str(p["state"]), str(p["title"])) for p in json.loads(out) if from_this_repo(p)]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None, f"gh pr list printed something unexpected: {out[:120]!r}"
+    if not prs:
+        return "none", ""
+    number, pr_state, title = max(prs)
+    return f"#{number} {pr_state}" + (f" {title}" if with_title else ""), ""
 
 
 def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str] | None, list[str]]:
