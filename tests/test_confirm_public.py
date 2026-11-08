@@ -1764,6 +1764,29 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "command",
     [
+        pytest.param("python3 " * 30_000, id="interpreter words"),
+        pytest.param("echo " * 90_000, id="plain words"),
+        pytest.param("tower " * 30_000 + "policy", id="tower then policy"),
+        pytest.param("A=1 " * 10_000 + "cat " + "tower/setup.sh " * 10_000, id="setup.sh read"),
+        pytest.param("A=1 " * 10_000 + "echo " + "cd " * 10_000, id="cd"),
+        pytest.param("A=1 " * 10_000 + "echo " + "git-x " * 10_000, id="dashed git"),
+        pytest.param("A=1 " * 10_000 + "echo " + "tower " * 10_000, id="tower"),
+        pytest.param("A=1 " * 100_000 + "tower " * 1_000, id="tower after many assignments"),
+        pytest.param("uv " + "x " * 400_000 + "tower merge " * 900, id="tower merge after many words"),
+    ],
+)
+def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
+    """Checks that look at each word (does an interpreter get code, does it run tower, cd or git, does it change the
+    policy) run before the work budget or pay only for the words after their own, so they stay linear: rescanning
+    the rest of the line, or the words before it, once per word took 12-92 s on these, past the hook timeout."""
+    start = time.monotonic()
+    run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         pytest.param('git commit -m "' + "tower.conf " * 50_000 + '"', id="names"),
         pytest.param("git add " + "src tower.conf " * 4000, id="names and folders"),
     ],
