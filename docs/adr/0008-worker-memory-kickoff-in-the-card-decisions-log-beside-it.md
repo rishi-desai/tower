@@ -23,6 +23,7 @@ hook (`worker-memory.py`) on `startup`, `clear` and `compact`:
 There is no PreCompact hook. Claude Code runs only scripts there (`command`, `http`, `mcp_tool`, never `prompt` or
 `agent`), so it can't make the worker update its card or log before compaction; its stdout only steers the summary
 (docs/research/precompact-hook.md). The card may be a little behind at compaction; the kickoff is always exact.
+ADR 0011 later added a PreCompact hook for that: it asks the summary to keep the decisions not yet in the log.
 
 ## Considered options
 

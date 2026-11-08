@@ -12,6 +12,10 @@ Claude Code caps what a SessionStart hook adds to the context at 10,000 characte
 character preview and a file path), so session_context() stays under BUDGET: the kickoff and card come whole, and the
 log keeps its newest lines that fit and names the file for the rest (docs/research/precompact-hook.md).
 
+Before compaction, the PreCompact hook (plugin/scripts/precompact-decisions.py) prints compaction_instructions(): the
+log, under the same cap, and a request that the summary keep word for word every decision or discovery not yet in it,
+and the exact next step (#97, ADR 0011). A decision the worker never logged is otherwise only summarised.
+
 Runs under whatever `python3` the plugin's scripts find (3.9 on a stock Mac), like the rest of the core.
 """
 
@@ -100,14 +104,54 @@ def session_context(worktree: Path, source: str) -> str:
         card_part = f"{cut}\n(the card is cut here to stay under Claude Code's limit: read {card_file})"
     room = BUDGET - len(f"{header}\n\n{kickoff_part}\n\n{card_part}\n\n{log_heading}") - LEFT_OUT_ROOM
     decisions = [line for line in (log_text or "").splitlines() if line.strip()]
+    log_part = log_heading + "\n" + (log_tail(decisions, room, log_file) if decisions else log_problem or "(none yet)")
+    return f"{header}\n\n{kickoff_part}\n\n{card_part}\n\n{log_part}\n"
+
+
+def compaction_instructions(worktree: Path) -> str:
+    """What the PreCompact hook in worktree prints for the compaction summary: a request to keep word for word every
+    decision or discovery not yet in the decisions log, and the exact next step, followed by the log itself (its newest
+    lines under BUDGET characters) to compare against. "" in the main checkout, or when the worktree has no card or no
+    log written since it was made, or a log that can't be read: then the summary is left to Claude Code alone. Claude
+    Code puts a user's /compact focus before this text, so it isn't repeated here (ADR 0011). Raises NotARepo,
+    LedgerError or OSError."""
+    if is_main_checkout(worktree):
+        return ""
+    card_file = ledger.existing_card_path(worktree)
+    if card_file is None:
+        return ""
+    log_file = ledger.decisions_log(card_file)
+    born = worktree_birth(worktree)
+    card_text, _ = read_since(card_file, born)
+    log_text, _ = read_since(log_file, born)
+    decisions = [line for line in (log_text or "").splitlines() if line.strip()]
+    if card_text is None or not decisions:
+        return ""
+    request = (
+        "tower: this worker's decisions log is below, and it comes back on its own after compaction (tower's"
+        " worker-memory hook), so the summary needn't repeat it. Besides any focus the user gave, the summary must"
+        ' keep, word for word, under a heading "Not yet in the decisions log":\n'
+        "- every decision (what was chosen over what, and why) and every discovery made in this conversation that is"
+        " not already in the decisions log below;\n"
+        "- the exact next step: what was being done when compaction started, and what comes right after it."
+    )
+    log_heading = f"# Decisions log ({log_file}, oldest first)"
+    room = BUDGET - len(f"{request}\n\n{log_heading}\n") - LEFT_OUT_ROOM
+    return f"{request}\n\n{log_heading}\n{log_tail(decisions, room, log_file)}\n"
+
+
+def log_tail(decisions: list[str], room: int, log_file: Path) -> str:
+    """The newest of the log's lines (oldest first) that fit in room, one per line, and, when older ones are left out,
+    a last line saying how many and naming log_file for the rest; LEFT_OUT_ROOM past room is enough for that line."""
     kept = newest_that_fit(decisions, room)
-    log_part = log_heading + "\n" + ("\n".join(kept) if kept else log_problem or "(none yet)")
+    tail = "\n".join(kept)
     if len(kept) < len(decisions):
-        log_part += (
-            f"\n({len(decisions) - len(kept)} older decisions left out to stay under Claude Code's limit:"
+        left_out = (
+            f"({len(decisions) - len(kept)} older decisions left out to stay under Claude Code's limit:"
             f" read {log_file})"
         )
-    return f"{header}\n\n{kickoff_part}\n\n{card_part}\n\n{log_part}\n"
+        tail = f"{tail}\n{left_out}" if kept else left_out
+    return tail
 
 
 def newest_that_fit(lines: list[str], room: int) -> list[str]:

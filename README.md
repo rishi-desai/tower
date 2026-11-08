@@ -377,6 +377,11 @@ description, or you type `/tower:<name>`.
   never rewritten; `tower clean` archives it with the card). It stays under Claude Code's 10,000-character cap for
   SessionStart output, keeping the log's newest lines. Quiet in the main checkout, on `/resume` and for a worktree with
   no card or log. See docs/adr/0008.
+- **Unlogged decisions** (`precompact-decisions.py`, a PreCompact hook on manual and auto compaction): asks the
+  compaction summary to keep, word for word, every decision or discovery the worker hasn't added to its decisions log
+  yet, and the exact next step, with the log (newest lines, under the 10,000-character cap) to compare against. Your
+  own `/compact <focus>` still comes first; Claude Code adds the hook's text after it. Quiet in the main checkout and
+  for a worktree with no card or no log, and never blocks compaction. See docs/adr/0011.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
   answer a session, by typing or in its pop-up, a card that says `needs-you` is re-rendered by tower's core as `running` (the
@@ -603,7 +608,7 @@ tower/
     hooks/register.tsx                the pane mod: the pane, status line, toasts, Orca jump, the back-to-hub line
     types/index.d.ts                  the pane's saved state, as Claude Code checks it
     tests/                            claude plugin test plugin; fixtures/ holds `tower state --json` output tests/test_state.py checks
-    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, worker-memory.py, run-tower.py (the core's CLI, for the skills and the pane)
+    scripts/                          confirm-public.py, card-reminder.py, card-resume.py, notify-needs-you.py, record-event.py, session-env.py, worker-memory.py, precompact-decisions.py, run-tower.py (the core's CLI, for the skills and the pane)
     lib/tower -> ../../src/tower      symlink: how hooks import the core (a marketplace install copies its target)
     skills/                           hub/ (ADOPT.md: its adopt mode) status-card/ project-rules/ babysit-pr/
                                       leaving-pr-comments/ adopt/ (an alias for the hub's adopt mode, for one release)
