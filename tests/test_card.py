@@ -384,6 +384,10 @@ def test_the_ticket_comes_from_the_flag_then_the_last_card_then_the_branch(
     assert write(capsys, monkeypatch)[0] == 0
     assert frontmatter(repo.ledger / "feat-60-not-60.md")[1] == "ticket: none"  # an explicit none beats the guess
 
+    monkeypatch.chdir(repo.add_worktree("rishi-fix-64"))
+    assert write(capsys, monkeypatch)[0] == 0
+    assert frontmatter(repo.ledger / "rishi-fix-64.md")[1] == 'ticket: "#64"'  # #76: behind a - joined user prefix
+
     code, _, err = write(capsys, monkeypatch, "--ticket", "#51 and #52")
     assert (code, err) == (1, "tower: a ticket is a number like 42 or #42, or none; got '#51 and #52'\n")
 

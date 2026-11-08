@@ -12,10 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
-# A ticket guess needs a known type before the number (feat-42-x, fix/42-x, or just 42-x), so release-2026-11 isn't #2026.
-BRANCH_TICKET = re.compile(
-    r"(?:^|/)(?:(?:feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix)[-/])?(\d+)(?:-|$)"
-)
+# Words that name a ticket when a number follows (fix-42), even behind one user or version prefix (rishi-fix-64).
+TICKET_WORDS = {"issue", "gh", "feat", "fix", "chore", "refactor", "bug", "hotfix"}
+# Types that are everyday words too (node-build-18, flaky-test-2), so they name one only starting the name or a /-part.
+TYPE_WORDS = TICKET_WORDS | {"feature", "bugfix", "docs", "test", "perf", "ci", "build", "spike"}
+NUMBER = re.compile(r"[0-9]+")
+YEAR = re.compile(r"(?:19|20)[0-9][0-9]")
+MONTH = re.compile(r"0?[1-9]|1[0-2]")
 
 
 class NotARepo(Exception):
@@ -88,6 +91,29 @@ def repo_name(repo_dir: Path) -> str:
 
 
 def guess_ticket(branch: str) -> str:
-    """The ticket a branch name points at (rishi/feat-42-x, fix/42-x, 42-x -> #42), or none."""
-    match = BRANCH_TICKET.search(branch)
-    return f"#{match.group(1)}" if match else "none"
+    """The ticket a branch name points at (rishi/feat-42-x, rishi-fix-42, issue-42, 42-x -> #42), or none.
+
+    Each /-part is read on its own, and its first word wins: 42-fix-2-bugs is #42. When unsure it guesses none rather
+    than a wrong ticket, since a stack branch's guess counts as an issue in progress with nobody to correct it.
+    """
+    parts = branch.split("/")
+    for position, part in enumerate(parts):
+        words = part.split("-")
+        ends_name = position == len(parts) - 1
+        if ticket_number_at(words, 0, ends_name):  # 42-x
+            return f"#{words[0]}"
+        if words[0] in TYPE_WORDS and ticket_number_at(words, 1, ends_name):  # feat-42-x
+            return f"#{words[1]}"
+        if len(words) > 1 and words[1] in TICKET_WORDS and ticket_number_at(words, 2, ends_name):  # rishi-fix-64
+            return f"#{words[2]}"
+    return "none"
+
+
+def ticket_number_at(words: list[str], index: int, ends_name: bool) -> bool:
+    """Whether words[index] of a /-part can be a ticket: all digits, followed by a - or the name's end (release/2/fix-42
+    is #42), and not the year of a year-month (2026-11-notes)."""
+    if index >= len(words) or not NUMBER.fullmatch(words[index]):
+        return False
+    if index + 1 == len(words):
+        return ends_name
+    return not (YEAR.fullmatch(words[index]) and MONTH.fullmatch(words[index + 1]))

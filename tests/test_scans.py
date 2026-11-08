@@ -235,19 +235,52 @@ def test_adopt_scan_reports_each_worktree_like_the_bash_version(
     assert branches.count("\n") == 1  # nothing else: main is the default, the others have worktrees
 
 
+@pytest.mark.parametrize(
+    ("branch", "ticket"),
+    [
+        ("issue-42", "#42"),  # #76: an issue word names the ticket as a type does
+        ("gh-42", "#42"),
+        ("rishi-fix-64", "#64"),  # #76: a user prefix joined with - instead of /
+        ("v2-fix-42", "#42"),  # #76: a version prefix, whose 2 isn't the ticket
+        ("release-2026-11", "none"),  # #64: a year in a release name isn't a ticket
+        ("2026-11-notes", "none"),  # #76: nor is a date at the start
+        ("notes/2026-11-recap", "none"),
+        ("release-fix-2026-11", "none"),  # a year-month after a type isn't one either
+        ("feat-1234-2-step", "#1234"),  # a four-digit ticket isn't a year
+        ("fix-flaky-test-2", "none"),  # a type deeper in the name than one prefix is just a word
+        ("flaky-test-2", "none"),  # and behind a prefix, a type that's an everyday word is too
+        ("node-build-18", "none"),
+        ("test-42", "#42"),  # though starting a name it's a type
+        ("64-fix-2-bugs", "#64"),  # a leading number wins, as GitHub names a branch made from an issue
+        ("release/2/fix-42", "#42"),  # a number before a / is a folder, not the ticket
+        ("2026/11/notes", "none"),
+        ("feature-42-login", "#42"),
+        ("add-feature-2-step", "none"),
+        ("feat/42-x", "#42"),
+        ("rishi-desai/fix-64-x", "#64"),
+        ("42-x", "#42"),
+        ("fix/7", "#7"),
+        ("main", "none"),
+    ],
+)
+def test_the_ticket_guess_reads_the_number_after_an_issue_word_or_a_type(branch: str, ticket: str) -> None:
+    assert gitrepo.guess_ticket(branch) == ticket
+
+
 def test_adopt_scan_guesses_tickets_like_a_card_does(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     """#64: adopt-scan makes the guess `tower card write` makes, so a year or a version isn't taken for the ticket."""
-    repo.add_worktree("release-2026-11")
-    repo.add_worktree("v2-fix-42")
-    repo.add_worktree("fix/7-x")
+    branches = ["release-2026-11", "v2-fix-42", "fix/7-x", "issue-43", "gh-44", "rishi-fix-64", "2026-11-notes"]
+    for branch in branches:
+        repo.add_worktree(branch)
 
     guesses = {
         row.split(" | ")[0]: row.rsplit(" | ticket guess: ", 1)[1] for row in adopt_rows(capsys) if row.startswith("- ")
     }
 
-    assert guesses["- [worktree] release-2026-11"] == gitrepo.guess_ticket("release-2026-11") == "none"
-    assert guesses["- [worktree] v2-fix-42"] == gitrepo.guess_ticket("v2-fix-42") != "#2"
-    assert guesses["- [worktree] fix/7-x"] == gitrepo.guess_ticket("fix/7-x") == "#7"
+    assert {branch: guesses[f"- [worktree] {branch}"] for branch in branches} == {
+        branch: gitrepo.guess_ticket(branch) for branch in branches
+    }
+    assert guesses["- [worktree] v2-fix-42"] == "#42"  # not all none: the guesses themselves are tested above
 
 
 def test_an_untracked_file_next_to_the_nested_worktrees_still_counts(
