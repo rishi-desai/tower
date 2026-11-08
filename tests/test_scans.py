@@ -246,8 +246,10 @@ def test_adopt_scan_reports_each_worktree_like_the_bash_version(
         ("release-fix-2026-11", "none"),  # a year-month after a type isn't one either
         ("feat-1234-2-step", "#1234"),  # a four-digit ticket isn't a year
         ("fix-flaky-test-2", "none"),  # a type deeper in the name than one prefix is just a word
-        ("2-fix-42", "#42"),  # a number before the type is a prefix, not the ticket
-        ("2024-fix-42", "#42"),
+        ("flaky-test-2", "none"),  # and behind a prefix, a type that's an everyday word is too
+        ("node-build-18", "none"),
+        ("test-42", "#42"),  # though starting a name it's a type
+        ("64-fix-2-bugs", "#64"),  # a leading number wins, as GitHub names a branch made from an issue
         ("feat/42-x", "#42"),
         ("rishi-desai/fix-64-x", "#64"),
         ("42-x", "#42"),

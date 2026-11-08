@@ -83,9 +83,11 @@ _Avoid_: status file, report
 
 **Ticket guess**:
 The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess wherever tower shows it. A number names
-the ticket when an issue word or a type comes right before it, even behind one user or version prefix (`issue-42`,
-`rishi-fix-64`, `v2-fix-42`), or when it starts the name or a part after a `/` (`42-x`, `rishi/42-x`). A year and month
-(`2026-11-notes`, `release-2026-11`) never name one. It can miss or be wrong, so it is a guess, never a fact.
+the ticket when it starts the name or a part after a `/` (`42-x`, `rishi/42-x`, which wins over a later one), or when
+an issue word or a type comes right before it (`issue-42`, `test-42`). Behind one user or version prefix only an issue
+word or a kind of change counts (`rishi-fix-64`, `v2-fix-42`), not a type that is also an everyday word
+(`node-build-18`). A year and month (`2026-11-notes`, `release-2026-11`) never name one. When unsure it guesses no
+ticket rather than a wrong one. It can miss or be wrong, so it is a guess, never a fact.
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
 **Issue in progress**:
