@@ -26,8 +26,9 @@ tower merge [PR]           merge PR (default: this branch's), stacked or not, by
                            merge.py)
 tower clean [WORKTREE ...|--all] [--dry-run]
                            clean up finished workers (worktree, branch here and on GitHub, terminals; the card is
-                           archived) once every check proves nothing would be lost; --dry-run only checks and says what
-                           would go; exit 1 when a check failed or a step didn't work (see clean.py)
+                           archived) once every check proves nothing would be lost; naming the branch of a worktree
+                           already gone finishes a half-done cleanup; --dry-run only checks and says what would go;
+                           exit 1 when a check failed or a step didn't work (see clean.py)
 tower policy               the approval profile for this repo, why it applies, and what each key says (see policy.py)
 tower policy use PROFILE [--repo]
                            make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
