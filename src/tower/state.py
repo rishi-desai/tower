@@ -667,11 +667,11 @@ def issues_in_progress(report: Report) -> dict[str, str]:
     """Where each issue in progress runs, by its ticket: "#93" -> "running in feat-93-x" (each worktree whose card
     names it, in its effective state, comma-joined), and by the ticket guess of each unmerged branch of a stack a
     worktree holds: "#41" -> "in the stack in feat-40-x" (a stack worktree's card names only one ticket). A worktree
-    without a card, or a stack no worktree holds, is on no issue. The pane (`tower state --json`'s in_progress) and the
-    scan's issue list both read this."""
+    without a card, or ready to clean up (its work merged or on the base branch), or a stack no worktree holds, is on
+    no issue. The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
     notes: dict[str, str] = {}
     for facts, v in report.worktrees:
-        if facts.card is None or TICKET.fullmatch(facts.card.ticket) is None:
+        if facts.card is None or TICKET.fullmatch(facts.card.ticket) is None or v.status == "ready-to-clean":
             continue
         note = f"{v.status} in {facts.label}"
         ticket = facts.card.ticket
@@ -681,9 +681,10 @@ def issues_in_progress(report: Report) -> dict[str, str]:
         if holder is None:  # git-spice still tracks it, but no worktree has any of its branches: nobody works it
             continue
         for branch in stack.branches:
-            if branch.ticket == "none" or branch.merged or branch.ticket in notes:
+            guess = normalized_ticket(branch.ticket)  # a guess keeps the branch's digits: feat-042-x -> #042
+            if guess is None or guess == "none" or branch.merged or guess in notes:
                 continue
-            notes[branch.ticket] = f"in the stack in {holder}"
+            notes[guess] = f"in the stack in {holder}"
     return notes
 
 

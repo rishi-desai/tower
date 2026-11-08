@@ -501,12 +501,14 @@ export const register: Register = on => {
     const stacks = state.stacks ?? [] // an older core reports none
     const issues = github?.issues ?? []
     // An issue in progress gets no button: its number, then where it runs after its title ("… · running in feat-93-x").
+    // It's read from tower state, not the stored scan's marks: the 30-second refresh keeps it current between scans.
     const inProgress = state.in_progress ?? {} // an older core reports none
     const shownIssues = issuesToShow(issues, inProgress)
     const runningIssues = issues.filter(i => isInProgress(i, inProgress)).length
+    const shownRunning = shownIssues.filter(i => isInProgress(i, inProgress)).length
     // Below the rows, the hidden ones: "+ 2 more", "+ 2 more in progress", or both, as the header counts them.
-    const hiddenRunning = runningIssues - shownIssues.filter(i => isInProgress(i, inProgress)).length
-    const hiddenOpen = issues.length - shownIssues.length - hiddenRunning
+    const hiddenOpen = issues.length - runningIssues - (shownIssues.length - shownRunning)
+    const hiddenRunning = runningIssues - shownRunning
     const moreIssues = [
       hiddenOpen > 0 ? `${hiddenOpen}${issues.length >= SCAN_ISSUE_LIMIT ? ' or' : ''} more` : '',
       hiddenRunning > 0 ? `${hiddenRunning} more in progress` : '',

@@ -95,6 +95,24 @@ def test_a_hand_edited_ticket_is_read_as_card_write_writes_it(
     assert result["in_progress"] == {"#93": "running in feat-93-x, running in feat-93-y"}
 
 
+def test_finished_work_and_a_stack_branchs_guess_name_issues_as_github_numbers_them(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """feat-95-x is done with every commit on main (ready to clean up), so #95 is free again; the stack feat-041-a's
+    worktree holds puts #41 and #42 in progress, not #041 and #042."""
+    repo.add_worktree("feat-95-x", commits=0)
+    repo.write_card("feat-95-x", "done", ticket="#95")
+    stack = repo.add_worktree("feat-041-a")
+    git(stack, "commit", "-q", "--allow-empty", "-m", "a")
+    git(repo.main, "branch", "feat-042-b", "feat-041-a")
+    track(repo.main, {"feat-041-a": ("main", None), "feat-042-b": ("feat-041-a", None)})
+
+    result = tower_state(capsys)
+
+    assert rows(result)["feat-95-x"]["status"] == "ready-to-clean"
+    assert result["in_progress"] == {"#41": "in the stack in feat-041-a", "#42": "in the stack in feat-041-a"}
+
+
 def test_a_stack_no_worktree_holds_puts_no_issue_in_progress(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     """git-spice can still track branches nobody has checked out: their ticket guesses aren't issues in progress."""
     git(repo.main, "branch", "fix-45-old")
