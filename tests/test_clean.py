@@ -14,7 +14,7 @@ import pytest
 from conftest import Fixture, git, interactive
 from test_merge import REPO, Clock, FakeGitHub, FakePull, ok
 
-from tower import clean, cli, merge, state
+from tower import clean, cli, gitrepo, merge, state
 from tower.merge import GhResult
 
 
@@ -685,7 +685,7 @@ def test_a_half_done_cleanup_is_finished_by_naming_its_branch(repo: Fixture) -> 
     assert worker.orca.calls == []  # no worktree, so nothing to ask Orca
 
 
-def test_a_half_done_cleanup_whose_branches_orca_deleted_too_archives_the_card(repo: Fixture) -> None:
+def test_a_half_done_cleanup_whose_branches_are_already_gone_archives_the_card(repo: Fixture) -> None:
     worker = merged_worker(repo)
     half_done(repo, worker)
     git(repo.main, "branch", "-q", "-D", "feat-1")
@@ -746,7 +746,7 @@ def test_a_half_done_cleanup_that_fails_a_check_still_standing_removes_nothing(
     assert not [call for call in worker.github.calls if "DELETE" in call]
 
 
-def test_no_worktree_and_no_card_still_errors_as_before(repo: Fixture) -> None:
+def test_a_name_with_no_worktree_and_no_card_touches_nothing(repo: Fixture) -> None:
     worker = merged_worker(repo)
     half_done(repo, worker)
     (repo.ledger / "feat-1.md").unlink()
@@ -757,3 +757,44 @@ def test_no_worktree_and_no_card_still_errors_as_before(repo: Fixture) -> None:
         run_clean(repo, worker, "feat-1")
 
     assert branch_exists(repo, "feat-1") and "feat-1" in worker.github.branches
+
+
+def test_a_local_branch_deleted_while_clean_deletes_it_is_said_as_gone(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = merged_worker(repo)
+    real_git = gitrepo.git
+
+    def git_racing_orca(cwd: Path, *args: str) -> str | None:
+        if args[:1] == ("update-ref",):  # Orca deletes the branch between tower's read and its delete
+            real_git(cwd, "update-ref", "-d", "refs/heads/feat-1")
+        return real_git(cwd, *args)
+
+    monkeypatch.setattr(clean, "git", git_racing_orca)
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert "feat-1: the local branch is already gone" in said
+    assert said[-1] == "result: True"
+
+
+@dataclass
+class RacingGitHub(CleanGitHub):
+    """CleanGitHub where the head branch is deleted (by Orca) just before tower's DELETE, which GitHub then refuses."""
+
+    def __call__(self, args: list[str]) -> GhResult:
+        if "DELETE" in args:
+            self.calls.append(args)
+            self.branches.pop("feat-1", None)
+            return GhResult(1, '{"message":"Reference does not exist"}', "gh: Reference does not exist (HTTP 422)")
+        return super().__call__(args)
+
+
+def test_a_github_branch_deleted_while_clean_deletes_it_is_said_as_gone(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    worker.github = RacingGitHub(worker.github.pulls)
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert "feat-1: feat-1 is already deleted on GitHub" in said
+    assert said[-1] == "result: True"

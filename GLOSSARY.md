@@ -43,7 +43,7 @@ _Avoid_: prune, teardown, delete (alone: the card is archived, not deleted)
 
 **Half-done cleanup**:
 A cleanup that stopped after its worktree was removed, leaving the branch, the card or the pull undone. Naming the
-branch to cleanup again finishes it, once the checks a missing worktree can still fail pass (its PR merged at the
+branch to clean up again finishes it, once the checks a missing worktree can still fail pass (its PR merged at the
 branch's head, nothing stashed on it, its card not saying work goes on).
 _Avoid_: partial cleanup, orphan card (an orphan card is any card without a worktree; a half-done cleanup is one cause)
 

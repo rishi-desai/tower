@@ -210,7 +210,11 @@ def resolve(
             for w in worktrees
             if os.path.realpath(w.path) == path or name in (w.branch, w.label, os.path.basename(w.path))
         ]
-        if not matches and ledger_folder is not None and (ledger_folder / ledger.card_name(name, "", here)).is_file():
+        if (
+            not matches
+            and ledger_folder is not None
+            and (ledger_folder / ledger.card_name(name, "HEAD", here)).is_file()
+        ):
             if name not in gone:
                 gone.append(name)
             continue
@@ -266,12 +270,9 @@ def check(
     elif status:
         changed = status.splitlines()
         failures.append(f"it has {state.plural(len(changed), 'uncommitted or untracked file')}")
-    stashes = stash_entries(path, worktree.branch)
-    if stashes is None:
-        failures.append("git couldn't list the stash")
-    elif stashes:
-        failures.append(f"{state.plural(len(stashes), 'stash entry')} {'was' if len(stashes) == 1 else 'were'} made"
-                        f" on {worktree.branch}: {stashes[0]}")  # fmt: skip
+    stash_failure = stashed_on(path, worktree.branch)
+    if stash_failure:
+        failures.append(stash_failure)
     card, card_failure = card_of(worktree.branch, worktree.sha, path, ledger_folder, ledger_note)
     if card_failure:
         failures.append(card_failure)
@@ -299,19 +300,18 @@ def check_gone(branch: str, main: Path, gh: Gh, ledger_folder: Path | None, ledg
     pr_number, head, pr_failure, pr_known = merged_pr(gh, branch)
     if pr_failure:
         failures.append(pr_failure)
-    tip = git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    if head is not None and tip is not None and tip != head:
+    tip = git(main, "for-each-ref", "--format=%(objectname)", f"refs/heads/{branch}")  # "" when it is gone
+    if tip is None:
+        failures.append(f"git couldn't say where the local branch {branch} points")
+    elif head is not None and tip and tip != head:
         failures.append(
             f"its local branch ({tip[:7]}) isn't PR #{pr_number}'s head ({head[:7]}), so the merge may not have every"
             " commit"
         )
-    stashes = stash_entries(main, branch)
-    if stashes is None:
-        failures.append("git couldn't list the stash")
-    elif stashes:
-        failures.append(f"{state.plural(len(stashes), 'stash entry')} {'was' if len(stashes) == 1 else 'were'} made"
-                        f" on {branch}: {stashes[0]}")  # fmt: skip
-    card, card_failure = card_of(branch, "", main, ledger_folder, ledger_note)
+    stash_failure = stashed_on(main, branch)
+    if stash_failure:
+        failures.append(stash_failure)
+    card, card_failure = card_of(branch, "HEAD", main, ledger_folder, ledger_note)
     if card_failure:
         failures.append(card_failure)
     return Target(None, branch, pr_number, head, pr_known, card, (), tuple(failures))
@@ -352,6 +352,19 @@ def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str, 
     if not isinstance(head, str) or not state.COMMIT_ID.fullmatch(head):
         return None, None, f"GitHub didn't give PR #{newest['number']}'s head commit", False
     return int(newest["number"]), head, "", True
+
+
+def stashed_on(path: Path, branch: str | None) -> str:
+    """Why the stash stops cleanup: entries were made on branch, or git can't list them; "" when neither."""
+    stashes = stash_entries(path, branch)
+    if stashes is None:
+        return "git couldn't list the stash"
+    if not stashes:
+        return ""
+    return (
+        f"{state.plural(len(stashes), 'stash entry')} {'was' if len(stashes) == 1 else 'were'} made on {branch}:"
+        f" {stashes[0]}"
+    )
 
 
 def stash_entries(path: Path, branch: str | None) -> list[str] | None:
@@ -448,9 +461,7 @@ def remove(
     worktree was removed (or already gone), and whether every step worked. When the worktree can't be removed, nothing
     after it runs."""
     label, branch = target.label, str(target.branch)
-    if target.worktree is not None and not remove_worktree(
-        target.worktree, label, main, via_orca, orca, say, sleep, clock
-    ):
+    if target.worktree is not None and not remove_worktree(target.worktree, main, via_orca, orca, say, sleep, clock):
         return False, False
     worked = True
     try:
@@ -464,8 +475,11 @@ def remove(
     if tip is None:
         say(f"{label}: the local branch is already gone")
     elif git(main, "update-ref", "-d", f"refs/heads/{branch}", str(target.head)) is None:
-        say(f"{label}: kept the local branch {branch}: it no longer points at {str(target.head)[:7]}")
-        worked = False
+        if git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}") is None:  # Orca deleted it meanwhile
+            say(f"{label}: the local branch is already gone")
+        else:
+            say(f"{label}: kept the local branch {branch}: it no longer points at {str(target.head)[:7]}")
+            worked = False
     else:
         git(main, "config", "--remove-section", f"branch.{branch}")  # its upstream; fails only when it has none
         say(f"{label}: deleted the local branch {branch}")
@@ -506,7 +520,6 @@ def busy_now(path: str) -> str:
 
 def remove_worktree(
     worktree: GitWorktree,
-    label: str,
     main: Path,
     via_orca: bool,
     orca: Run,
@@ -518,7 +531,7 @@ def remove_worktree(
     remove; neither is forced, so either refuses a worktree that changed since the checks. True once git no longer
     lists it: Orca's worktree rm answers before the worktree is gone, so after it git is asked again every
     ORCA_REMOVE_POLL_SECONDS for up to ORCA_REMOVE_WAIT_SECONDS."""
-    path = worktree.path
+    label, path = worktree.label, worktree.path
     busy = busy_now(path)
     if busy:
         say(f"{label}: left as it is: {busy} now")
