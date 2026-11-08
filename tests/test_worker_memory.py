@@ -1,6 +1,7 @@
 """Tests for worker memory (#93, ADR 0008): the kickoff the hub fixes in the card (`tower card kickoff`), the decisions
 log a worker only appends to (`tower decisions add`), and the SessionStart hook (worker-memory.py) that gives both back,
-with the current card, after compaction, /clear or in a fresh session.
+with the current card, after compaction, /clear or in a fresh session; and the PreCompact hook (precompact-decisions.py)
+that asks the compaction summary to keep the decisions not yet in that log (#97, ADR 0011).
 
 Each test runs on a real throwaway repo (conftest.py's `repo`) with a fake `gh` (test_card.py's fake_prs).
 """
@@ -476,13 +477,11 @@ def test_a_users_compact_focus_is_left_to_claude_code_which_puts_it_before_the_h
     assert "any focus the user gave" in printed
 
 
-def test_before_compaction_the_main_checkout_and_a_worktree_with_no_card_or_no_log_print_nothing(
+def test_before_compaction_the_main_checkout_and_a_worktree_with_no_log_print_nothing(
     repo: Fixture, worker: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert pre_compact(repo.main) == ""
     assert pre_compact(worker) == ""  # neither
-    assert decide(capsys, "chose X over Y because Z")[0] == 0
-    assert pre_compact(worker) == ""  # a log, no card
     card_only = repo.add_worktree("feat/7-other")
     monkeypatch.chdir(card_only)
     assert write(capsys, monkeypatch)[0] == 0
@@ -520,6 +519,7 @@ def test_before_compaction_input_it_cant_use_prints_nothing_and_never_blocks_com
         input=payload,
         capture_output=True,
         text=True,
+        timeout=30,
         check=False,
     )
     assert (proc.returncode, proc.stdout) == (0, "")
@@ -532,3 +532,20 @@ def test_the_precompact_hook_runs_on_manual_and_auto_compaction() -> None:
     assert [h["command"] for h in entry["hooks"]] == [
         'python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/precompact-decisions.py"'
     ]
+
+
+def test_a_log_written_before_the_first_card_is_enough_to_ask_for_unlogged_decisions(
+    repo: Fixture, worker: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert decide(capsys, "chose X over Y because Z")[0] == 0
+
+    printed = pre_compact(worker)
+
+    assert printed.startswith("tower:")
+    assert printed.endswith(" chose X over Y because Z\n")
+
+
+def test_after_compaction_the_worker_is_told_to_log_what_the_summary_kept_as_not_yet_logged(remembered: Path) -> None:
+    told = 'Add anything your summary lists under "Not yet in the decisions log" to the log now'
+    assert told in session_start(remembered, "compact")
+    assert told not in session_start(remembered, "clear")  # no summary after /clear or in a new session

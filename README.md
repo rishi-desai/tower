@@ -381,7 +381,8 @@ description, or you type `/tower:<name>`.
   compaction summary to keep, word for word, every decision or discovery the worker hasn't added to its decisions log
   yet, and the exact next step, with the log (newest lines, under the 10,000-character cap) to compare against. Your
   own `/compact <focus>` still comes first; Claude Code adds the hook's text after it. Quiet in the main checkout and
-  for a worktree with no card or no log, and never blocks compaction. See docs/adr/0011.
+  for a worktree with no decisions log, and never blocks compaction. After compaction, worker memory tells
+  the worker to add what the summary kept as not yet logged. See docs/adr/0011.
 - **The card reminder** (`card-reminder.py`, a Stop hook): when a session tries to stop and files in its worktree changed during the session after its card was last written, it sends the session back once to update the card. The second stop always goes through. Quiet outside git repos, without tower set up, and for sessions that changed nothing (like the hub).
 - **The card resume** (`card-resume.py`, UserPromptSubmit and PostToolUse on AskUserQuestion): the moment you
   answer a session, by typing or in its pop-up, a card that says `needs-you` is re-rendered by tower's core as `running` (the

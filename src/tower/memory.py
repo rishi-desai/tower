@@ -93,6 +93,11 @@ def session_context(worktree: Path, source: str) -> str:
         " word, your card as you last wrote it, and your decisions log. Follow the kickoff; keep adding to the log"
         " (status-card skill)."
     )
+    if source == "compact":  # the PreCompact hook asked the summary to list what never got into the log
+        header += (
+            ' Add anything your summary lists under "Not yet in the decisions log" to the log now, one'
+            " `tower decisions add` each."
+        )
     kickoff_part = f"# Kickoff\n{kickoff or '(none recorded: the hub did not start this worktree)'}"
     card_part = f"# Card ({card_file})\n" + (
         "\n".join(front) + "\n\n" + rest.strip("\n") if card_text is not None else card_problem or "(none yet)"
@@ -111,9 +116,9 @@ def session_context(worktree: Path, source: str) -> str:
 def compaction_instructions(worktree: Path) -> str:
     """What the PreCompact hook in worktree prints for the compaction summary: a request to keep word for word every
     decision or discovery not yet in the decisions log, and the exact next step, followed by the log itself (its newest
-    lines under BUDGET characters) to compare against. "" in the main checkout, or when the worktree has no card or no
-    log written since it was made, or a log that can't be read: then the summary is left to Claude Code alone. Claude
-    Code puts a user's /compact focus before this text, so it isn't repeated here (ADR 0011). Raises NotARepo,
+    lines under BUDGET characters) to compare against. "" in the main checkout, or when the worktree has no log written
+    since it was made (with or without a card), or a log that can't be read: then the summary is Claude Code's alone.
+    Claude Code puts a user's /compact focus before this text, so it isn't repeated here (ADR 0011). Raises NotARepo,
     LedgerError or OSError."""
     if is_main_checkout(worktree):
         return ""
@@ -121,16 +126,14 @@ def compaction_instructions(worktree: Path) -> str:
     if card_file is None:
         return ""
     log_file = ledger.decisions_log(card_file)
-    born = worktree_birth(worktree)
-    card_text, _ = read_since(card_file, born)
-    log_text, _ = read_since(log_file, born)
+    log_text, _ = read_since(log_file, worktree_birth(worktree))  # unreadable: nothing to compare against, so quiet
     decisions = [line for line in (log_text or "").splitlines() if line.strip()]
-    if card_text is None or not decisions:
+    if not decisions:
         return ""
     request = (
-        "tower: this worker's decisions log is below, and it comes back on its own after compaction (tower's"
-        " worker-memory hook), so the summary needn't repeat it. Besides any focus the user gave, the summary must"
-        ' keep, word for word, under a heading "Not yet in the decisions log":\n'
+        "tower: this worker's decisions log is below. It stays on disk and its newest lines come back on their own"
+        " after compaction (tower's worker-memory hook), so the summary needn't repeat it. Besides any focus the user"
+        ' gave, the summary must keep, word for word, under a heading "Not yet in the decisions log":\n'
         "- every decision (what was chosen over what, and why) and every discovery made in this conversation that is"
         " not already in the decisions log below;\n"
         "- the exact next step: what was being done when compaction started, and what comes right after it."
