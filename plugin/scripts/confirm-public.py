@@ -77,9 +77,10 @@ subcommand (diff, log, show, status, add, ls-files) on a clean line: no -c/--con
 option that hands a file to a program (--ext-diff, --textconv, --output, grep's -O), and nothing on the line that can
 make git run a program (GIT_EXTERNAL_DIFF, a pager or editor variable, a `git config` of such a key). Anything else
 that names setup.sh asks: running it (except `./setup.sh --dry-run`/`--help`, which only check), a write into it or
-the policy module by redirect, a copy or in-place edit (cp, tee, sed -i), and code for python, node, awk or sed, a
-heredoc's included, which runs setup.sh wherever it mentions it or imports the policy module. A bare write to the two
-files is caught here on the Bash side; the Edit/Write tools don't gate them (ADR 0010).
+the policy module by redirect, a copy, an in-place edit or a destination option's value (cp, tee, sed -i, dd of=,
+git --output=), and code for python, node, awk or sed, a heredoc's included, which runs setup.sh or names the policy
+module's path. A bare write to the two files is caught here on the Bash side; the Edit/Write tools don't gate them
+(ADR 0010).
 
 Rule files are standing instructions loaded into every session, tower.conf and the policy file set the approvals
 above, and the plugin and Claude Code's settings (enabledPlugins, disableAllHooks, hooks) decide whether this hook
@@ -1000,11 +1001,12 @@ class CommandChecker:
         reasons: list[str] = []
         for command in commands:
             searched = [Word("a bare cd target", dynamic=True)] if self.cds_by_name else []
-            # git may run a program on the files it reads, or run under config the hook can't read or another repo's
-            git_may_run_program = self.git_may_run_program or self.git_config_from_env or self.names_git_env
+            # git can't be trusted to only read: it may run a program on the files, or run under config the hook can't
+            # read or in another repo
+            git_unsafe = self.git_may_run_program or self.git_config_from_env or self.names_git_env
             folders = self.folders + searched
             found = protected_reasons(
-                command, self.cwd, folders, self.spend, self.makes_links, single_command, git_may_run_program
+                command, self.cwd, folders, self.spend, self.makes_links, single_command, git_unsafe
             )
             for index in range(len(command.words)):
                 found += self.check_invocation(command, index, depth)
@@ -2077,6 +2079,9 @@ POLICY_COMMAND_REASON = (
 # checked fully.
 POLICY_COMMAND_MENTION = (re.compile("tower", re.IGNORECASE), re.compile(r"\bpolicy\b", re.IGNORECASE))
 SETUP_MENTION = re.compile(r"setup\.sh", re.IGNORECASE)
+# The policy module's repo path, named in interpreter/awk/sed code (open('src/tower/policy.py', 'w')); its folder
+# holds "tower", so a mention of it is tower's.
+POLICY_MODULE_MENTION = re.compile(r"src/tower/policy\.py", re.IGNORECASE)
 # Interpreter code that uses tower's policy module, or runs `tower policy use` (not a path that merely holds both words).
 POLICY_CODE = re.compile(
     r"from\s+tower(?:\.\w+)*\s+import\b[^\n;]*\bpolicy\b|\btower\.policy\b|\bimport\s+tower\b|\btower\s+policy\s+use\b"
@@ -2283,6 +2288,16 @@ def protected_repo_file(text: str, cwd: str) -> bool:
     return path == module or path.endswith(os.sep + module)
 
 
+def names_protected_file(text: str, cwd: str) -> bool:
+    """Whether a word TEXT names setup.sh or the policy module, as the whole word (./setup.sh), an option's attached
+    value (git diff --output=setup.sh, dd of=setup.sh) or a short option's (-osetup.sh). Checking the value catches a
+    write whose target is glued to its flag, which protected_repo_file alone would read as the word --output=setup.sh."""
+    candidates = [text, text.partition("=")[2]]
+    if text.startswith("-") and not text.startswith("--"):
+        candidates.append(text[2:])
+    return any(part and protected_repo_file(part, cwd) for part in candidates)
+
+
 def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_may_run_program: bool) -> bool:
     """Whether a simple COMMAND may change tower's policy: write to setup.sh or the policy module, run tower's setup.sh
     (for anything but --dry-run or --help, since it rewrites tower.conf and can set the profile from its prompt), run
@@ -2290,9 +2305,10 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
     `python3 -m tower ...` and run-tower.py all count), or give python, node, another interpreter, awk or sed code (in
     its words or a heredoc) that imports the policy module or names setup.sh.
 
-    A path to setup.sh or the policy module (protected_repo_file) that the command only reads is allowed; every other
-    naming of one asks. A read is recognised only in a single top-level command (see read_only_words), so a pipe, a
-    second command, a substitution or a wrapper asks — the floor fails closed (ADR 0010)."""
+    setup.sh is tower's when its path or the session's folder CWD holds "tower". A path to it or the policy module
+    (protected_repo_file) that the command only reads is allowed; every other naming of one asks. A read is recognised
+    only in a single top-level command (SINGLE_COMMAND; see read_only_words, which GIT_MAY_RUN_PROGRAM also goes to),
+    so a pipe, a second command, a substitution or a wrapper asks — the floor fails closed (ADR 0010)."""
     words = command.words
     texts = [word.text for word in words]
     if any(redirect.writes and protected_repo_file(redirect.target.text, cwd) for redirect in command.redirects):
@@ -2314,12 +2330,13 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
     if interpreters and any(POLICY_CODE.search(code) for code in code_after(interpreters[0])):
         return True
     if code_runners and any(
-        SETUP_MENTION.search(code) and (in_tower or "tower" in code.lower()) for code in code_after(code_runners[0])
+        (SETUP_MENTION.search(code) and (in_tower or "tower" in code.lower())) or POLICY_MODULE_MENTION.search(code)
+        for code in code_after(code_runners[0])
     ):
         return True
     for index, text in enumerate(texts):
         rest = words[index + 1 :]
-        if protected_repo_file(text, cwd):
+        if names_protected_file(text, cwd):
             runs_setup = program_name(words[index]) == "setup.sh" and runs_as_program(words, index)
             if runs_setup and rest and all(word.text in ("--dry-run", "-h", "--help") for word in rest):
                 continue  # ./setup.sh --dry-run / --help only checks; it doesn't rewrite tower.conf
@@ -2393,10 +2410,11 @@ def git_key_runs_program(setting: str) -> bool:
 
 
 def sed_only_prints(args: list[Word]) -> bool:
-    """Whether sed run with ARGS only prints lines of its input: no word from a variable, no option but SED_SWITCHES
-    (so no -e, which mixes scripts and files differently on GNU and BSD sed, no -i and no -f), and its one script — the
-    first non-option argument — only SED_PRINT_STATEMENTs. A write (w), a run (GNU's e) or an edit (-i) makes it
-    unsafe, and so does an operand standing in for the script it lacks."""
+    """Whether sed run with ARGS only selects lines to print, delete or quit on, never running a command or writing a
+    file: no word from a variable, no option but SED_SWITCHES (so no -e, which mixes scripts and files differently on
+    GNU and BSD sed, no -i and no -f), and its one script — the first non-option argument — only SED_PRINT_STATEMENTs.
+    A write (w), a run (GNU's e) or an edit (-i) makes it unsafe, and so does an operand standing in for the script it
+    lacks."""
     if any(arg.dynamic for arg in args):
         return False
     script = None

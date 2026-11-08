@@ -18,9 +18,11 @@ and `--help`, which only check), writing to either file by redirect, in-place ed
 policy module.
 
 A write to setup.sh or the policy module asks (#100's acceptance), judged by the file a path resolves to, not the
-word. The earlier draft of this ADR argued writes needn't ask; the owner chose to keep the ticket's acceptance, and a
-Bash write gate is cheap defense in depth even though the Edit/Write tools don't gate these files (they are not under
-`~/.claude`, so `check_protected_edit` doesn't cover them — a known limit, below).
+word, whether the target is a redirect, an in-place edit (`sed -i`), a copy (`cp`), or a destination glued to an
+option (`dd of=setup.sh`, `git diff --output=setup.sh`). The earlier draft of this ADR argued writes needn't ask; the
+owner chose to keep the ticket's acceptance, and a Bash write gate is cheap defense in depth even though the
+Edit/Write tools don't gate these files (they are not under `~/.claude`, so `check_protected_edit` doesn't cover
+them — a known limit, below).
 
 ## Considered options
 
@@ -40,4 +42,5 @@ Bash write gate is cheap defense in depth even though the Edit/Write tools don't
   write-deny on tower's files is the backstop.
 - A write to a bare basename after a `cd` into `src/tower` (`cd src/tower && sed -i … policy.py`) isn't caught: the
   module is known by its repo path, and a bare `policy.py` is too common to claim. A sed `w`/`r` filename inside the
-  script word is likewise not parsed.
+  script word is likewise not parsed, nor is a path a program builds at run time (`open(os.path.join(...), "w")`); a
+  literal `src/tower/policy.py` or `setup.sh` in interpreter code is caught.

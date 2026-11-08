@@ -195,8 +195,8 @@ What asks in every profile, sandbox included: an agent's change to the policy fi
 CLAUDE.local.md or Claude Code's settings, running `tower policy use` or tower's setup.sh, writing setup.sh or the
 policy module, or turning tower's plugin off. It is how an agent is kept from loosening its own rules. It covers the
 files tower really reads, wherever a path to them leads, and only those: a mention of a name (in a commit message) or
-a file that only shares the name (a test fixture) isn't a change to them, and plainly reading setup.sh (one command, a
-reader, no pipe) isn't running it.
+a file that only shares the name (a test fixture) isn't a change to them, and plainly reading setup.sh isn't running
+it.
 _Avoid_: hard rule, override
 
 ## Health

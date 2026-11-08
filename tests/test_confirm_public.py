@@ -1649,7 +1649,8 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "python3 -c 'import os; os.system(\"./setup.sh --profile sandbox\")'",
     "python3 <<'EOF'\nimport os\nos.system('./setup.sh')\nEOF",
     "python3 <<'EOF'\nfrom tower import policy\npolicy.use('sandbox')\nEOF",
-    # writing setup.sh or the policy module (#100 acceptance): a redirect, an in-place edit, a copy
+    # writing setup.sh or the policy module (#100 acceptance): a redirect, an in-place edit, a copy, a glued
+    # destination option (git --output=, dd of=), a literal module path in code
     "echo x >> setup.sh",
     "cat x > setup.sh",
     "tee setup.sh < /tmp/x",
@@ -1657,6 +1658,11 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "echo 'import os' > src/tower/policy.py",
     "sed -i '' s/a/b/ src/tower/policy.py",
     "cp x src/tower/policy.py",
+    "git diff --output=setup.sh",
+    "git diff --output=src/tower/policy.py HEAD",
+    "dd of=setup.sh if=/dev/null",
+    "dd of=src/tower/policy.py",
+    "python3 -c 'open(\"src/tower/policy.py\", \"w\").write(\"x\")'",
 ]
 
 
