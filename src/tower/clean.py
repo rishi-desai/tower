@@ -26,8 +26,9 @@ neither `git status --porcelain` nor `git worktree remove` counts them, so --dry
 --all takes every worktree but the main checkout whose branch's PR is merged, and says why each other one was left;
 one whose PR GitHub couldn't be asked about fails its check instead of being skipped.
 A half-done cleanup (the worktree is gone, but its card is still in the Ledger) is finished by naming its branch: the
-checks that still apply run (its PR is merged, the local branch is at the PR's head, no stash entry on it, the card
-doesn't say work goes on), then the branch, card and pull steps. --all doesn't look for them.
+checks that still apply run (no worktree is on a detached HEAD, its PR is merged, the local branch is at the PR's
+head, no stash entry on it, the card doesn't say work goes on), then the branch, card and pull steps. --all doesn't
+look for them.
 --dry-run runs every check and says what would be removed, touching nothing. tower clean never asks: the approval hook
 (plugin/scripts/confirm-public.py) judges it by the policy's cleanup key, so under "ask" the hub shows --dry-run's list
 and the real run asks once (docs/adr/0006-tower-clean-checks-then-removes-and-the-hook-judges-it.md).
@@ -52,7 +53,8 @@ from tower.merge import Gh, GhResult, Say
 ORCA_TIMEOUT_SECONDS = 60  # one orca call; removing a worktree is the slowest
 PULL_TIMEOUT_SECONDS = 120
 GIT_REMOVE_TIMEOUT_SECONDS = 120  # git deletes every file in the worktree, node_modules included
-ORCA_REMOVE_WAIT_SECONDS = 15  # Orca's worktree rm answers before the worktree is gone (Orca 1.4.237, #92)
+# Orca's worktree rm answers before the worktree is gone (Orca 1.4.237, #92); it deletes as many files as git does
+ORCA_REMOVE_WAIT_SECONDS = GIT_REMOVE_TIMEOUT_SECONDS
 ORCA_REMOVE_POLL_SECONDS = 0.5
 WORK_GOES_ON = ("running", "needs-you", "blocked")
 
@@ -69,10 +71,10 @@ class Target:
     """One worktree tower clean was asked about, with what its checks found. failures is empty when every check
     passed. pr_number and head are the merged PR's, None when there is none; pr_known is False when GitHub couldn't
     say (so --all can't call it unfinished). worktree is None for a half-done cleanup: the worktree is already gone,
-    but branch still has its card in the Ledger."""
+    but gone_branch still has its card in the Ledger."""
 
     worktree: GitWorktree | None
-    branch: str | None
+    gone_branch: str | None  # only for a half-done cleanup
     pr_number: int | None
     head: str | None
     pr_known: bool
@@ -83,7 +85,12 @@ class Target:
     @property
     def label(self) -> str:
         """How tower names the worktree: its branch, or (detached <sha>)."""
-        return self.worktree.label if self.worktree else str(self.branch)
+        return self.worktree.label if self.worktree else str(self.gone_branch)
+
+    @property
+    def branch(self) -> str | None:
+        """The worktree's branch (None on a detached HEAD), or a half-done cleanup's."""
+        return self.worktree.branch if self.worktree else self.gone_branch
 
 
 def run_program(program: str, cwd: Path, timeout: float) -> Run:
@@ -148,7 +155,7 @@ def clean(
     listed, live_note = sessions.read_agents() if chosen else ([], "")  # a half-done cleanup has no sessions
     live = None if listed is None else state.live_sessions(listed, [os.path.realpath(w.path) for w in chosen])
     targets = [check(w, gh, live, live_note, ledger_folder, ledger_note, here) for w in chosen]
-    targets += [check_gone(branch, Path(main.path), gh, ledger_folder, ledger_note) for branch in gone]
+    targets += [check_gone(branch, Path(main.path), worktrees[1:], gh, ledger_folder, ledger_note) for branch in gone]
     if every:
         unfinished = [t for t in targets if t.pr_known and t.pr_number is None]
         for target in unfinished:  # say why each is left, without listing it as a failure
@@ -257,7 +264,7 @@ def check(
     path = Path(worktree.path)
     if not path.is_dir():  # removed outside tower: git still lists it until it is pruned
         gone = "its folder is gone (removed outside tower): git worktree prune in the main checkout forgets it"
-        return Target(worktree, worktree.branch, None, None, True, None, (), (gone,))
+        return Target(worktree, None, None, None, True, None, (), (gone,))
     failures: list[str] = []
     pr_number, head, pr_failure, pr_known = merged_pr(gh, worktree.branch)
     if pr_failure:
@@ -293,15 +300,24 @@ def check(
                 idle.append(session.name)
     if sessions.owning_worktree(os.path.realpath(here), [os.path.realpath(worktree.path)]):
         failures.append("tower clean is running inside it: run it from the main checkout")
-    return Target(worktree, worktree.branch, pr_number, head, pr_known, card, tuple(idle), tuple(failures))
+    return Target(worktree, None, pr_number, head, pr_known, card, tuple(idle), tuple(failures))
 
 
-def check_gone(branch: str, main: Path, gh: Gh, ledger_folder: Path | None, ledger_note: str) -> Target:
+def check_gone(
+    branch: str, main: Path, others: list[GitWorktree], gh: Gh, ledger_folder: Path | None, ledger_note: str
+) -> Target:
     """Run the checks that still apply to a half-done cleanup, whose worktree is already gone (Orca removed it after
-    tower stopped waiting): its PR is merged, its local branch (when it is still there) is at the PR's head, no stash
-    entry was made on it, and its card doesn't say work goes on. With no worktree, nothing can be uncommitted and no
-    session can be there; open PRs based on it are delete_head_branch's to check, as always."""
+    tower stopped waiting): no other worktree is on a detached HEAD (one may be on this branch mid-rebase), its PR is
+    merged, its local branch (when it is still there) is at the PR's head, no stash entry was made on it, and its card
+    doesn't say work goes on. With no worktree, nothing can be uncommitted and no session can be there; open PRs based
+    on it are delete_head_branch's to check, as always."""
     failures: list[str] = []
+    detached = [w.path for w in others if w.branch is None]
+    if detached:
+        failures.append(
+            f"a worktree on a detached HEAD ({', '.join(detached)}) may be on {branch} mid-rebase or for a test: check"
+            " out its branch there, or clean it up first"
+        )
     pr_number, head, pr_failure, pr_known = merged_pr(gh, branch)
     if pr_failure:
         failures.append(pr_failure)
@@ -487,7 +503,7 @@ def remove(
     else:
         worked = merge.delete_head_branch(pull, gh, lambda line: say(f"{label}: {line}"), sleep, clock) and worked
     if git(main, "update-ref", "-d", f"refs/heads/{branch}", str(target.head)) is None:
-        if git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}") is None:  # Orca may delete it too
+        if local_tip(main, branch) == "":  # Orca may delete it too
             say(f"{label}: the local branch is already gone")
         else:
             say(f"{label}: kept the local branch {branch}: it no longer points at {str(target.head)[:7]}")
@@ -569,28 +585,37 @@ def remove_worktree(
             return False
         how, wait = "with git (Orca isn't running or doesn't manage it)", 0
     deadline = clock() + wait
-    while still_listed(path, main):
+    listed, list_error = still_listed(path, main)
+    if listed is not False and wait:
+        say(f"{label}: waiting up to {wait:.0f}s for Orca to finish removing it")
+    while listed is not False:
         if clock() >= deadline:
             finish = (
                 f": once git no longer lists it, tower clean {worktree.branch} finishes the rest"
                 if worktree.branch
                 else ""
             )
-            say(f"{label}: the worktree is still listed by git after removing it, so nothing else was removed{finish}")
+            still = (
+                "the worktree is still listed by git after removing it"
+                if listed
+                else f"git couldn't list the worktrees after removing it ({list_error})"
+            )
+            say(f"{label}: {still}, so nothing else was removed{finish}")
             return False
         sleep(ORCA_REMOVE_POLL_SECONDS)
+        listed, list_error = still_listed(path, main)
     say(f"{label}: removed the worktree {path} {how}")
     return True
 
 
-def still_listed(path: str, main: Path) -> bool:
-    """Whether git still lists a worktree at path; True when git can't list them (Orca may be mid-removal), so the
-    wait goes on rather than calling it gone."""
+def still_listed(path: str, main: Path) -> tuple[bool | None, str]:
+    """Whether git still lists a worktree at path, or None and why when git can't list them (Orca may be
+    mid-removal, so the wait goes on)."""
     try:
         listed = list_worktrees(main)
-    except NotARepo:
-        return True
-    return any(os.path.realpath(w.path) == os.path.realpath(path) for w in listed)
+    except NotARepo as error:
+        return None, str(error)
+    return any(os.path.realpath(w.path) == os.path.realpath(path) for w in listed), ""
 
 
 def pull_main(main: Path, say: Say) -> None:

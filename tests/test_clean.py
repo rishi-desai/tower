@@ -658,7 +658,8 @@ def test_a_worktree_orca_never_removes_stops_the_cleanup_after_a_bounded_wait(re
 
     said = run_clean(repo, worker, "feat-1")
 
-    assert said[-2:] == [
+    assert said[-3:] == [
+        "feat-1: waiting up to 120s for Orca to finish removing it",
         (
             "feat-1: the worktree is still listed by git after removing it, so nothing else was removed: once git no"
             " longer lists it, tower clean feat-1 finishes the rest"
@@ -857,3 +858,42 @@ def test_orca_failing_to_list_still_lets_a_half_done_cleanup_finish(repo: Fixtur
     assert said[-1] == "result: False"
     assert (repo.ledger / "_archive" / "feat-1.md").exists() and "feat-1" not in worker.github.branches
     assert str(second.path) in worktree_paths(repo) and (repo.ledger / "feat-2.md").exists()
+
+
+def test_a_half_done_cleanup_waits_while_a_worktree_is_on_a_detached_head(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    half_done(repo, worker)
+    other = repo.add_worktree("rishi/feat-4")
+    git(other, "checkout", "-q", "--detach")  # could be feat-1 mid-rebase, as far as tower can tell
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[0] == "feat-1: left as it is, since 1 check(s) failed:"
+    assert f"a worktree on a detached HEAD ({other})" in said[1]
+    assert said[-1] == "result: False"
+    assert branch_exists(repo, "feat-1") and (repo.ledger / "feat-1.md").exists()
+
+
+def test_without_orca_a_git_that_cant_list_worktrees_after_removing_is_said_as_that(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = merged_worker(repo)
+    worker.orca.reachable = False
+    calls = {"n": 0}
+
+    def list_failing_after_start(repo_dir: Path) -> list[gitrepo.GitWorktree]:
+        """git's worktree list, failing after the call clean starts with."""
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise gitrepo.NotARepo("git worktree list timed out")
+        return gitrepo.list_worktrees(repo_dir)
+
+    monkeypatch.setattr(clean, "list_worktrees", list_failing_after_start)
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert (
+        "feat-1: git couldn't list the worktrees after removing it (git worktree list timed out), so nothing else was"
+        " removed: once git no longer lists it, tower clean feat-1 finishes the rest" in said
+    )
+    assert said[-1] == "result: False"

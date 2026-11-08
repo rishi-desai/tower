@@ -6,7 +6,7 @@ Like `tower merge` (ADR 0005), it runs the removal itself: closing terminals and
 
 The approval hook judges it by the policy's `cleanup` key, as it judges `tower merge` by the merge keys. `tower clean --dry-run` runs every check and prints what would be removed, touching nothing, and never asks. So under `cleanup = "ask"` the hub runs `--dry-run`, shows that list, and runs the real command, which asks once; under `"auto"` it runs it straight away. `tower clean` itself never prompts: an agent's shell has no terminal to answer on, and you running it in your own terminal is your yes.
 
-Amended by #92: Orca answers `orca worktree rm` before the worktree is gone, so tower waits a bounded time for git to stop listing it. A half-done cleanup (worktree gone, card still in the Ledger) is finished by naming its branch; with no worktree, only the checks it can still fail run (PR merged at the local branch's head, no stash entry on it, the card not saying work goes on), and the GitHub branch delete keeps tower merge's rules.
+Amended by #92: Orca answers `orca worktree rm` before the worktree is gone, so tower waits a bounded time for git to stop listing it. A half-done cleanup (worktree gone, card still in the Ledger) is finished by naming its branch; with no worktree, only the checks it can still fail run (no worktree on a detached HEAD, which may be on the branch mid-rebase; PR merged at the local branch's head, no stash entry on it, the card not saying work goes on), and the GitHub branch delete keeps tower merge's rules.
 
 ## Considered options
 

@@ -399,7 +399,7 @@ def delete_head_branch(
         return True
     deleted = gh(pull.api("-X", "DELETE", f"repos/{pull.repo}/git/refs/heads/{ref}"))
     if deleted.code != 0:
-        if "HTTP 404" in gh(pull.api(f"repos/{pull.repo}/git/ref/heads/{ref}")).err:  # deleted meanwhile (by Orca)
+        if "Reference does not exist" in deleted.err:  # GitHub's 422 for a branch deleted meanwhile (by Orca)
             say(f"{pull.head} is already deleted on GitHub")
             return True
         say(f"couldn't delete {pull.head} on GitHub: {gh_reason(deleted)}")
