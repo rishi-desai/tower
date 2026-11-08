@@ -18,7 +18,7 @@ Open a card file only when its status is `needs-you` or `blocked`, or the user a
 
 ## 2. Report
 
-Always in this order, skipping empty groups. The scan's GROUPS section has already sorted every worktree into these groups by its effective state, each row with the reason (a waiting session whose card says otherwise is under Needs you; a `needs-you` card whose session is busy again is under Running, because the user already answered); report from it rather than regrouping. When a row's reason says the card is out of date, say so in a few words. Add only what it can't see: PRs with no worktree (Housekeeping), and details from cards you open.
+Always in this order, skipping empty groups. The scan's GROUPS section has already sorted every worktree into these groups by its effective state, each row with the reason (a waiting session whose card says otherwise is under Needs you; a `needs-you` card whose session is busy again is under Running, because the user already answered); report from it rather than regrouping. When a row's reason says the card is out of date, say so in a few words. Add only what it can't see: PRs with no worktree (Housekeeping; a PR whose branch is in a STACKS tree belongs to that stack's worktree, even when it isn't checked out), and details from cards you open.
 
 1. **Needs you** — every row the scan puts under NEEDS YOU. Each item: branch and what that work is in a few plain words, the exact question, what each option means in practice, your recommendation and why. Most urgent first. A worker about to post on GitHub or push puts the draft in its card and then waits on an approval prompt: show the draft, and tell the user to approve or decline **in that session** (session name from LIVE SESSIONS). You can't approve it from here.
 2. **Blocked** — what it's waiting on.
@@ -26,6 +26,8 @@ Always in this order, skipping empty groups. The scan's GROUPS section has alrea
 4. **Waiting on CI or review** — finished work only waiting on CI, a review or a merge, one line each with PR number. These don't hold a WIP slot.
 5. **Done** — one line each with PR number.
 6. **Housekeeping** — one line each with the suggested cleanup: worktrees ready to clean up (merged with no commits past the PR's head, or every commit on main, with nothing uncommitted: offer to clean them up, below), worktrees with no card, `STALE` cards, orphan cards, PRs with no worktree, any worktree where several interactive sessions share one checkout (rule: one main session per worktree), and overlaps: two worktrees changing the same files (`changes the same file(s) as <other>: <files>`, from git, not cards). For an overlap, name both worktrees and what each is for, and suggest who goes first: usually the one closer to merging, while the other waits or rebases after it. Never tell a worker to stop on your own.
+
+**Stacks.** The scan's STACKS section draws each git-spice stack as a tree in merge order (bottom first, deeper branches indented), headed by its stack worktree's path and `next to merge: <branch>, PR #N`, with whether that merge waits for the user (`<key> is ask: it waits for you`) or the worker merges it itself. Under the stack worktree's line in its group, show the tree as the scan draws it, one line per branch with its PR and flags. A branch that `needs restack` (its parent moved or merged) also has a Housekeeping line from the scan with the command that fixes it, run by that worktree's worker; tell the user which session to ask, never run it yourself. When the next merge waits for the user and that PR's checks have passed, that merge is theirs to do: say so in the stack's line.
 
 End with **one** suggested next action, not a list.
 
@@ -86,7 +88,7 @@ Then return to what they were doing. Don't start work on the idea.
 When asked what to work on next, choose from the scan's open issues:
 
 1. Prefer issues labelled `ready-for-agent` (from `/to-spec`, `/to-tickets` or `/triage`).
-2. Skip any whose `Blocked by` tickets are still open — run `gh issue view <n>` on the top candidates to check.
+2. Skip any whose `Blocked by` tickets are still open — run `gh issue view <n>` on the top candidates to check — unless they can ship together as a stack: when the blockers form a chain of `ready-for-agent` tickets none of which is started (each blocked only by the one below it), recommend starting the chain as one stack (section 6, "A stack of tickets"), bottom first.
 3. Recommend one, in a sentence, with why.
 
 ## 6. Start a worktree
@@ -122,9 +124,23 @@ Two reviews run before the PR, in this order, and the prompt gives each the rang
 
 `/retro` can only be typed by the user, so it isn't in the prompt; the user runs it in the worker before closing it.
 
+### A stack of tickets
+
+Tickets that build on each other (a `Blocked by` chain) can ship as a stack: one PR per ticket, each based on the one below, submitted with git-spice so GitHub groups them. A stack gets **one** worktree and one worker (a stack worktree), never one per ticket: git-spice skips any branch checked out in another worktree when it restacks, and everything above it. Start it when the user says "start #40 #41 #42 as a stack", or agrees to your suggestion from section 5. Start it like any ticket (below), named after the bottom ticket (`--name feat/40-<slug> --issue 40`), with this kickoff, the tickets listed bottom first:
+
+```
+/implement #40, #41 and #42 as one git-spice stack, bottom first, one branch per ticket. If git for-each-ref refs/spice prints nothing, first run git-spice repo init --trunk <base> --remote origin; then git-spice branch track on this worktree's branch for #40, and git-spice branch create <branch> for each next ticket. Use the status-card skill whenever you stop. Record domain decisions from the tickets with the domain-modeling skill in the stack. Before submitting, run git fetch origin, then mattpocock-skills:code-review by that full name since origin/<base>, then the built-in /code-review <review level> origin/<base>...HEAD from the top branch (the whole stack's commits); once both pass, <stack ship>
+```
+
+`<base>` and `<review level>` as above. `<stack ship>`, by the scan's `Policy:` line, the key for where the stack lands (`merge_to_main` for a stack on the default branch, since merging a stacked PR merges the ones below it onto the stack's base):
+- `ask`: `submit it with git-spice stack submit and use babysit-pr on the bottom PR. After I merge a PR that isn't the last, go to the top branch (git-spice top) and run git-spice repo sync, git fetch origin and git-spice stack restack; git-spice stack submit only if git diff --quiet <next branch> origin/<next branch> shows its tree unchanged (else ask me), then babysit the next PR. After the last merge, don't sync.`
+- `auto`: `submit it with git-spice stack submit and merge it from the bottom, one PR at a time: after a PR's checks pass, merge it yourself with python3 -I <plugin>/scripts/run-tower.py merge <PR number>, run on its own (nothing chained before it). Between merges, go to the top branch (git-spice top) and run git-spice repo sync, git fetch origin and git-spice stack restack; git-spice stack submit only if git diff --quiet <next branch> origin/<next branch> shows its tree unchanged (else ask me). After the last merge, don't sync. Don't wait for me and don't use babysit-pr.`
+
+Why each step: `repo init` with its flags, because git-spice asks which branch is the trunk otherwise, and a worker has no terminal to answer. After a merge, GitHub moves the next PR onto the stack's base and rebases it itself, so its checks run again; locally, `repo sync` deletes the merged branch and `stack restack` rebases the rest the same way, giving the same tree under new commit ids. Submitting them only when the tree matches GitHub's makes each PR's head the worker's own commit (`tower clean` needs the worktree's HEAD to be its PR's head) without dropping anything someone else pushed. The worker syncs from the top branch, and never after the last merge: a sync deletes the branch the worktree is on when that branch merged, and can't check out the trunk (the main checkout has it), so the worktree would end on no branch, which `tower clean` refuses. A ticket added to a stack that's already running goes to that stack's worktree, not a new one: give the user a one-line prompt to paste into that worker's session (`Add #43 on top of the stack, the same way.`). Its kickoff stays the original (one kickoff per worktree), so the added ticket is kept in the worker's card and decisions log instead.
+
 ### Start it through Orca
 
-1. Check the scan first (the pane's `start #N` button skips no rules). If a WORKTREES row already shows this ticket, or `orca worktree list --json` has a worktree with `linkedIssue` N, it's already started: say where and stop. At the WIP limit, follow section 3 before starting anything.
+1. Check the scan first (the pane's `start #N` button skips no rules). If a WORKTREES row already shows this ticket, a STACKS branch's name guesses it, a stack worktree's card names it in its `## Kickoff` (open the card of each worktree holding a stack), or `orca worktree list --json` has a worktree with `linkedIssue` N, it's already started: say where and stop. At the WIP limit, follow section 3 before starting anything.
    Then run `orca status --json`. Orca is reachable when it exits 0 and `result.runtime.reachable` is `true`. If not (no `orca` command, an error, or `false`), use the fallback below and say why in one line.
 2. Show the command in a fenced block, with the effort line, then ask with AskUserQuestion: "Start it (Recommended)", "Change the effort", "Don't start". Run it only on a yes.
 

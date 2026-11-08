@@ -8,6 +8,7 @@ worktree exactly as it was:
     `git status --porcelain` is empty: nothing uncommitted or untracked
     no stash entry was made on its branch (the stash is shared by every worktree)
     its card doesn't say work goes on (running, needs-you, blocked: the branch name may have been reused)
+    its git-spice stack, if it holds one, has no other unmerged branch (stacks.open_besides, the rule tower state uses)
     live sessions (`claude agents --json`, never the event log) show none busy or waiting there
     tower clean isn't running inside it
 
@@ -46,7 +47,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from tower import ledger, merge, sessions, state
+from tower import ledger, merge, sessions, stacks, state
 from tower.gitrepo import GitWorktree, NotARepo, git, list_worktrees, repo_name
 from tower.merge import Gh, GhResult, Say
 
@@ -285,6 +286,12 @@ def check(
     stash_failure = stashed_on(path, worktree.branch)
     if stash_failure:
         failures.append(stash_failure)
+    if worktree.branch:
+        unmerged, stack_note = stacks.open_besides(path, worktree.branch, lambda name: pr_done(gh, name))
+        if unmerged is None:
+            failures.append(f"whether its git-spice stack is finished couldn't be checked: {stack_note}")
+        elif unmerged:
+            failures.append(f"its git-spice stack isn't finished: {', '.join(unmerged)} still to merge")
     card, card_failure = card_of(worktree.branch, worktree.sha, path, ledger_folder, ledger_note)
     if card_failure:
         failures.append(card_failure)
@@ -398,6 +405,20 @@ def stashed_on(path: Path, branch: str | None) -> str:
     )
 
 
+def pr_done(gh: Gh, branch: str) -> bool | None:
+    """Whether GitHub has branch's PR merged or closed and none open (a stack branch that needs nothing more); None
+    when GitHub couldn't be read."""
+    listed = gh(["pr", "list", "--head", branch, "--state", "all", "--json", "state,isCrossRepository"])
+    try:
+        found = json.loads(listed.out) if listed.code == 0 else None
+    except ValueError:
+        found = None
+    if not isinstance(found, list):
+        return None
+    states = [p.get("state") for p in found if isinstance(p, dict) and not p.get("isCrossRepository")]
+    return bool(states) and "OPEN" not in states
+
+
 def stash_entries(path: Path, branch: str | None) -> list[str] | None:
     """The subjects of the stash entries made on branch (git names it in each: "WIP on BRANCH: ..." or "On BRANCH:
     ..."); None if git can't list them. A detached HEAD's entries say "(no branch)", which can't be told apart."""
@@ -416,7 +437,10 @@ def card_of(
     the check: it says work goes on, or it can't be read."""
     if ledger_folder is None:
         return None, f"{ledger_note}, so its card couldn't be checked"
-    card_file = ledger_folder / ledger.card_name(branch, sha, path)
+    try:  # the card its worktree's git folder records (one that followed it to another branch), else the branch's
+        card_file = ledger_folder / ledger.card_file(path, branch, sha)
+    except ledger.LedgerError as error:
+        return None, f"{error}, so its card couldn't be found"
     try:
         card = state.read_card(card_file, time.time())
     except OSError as error:
@@ -492,6 +516,12 @@ def remove(
     worktree was removed (or already gone), and whether every step worked. When the worktree can't be removed, nothing
     after it runs."""
     label, branch = target.label, str(target.branch)
+    followed = None
+    if target.worktree is not None:
+        try:  # read now: the record goes with the worktree's git folder
+            followed = ledger.followed_card(ledger.admin_dir(Path(target.worktree.path)))
+        except ledger.LedgerError:
+            pass  # card_of failed the check on this already, so it never gets here
     if target.worktree is not None and not remove_worktree(target.worktree, main, via_orca, orca, say, sleep, clock):
         return False, False
     worked = True
@@ -519,7 +549,7 @@ def remove(
             say(f"{label}: couldn't archive its card {target.card} ({error.strerror or type(error).__name__})")
             worked = card_archived = False
     if card_archived and ledger_folder is not None:  # a log stays with a card that stays; one with no card goes too
-        card_file = target.card or ledger_folder / ledger.card_name(branch, str(target.head), main)
+        card_file = target.card or ledger_folder / (followed or ledger.card_name(branch, str(target.head), main))
         try:
             log = ledger.archive_decisions(card_file)
         except OSError as error:

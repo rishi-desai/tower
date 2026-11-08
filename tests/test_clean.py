@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from conftest import Fixture, git, interactive
+from conftest import Fixture, git, interactive, track, unreadable_tracking
 from test_merge import REPO, Clock, FakeGitHub, FakePull, ok
 
 from tower import clean, cli, gitrepo, merge, state
@@ -208,6 +208,24 @@ def sessions_unreadable(repo: Fixture, worker: Merged) -> None:
     repo.agents_json.write_text("not json", encoding="utf-8")
 
 
+def tracking_unreadable(repo: Fixture, worker: Merged) -> None:
+    """git-spice tracks feat-1, in a tracking ref tower can't read."""
+    unreadable_tracking(repo.main, "feat-1")
+
+
+def stack_above(repo: Fixture, worker: Merged) -> None:
+    """A stack worktree back on its merged bottom branch, with feat-2 still built on it."""
+    git(worker.path, "branch", "feat-2")
+    track(repo.main, {"feat-1": ("main", 1), "feat-2": ("feat-1", 2)})
+
+
+def test_a_worktree_git_spice_doesnt_track_is_never_held_up_by_tracking_tower_cant_read(repo: Fixture) -> None:
+    worker = merged_worker(repo)
+    unreadable_tracking(repo.main, "some-other-branch")
+
+    assert run_clean(repo, worker, "feat-1")[-1] == "result: True"
+
+
 @pytest.mark.parametrize(
     ("break_it", "failure"),
     [
@@ -220,6 +238,8 @@ def sessions_unreadable(repo: Fixture, worker: Merged) -> None:
         (waiting_session, "session w1 is waiting on you there"),
         (running_card, "its card says running, so work may go on there"),
         (sessions_unreadable, "a session busy or waiting there can't be ruled out"),
+        (stack_above, "its git-spice stack isn't finished: feat-2 still to merge"),
+        (tracking_unreadable, "whether its git-spice stack is finished couldn't be checked: couldn't read git-spice"),
     ],
 )
 def test_each_failed_check_is_said_and_leaves_everything_in_place(

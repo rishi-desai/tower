@@ -40,7 +40,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import events, ledger, policy, sessions
+from tower import events, ledger, policy, sessions, stacks
 from tower.github import from_this_repo
 from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
 from tower.overlaps import Overlap, find_overlaps
@@ -96,7 +96,11 @@ class WorktreeFacts:
     card_unreadable is True when a card file exists but couldn't be read: card is None, but not because there's none.
     commits_after_merge counts HEAD's commits that a merged PR's head doesn't have (work the merge didn't take); None
     when the PR isn't merged or git couldn't compare (no head from gh, or that commit isn't in this clone).
-    card_file is the card's file name in the Ledger (ledger.card_name), which readers use instead of rebuilding it."""
+    open_in_stack names the other branches of the stack this worktree holds that haven't merged (stacks.py): its
+    branch's merged PR doesn't finish the worktree while they're open. None when git-spice tracks its branch but
+    whether its stack is finished couldn't be told, which holds it back the same way.
+    card_file is the card's file name in the Ledger (ledger.card_file: the one the worktree's git folder records, else
+    the branch's), which readers use instead of rebuilding it."""
 
     label: str
     branch: str | None
@@ -111,6 +115,7 @@ class WorktreeFacts:
     pr: Pr | None
     card_unreadable: bool = False
     commits_after_merge: int | None = None
+    open_in_stack: tuple[str, ...] | None = ()
 
 
 @dataclass(frozen=True)
@@ -161,6 +166,11 @@ def decide(worktree: WorktreeFacts) -> Verdict:
     # A merged PR settles a card that says the work is finished (or no card), never one that says work goes on: the
     # branch name may have been reused after an old PR merged.
     if pr and pr.state == "MERGED" and card_status not in ("running", "needs-you", "blocked"):
+        if worktree.open_in_stack != ():
+            still = f"PR #{pr.number} is merged, but {stack_unfinished(worktree.open_in_stack)}"
+            if card_status in CARD_STATUSES:
+                return verdict(str(card_status), f"the card says {card_status}; {still}", worktree)
+            return verdict("no-card", still, worktree)
         # Squash merges leave none of the branch's commits on the base branch, so the PR's head is what shows the
         # worktree has no work the merge didn't take; every commit on the base branch shows it too.
         after_merge = worktree.commits_after_merge
@@ -186,6 +196,8 @@ def decide(worktree: WorktreeFacts) -> Verdict:
         reason = f"the card says {card.status} but no session is working and PR #{pr.number} is open"
         return verdict("waiting-ci", reason, worktree)
     if card.status == "done" and worktree.unshipped_commits == 0 and worktree.dirty is False:
+        if worktree.open_in_stack != ():
+            return verdict("done", f"the card says done, but {stack_unfinished(worktree.open_in_stack)}", worktree)
         return verdict("ready-to-clean", "the card says done and every commit is on the base branch", worktree)
     if card.status == "running" and card.stale:
         return verdict("running", "the card says running, but it hasn't been updated in over 24h", worktree)
@@ -196,6 +208,13 @@ def decide(worktree: WorktreeFacts) -> Verdict:
             "needs-you", "the card says needs-you; no session here is waiting on you on this machine", worktree
         )
     return verdict(card.status, f"the card says {card.status}", worktree)
+
+
+def stack_unfinished(open_in_stack: tuple[str, ...] | None) -> str:
+    """Why a worktree's stack keeps it from being finished: its unmerged branches, or that it couldn't be told."""
+    if open_in_stack is None:
+        return "whether its git-spice stack is finished couldn't be checked"
+    return f"its stack has unmerged branches: {', '.join(open_in_stack)}"
 
 
 def verdict(status: str, reason: str, worktree: WorktreeFacts) -> Verdict:
@@ -223,7 +242,7 @@ class Report:
     `claude agents --json`'s list when it could be read, so the scan's LIVE SESSIONS section draws the same snapshot the
     statuses were decided from. overlaps are the pairs of worktrees that changed the same files (overlaps.py). notes
     says, in plain words, which facts were missing and why. policy is the approval policy for the repo (policy.py),
-    which also sets wip_limit.
+    which also sets wip_limit. stacks are the stacks git-spice tracks, in merge order (stacks.py).
     """
 
     repo: str
@@ -238,6 +257,7 @@ class Report:
     agents: list[object] | None = None
     overlaps: list[Overlap] = field(default_factory=list)
     policy: policy.RepoPolicy | None = None
+    stacks: list[stacks.Stack] = field(default_factory=list)
 
     @property
     def slots(self) -> int:
@@ -302,14 +322,24 @@ def gather(
         notes.append(
             "no base branch (no origin/HEAD, and the main checkout is detached), so unshipped work wasn't counted"
         )
+    checked_out = {wt.branch: wt.path for wt in worktrees if wt.branch}
+    found_stacks, stacks_note = stacks.read_stacks(Path(main.path), checked_out, prs)
+    if stacks_note:
+        notes.append(stacks_note)
     seen_cards: set[str] = set()
+    records_unread = False  # a worktree's record of its card couldn't be read: its real card would look orphaned
     rows: list[tuple[WorktreeFacts, Verdict]] = []
     for index, wt in enumerate(worktrees):
         is_main = index == 0
         card = None
         card_unreadable = False
         pr = prs.get(wt.branch) if wt.branch else None
-        card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
+        try:
+            card_file = ledger.card_file(Path(wt.path), wt.branch, wt.sha)
+        except ledger.LedgerError as error:
+            notes.append(f"{error}, so {wt.label}'s card was looked for by its branch and orphans weren't checked")
+            card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
+            records_unread = True
         if ledger_folder is not None:
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
             notes_before = len(notes)
@@ -336,6 +366,9 @@ def gather(
             commits_after_merge=commits_after(Path(wt.path), pr.head_oid)
             if dirty is False and pr and pr.state == "MERGED"
             else None,
+            open_in_stack=()
+            if is_main
+            else stack_open(Path(main.path), wt.path, wt.branch, found_stacks, bool(stacks_note)),
         )
         rows.append((facts, decide(facts)))
 
@@ -348,13 +381,31 @@ def gather(
         base=base,
         wip_limit=repo_policy.wip_limit,
         worktrees=rows,
-        orphan_cards=orphan_cards(ledger_folder, seen_cards, notes) if ledger_folder is not None else [],
+        orphan_cards=orphan_cards(ledger_folder, seen_cards, notes)
+        if ledger_folder is not None and not records_unread
+        else [],
         sessions_source=sessions_source,
         notes=notes,
         agents=listed,
         overlaps=overlaps,
         policy=repo_policy,
+        stacks=found_stacks,
     )
+
+
+def stack_open(
+    repo_dir: Path, path: str, branch: str | None, found: list[stacks.Stack], stacks_unread: bool
+) -> tuple[str, ...] | None:
+    """The other unmerged branches of the stack the worktree at path holds (Stack.unmerged_besides). When stacks
+    couldn't all be read, a worktree in none of those found asks stacks.open_besides, which says None when git-spice
+    tracks its branch but can't tell, so tower state holds it back as tower clean would."""
+    for stack in found:
+        if path in stack.worktrees:
+            return tuple(stack.unmerged_besides(branch))
+    if stacks_unread and branch:
+        unmerged, _ = stacks.open_besides(repo_dir, branch)
+        return None if unmerged is None else tuple(unmerged)
+    return ()
 
 
 def frontmatter_field(lines: list[str], key: str) -> str:
@@ -645,7 +696,25 @@ def to_json(report: Report) -> dict[str, object]:
         "overlaps": [{"worktrees": [o.first, o.second], "files": list(o.files)} for o in report.overlaps],
         "housekeeping": [{"label": label, "note": note} for label, note in cleanup(report)],
         "policy": None if report.policy is None else policy.to_json(report.policy),
+        "stacks": [
+            {
+                "base": stack.base,
+                "merge_key": merge_key(report, stack),
+                "next_note": next_to_merge(report, stack),
+                "worktrees": stack.worktrees,
+                "branches": [asdict(b) for b in stack.branches],
+            }
+            for stack in report.stacks
+        ],
     }
+
+
+def merge_key(report: Report, stack: stacks.Stack) -> str:
+    """The policy key a merge of this stack is judged by: merge_to_main when it lands on the repo's default branch
+    (every PR of a GitHub stack lands on the stack's base), merge_to_branch otherwise."""
+    # origin's default branch when known; else git-spice's trunk (the main checkout's branch may be anything)
+    default = report.base.removeprefix("origin/") if report.base and report.base.startswith("origin/") else stack.trunk
+    return "merge_to_main" if stack.base == default else "merge_to_branch"
 
 
 # The hub's report groups, in report order, and the effective statuses in each. ready-to-clean and no-card are
@@ -660,8 +729,10 @@ GROUPS = (
 
 
 def render_text(report: Report) -> str:
-    """The report as `tower state` prints it: the WORKTREES, ORPHAN CARDS and GROUPS sections, one row per line."""
-    return "\n".join([*worktrees_section(report), "", *orphans_section(report), "", *groups_section(report)]) + "\n"
+    """The report as `tower state` prints it: the WORKTREES, ORPHAN CARDS, STACKS and GROUPS sections, one row per
+    line."""
+    sections = [worktrees_section(report), orphans_section(report), stacks_section(report), groups_section(report)]
+    return "\n\n".join("\n".join(section) for section in sections) + "\n"
 
 
 def worktrees_section(report: Report) -> list[str]:
@@ -713,6 +784,45 @@ def orphans_section(report: Report) -> list[str]:
     return ["== ORPHAN CARDS (worktree gone) ==", *(rows or ["(none)"])]
 
 
+def stacks_section(report: Report) -> list[str]:
+    """The STACKS section: each stack git-spice tracks as a tree in merge order (bottom first, deeper branches
+    indented), headed by which branch merges next and whether that merge waits for the user, and the stack's
+    worktree."""
+    out = ["== STACKS (git-spice; merge order, bottom first) =="]
+    for stack in report.stacks:
+        header = [f"- stack on {cell(stack.base)}", next_to_merge(report, stack), *map(cell, stack.worktrees)]
+        out.append(" | ".join(header))
+        for number, branch in enumerate(stack.branches, 1):
+            fields = [f"{'  ' * (branch.depth + 1)}{number}. {cell(branch.name)}", pr_field(branch)]
+            fields += ["merged"] if branch.merged else []
+            fields += ["next to merge"] if branch.next else []
+            fields += [f"needs restack: {cell(branch.restack)}"] if branch.restack else []
+            fields += ["checked out"] if branch.worktree else []
+            out.append(" | ".join(fields))
+    return out if report.stacks else [*out, "(none)"]
+
+
+def next_to_merge(report: Report, stack: stacks.Stack) -> str:
+    """The stack header's "next to merge" field: the branch, its PR, and whether its merge waits for the user (the
+    policy key for where it lands is ask) or its worker merges it."""
+    branch = next((b for b in stack.branches if b.next), None)
+    if branch is None:
+        return "nothing left to merge" if all(b.merged for b in stack.branches) else "nothing can merge now"
+    if branch.pr is None:
+        return f"next to merge: {cell(branch.name)}, no PR yet"
+    key = merge_key(report, stack)
+    value = report.policy.value(key) if report.policy is not None else None
+    who = {"ask": ": it waits for you", "auto": ": its worker merges it"}.get(str(value), "")
+    return f"next to merge: {cell(branch.name)}, PR #{branch.pr}" + (f" ({key} is {value}{who})" if who else "")
+
+
+def pr_field(branch: stacks.StackBranch) -> str:
+    """A stack row's PR: its number, with GitHub's state when PRs were read; "no PR" before it's submitted."""
+    if branch.pr is None:
+        return "no PR"
+    return f"PR #{branch.pr}" + (f" {branch.pr_state.lower()}" if branch.pr_state else "")
+
+
 def groups_section(report: Report) -> list[str]:
     """The GROUPS section: every worktree in the hub's report order, so the hub never regroups."""
     out = ["== GROUPS (report in this order) =="]
@@ -761,6 +871,19 @@ def cleanup(report: Report) -> list[tuple[str, str]]:
             where = " (in the main checkout, one is the hub)" if facts.is_main else ""
             items.append((facts.label, f"{interactive} interactive sessions share this worktree{where}"))
     items += [(o.name, f"orphan card (worktree gone), status: {o.status or '?'}") for o in report.orphan_cards]
+    labels = {facts.path: facts.label for facts, _ in report.worktrees}
+    for stack in report.stacks:
+        holder = next((labels[path] for path in stack.worktrees if path in labels), None)
+        for branch in stack.branches:
+            if branch.restack:
+                parent_row = next((b for b in stack.branches if b.name == branch.parent), None)
+                parent_merged = parent_row is None or parent_row.merged  # gone (deleted) or merged: sync moves it
+                fix = (
+                    "git-spice repo sync, then git-spice stack restack" if parent_merged else "git-spice stack restack"
+                )
+                items.append(
+                    (holder or branch.name, f"{branch.name} needs a restack ({branch.restack}): run {fix} there")
+                )
     items += [(o.first, overlap_note(o)) for o in report.overlaps]
     return items
 

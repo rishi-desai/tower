@@ -214,9 +214,11 @@ def test_git_spice_that_does_not_run_fails_with_its_error(bin_dir: Path) -> None
     assert "git-spice" in check.fix
 
 
-def test_git_spice_installed_as_gs_passes(bin_dir: Path) -> None:
+def test_git_spice_installed_only_as_gs_warns_since_tower_runs_git_spice(bin_dir: Path) -> None:
     fake_tool(bin_dir, "gs", "echo 'git-spice 0.33.0'")
-    assert doctor.check_git_spice().status == "ok"
+    check = doctor.check_git_spice()
+    assert check.status == "warn"
+    assert "git-spice" in check.fix
 
 
 def test_a_gs_that_is_ghostscript_does_not_count_as_git_spice(bin_dir: Path) -> None:
@@ -443,7 +445,7 @@ def test_an_event_only_in_last_months_log_still_counts_just_after_rotation(bin_d
 def test_a_broken_git_spice_shim_does_not_hide_a_working_gs(bin_dir: Path) -> None:
     fake_tool(bin_dir, "git-spice", "echo 'mise ERROR No version is set for shim: git-spice' >&2; exit 1")
     fake_tool(bin_dir, "gs", "echo 'git-spice 0.33.0'")
-    assert doctor.check_git_spice().status == "ok"
+    assert doctor.check_git_spice().status == "warn"  # found as gs, though tower's kickoffs run git-spice
 
 
 def test_the_plugin_enabled_in_one_scope_and_disabled_in_another_passes(bin_dir: Path) -> None:

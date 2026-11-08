@@ -20,7 +20,7 @@ Write it so I don't need a follow-up question; when that and brevity conflict, c
 
 ## Parallel work
 
-- One ticket = one branch = one worktree = one main session. Don't edit files in a worktree another session is working in; subagents inside your own worktree are fine.
+- One ticket = one branch = one worktree = one main session; a stack of tickets is one worktree, one branch per ticket. Don't edit files in a worktree another session is working in; subagents inside your own worktree are fine.
 - When you stop or finish in a git repo, use the `status-card` skill so my hub session can see where you are.
 - A repo with work already in flight and no cards gets the `hub` skill's adopt mode first.
 

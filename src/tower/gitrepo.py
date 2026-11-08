@@ -6,11 +6,16 @@ Runs under whatever `python3` the plugin's scripts find (3.9 on a stock Mac), li
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
+# A ticket guess needs a known type before the number (feat-42-x, fix/42-x, or just 42-x), so release-2026-11 isn't #2026.
+BRANCH_TICKET = re.compile(
+    r"(?:^|/)(?:(?:feat|fix|chore|docs|refactor|test|perf|ci|build|spike|bug|hotfix)[-/])?(\d+)(?:-|$)"
+)
 
 
 class NotARepo(Exception):
@@ -80,3 +85,9 @@ def repo_name(repo_dir: Path) -> str:
     if os.path.basename(common) == ".git":
         return os.path.basename(os.path.dirname(common))
     return os.path.basename(common).removesuffix(".git")
+
+
+def guess_ticket(branch: str) -> str:
+    """The ticket a branch name points at (rishi/feat-42-x, fix/42-x, 42-x -> #42), or none."""
+    match = BRANCH_TICKET.search(branch)
+    return f"#{match.group(1)}" if match else "none"

@@ -20,9 +20,8 @@ import os
 from pathlib import Path
 
 from tower import ledger, policy, sessions, state
-from tower.card import guess_ticket
 from tower.github import try_gh
-from tower.gitrepo import GitWorktree, git, list_worktrees, repo_name
+from tower.gitrepo import GitWorktree, git, guess_ticket, list_worktrees, repo_name
 
 SHOWN_CHANGES = 8  # uncommitted entries listed under a worktree; the rest are counted
 LAST_COMMIT_CHARS = 70
@@ -82,12 +81,18 @@ def worktree_rows(
 ) -> list[str]:
     """One worktree's row, then its first uncommitted entries, the worktree-folder notes, and its PR."""
     path = Path(worktree.path)
-    card_file = folder / ledger.card_name(worktree.branch, worktree.sha, repo_dir)
+    record_problem = ""
+    try:
+        card_file = folder / ledger.card_file(path, worktree.branch, worktree.sha)
+    except ledger.LedgerError as record_error:
+        card_file = folder / ledger.card_name(worktree.branch, worktree.sha, repo_dir)
+        record_problem = f" ({record_error}: looked for by its branch)"
     try:
         card = state.read_card(card_file, 0)
         card_state = f"card: {card.status}" if card else "no card"
     except OSError:
         card_state = "card: (unreadable)"
+    card_state += record_problem
     changes, worktree_folders = uncommitted(path, roots)
     dirty = "?" if changes is None else str(len(changes))  # git status failed: unknown, not clean
     changes = changes or []

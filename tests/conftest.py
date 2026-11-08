@@ -27,6 +27,57 @@ def git(cwd: Path, *args: str) -> str:
     return proc.stdout
 
 
+def track(
+    repo_dir: Path, branches: dict[str, tuple[str, int | None]], trunk: str = "main", remote: str | None = None
+) -> None:
+    """Write git-spice's tracking ref for branches ({name: (parent, PR number or None)}), as git-spice 0.33 does."""
+    env = {**os.environ, "GIT_INDEX_FILE": str(repo_dir / ".git" / "spice-test-index")}
+
+    def blob(text: str) -> str:
+        """Write text as a git blob; its id."""
+        return subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo_dir,
+            input=text,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    files = {"repo": json.dumps({"trunk": trunk, **({"remote": remote} if remote else {})}), "version": "1"}
+    for name, (parent, pr) in branches.items():
+        state: dict[str, object] = {"base": {"name": parent, "hash": git(repo_dir, "rev-parse", parent).strip()}}
+        if pr is not None:
+            state["change"] = {"github": {"pr": {"number": pr, "gqlID": f"PR_{pr}"}}}
+        files[f"branches/{name}"] = json.dumps(state, indent=2)
+    subprocess.run(["git", "read-tree", "--empty"], cwd=repo_dir, env=env, check=True)
+    for path, text in files.items():
+        cacheinfo = f"100644,{blob(text)},{path}"
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo", cacheinfo], cwd=repo_dir, env=env, check=True)
+    tree = subprocess.run(["git", "write-tree"], cwd=repo_dir, env=env, capture_output=True, text=True, check=True)
+    commit = git(repo_dir, "commit-tree", tree.stdout.strip(), "-m", "spice").strip()
+    git(repo_dir, "update-ref", "refs/spice/data", commit)
+
+
+def unreadable_tracking(repo_dir: Path, *branches: str) -> None:
+    """A git-spice tracking ref that tracks branches but that tower can't read (no `repo` blob, so no trunk)."""
+    env = {**os.environ, "GIT_INDEX_FILE": str(repo_dir / ".git" / "spice-test-index")}
+    subprocess.run(["git", "read-tree", "--empty"], cwd=repo_dir, env=env, check=True)
+    for name in branches:
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo_dir,
+            input="{}",
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        cacheinfo = f"100644,{blob},branches/{name}"
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo", cacheinfo], cwd=repo_dir, env=env, check=True)
+    tree = subprocess.run(["git", "write-tree"], cwd=repo_dir, env=env, capture_output=True, text=True, check=True)
+    git(repo_dir, "update-ref", "refs/spice/data", git(repo_dir, "commit-tree", tree.stdout.strip(), "-m", "x").strip())
+
+
 @dataclass
 class Fixture:
     """A repo named `repo` with a main checkout, its ledger, and where the fake `claude` reads its sessions from."""

@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -56,6 +57,20 @@ def fake_prs(tmp_path: Path, prs: list[dict[str, object]] | None) -> None:
         body = f"cat <<'EOF'\n{json.dumps([{'isCrossRepository': False, **pr} for pr in prs])}\nEOF"
     gh.write_text(f'#!/bin/sh\n[ "$1 $2" = "pr list" ] || exit 9\n{body}\n', encoding="utf-8")
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+
+
+def fake_prs_by_branch(tmp_path: Path, prs: dict[str, list[dict[str, object]]]) -> None:
+    """Put a `gh` on PATH whose `pr list --head BRANCH` prints that branch's PRs, each from this repo."""
+    listed = {head: [{"isCrossRepository": False, **pr} for pr in branch_prs] for head, branch_prs in prs.items()}
+    program = (
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "sys.exit(9) if args[:2] != ['pr', 'list'] else None\n"
+        f"print(json.dumps({listed!r}.get(args[args.index('--head') + 1], [])))\n"
+    )
+    gh = tmp_path / "bin" / "gh"
+    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(program)} "$@"\n', encoding="utf-8")
+    gh.chmod(0o755)
 
 
 def write(
@@ -224,10 +239,10 @@ def test_a_closed_pr_is_named_but_the_card_is_running_and_a_detached_head_has_no
     assert write(capsys, monkeypatch)[1].endswith("status: running (PR #50 was closed without merging)\n")
     assert 'pr: "#50"' in frontmatter(repo.ledger / "feat-42-search.md")
 
+    # Detached, the worktree keeps its card (the card follows its worktree), which now says it has no branch.
     git(path, "checkout", "-q", "--detach")
-    short = git(path, "rev-parse", "--short", "HEAD").strip()
     code, out, _ = write(capsys, monkeypatch)
-    fields = frontmatter(repo.ledger / f"detached-{short}.md")
+    fields = frontmatter(repo.ledger / "feat-42-search.md")
     assert (code, out.splitlines()[1]) == (0, "status: running (no PR yet)")  # gh isn't asked without a branch
     assert ("branch: none", 'base: "main"') == (fields[3], fields[5])
 
@@ -507,3 +522,173 @@ def test_an_answer_with_a_tower_conf_that_isnt_utf8_says_so_in_the_debug_log(rep
 
     assert (proc.returncode, proc.stdout) == (0, "")
     assert proc.stderr == f"tower: card-resume: {tmp_path / 'tower.conf'} isn't UTF-8 text (line 1)\n"
+
+
+def test_a_stacked_branch_with_no_pr_yet_names_its_parent_as_its_base(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import track
+
+    path = repo.add_worktree("feat-a")
+    git(path, "checkout", "-q", "-b", "feat-b")
+    track(repo.main, {"feat-a": ("main", None), "feat-b": ("feat-a", None)})
+    fake_prs(tmp_path, [])
+    monkeypatch.chdir(path)
+
+    assert write(capsys, monkeypatch)[0] == 0
+
+    assert 'base: "feat-a"' in frontmatter(repo.ledger / "feat-b.md")
+
+
+def test_a_stack_worktrees_card_follows_it_to_its_next_branch_with_its_kickoff_and_log(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stack's worker creates each ticket's branch on top of the last (git-spice branch create switches the
+    worktree to it): the card the hub started, with its kickoff and decisions log, stays this worktree's card."""
+    path = repo.add_worktree("feat-a")
+    fake_prs(tmp_path, [])
+    monkeypatch.chdir(path)
+    assert write(capsys, monkeypatch)[0] == 0
+    monkeypatch.setattr(sys, "stdin", io.StringIO("/implement #1, #2 as a stack"))
+    assert cli.main(["card", "kickoff"]) == 0
+    assert cli.main(["decisions", "add", "chose X over Y because Z"]) == 0
+    capsys.readouterr()
+
+    git(path, "checkout", "-q", "-b", "feat-b")
+    code, out, _ = write(capsys, monkeypatch)
+
+    card = repo.ledger / "feat-a.md"
+    assert (code, out.splitlines()[0]) == (0, str(card))
+    assert not (repo.ledger / "feat-b.md").exists()
+    assert 'branch: "feat-b"' in frontmatter(card)
+    assert body(card).endswith("## Kickoff\n/implement #1, #2 as a stack\n")
+    assert cli.main(["card-path"]) == 0
+    assert capsys.readouterr().out.strip() == str(card)
+    assert cli.main(["state", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    (row,) = [r for r in result["worktrees"] if r["path"] == str(path)]
+    assert (row["card_file"], row["card"]["ticket"], result["orphan_cards"]) == ("feat-a.md", "none", [])
+    assert "chose X over Y" in (repo.ledger / "_decisions" / "feat-a.md").read_text(encoding="utf-8")
+
+
+def test_a_new_worktree_at_a_removed_ones_path_never_takes_over_that_orphan_card(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-a")
+    fake_prs(tmp_path, [])
+    monkeypatch.chdir(path)
+    assert write(capsys, monkeypatch)[0] == 0
+    old_card = repo.ledger / "feat-a.md"
+    before = old_card.read_text(encoding="utf-8")
+    monkeypatch.chdir(repo.main)
+    git(repo.main, "worktree", "remove", "--force", str(path))  # removed outside tower clean: its card stays
+    git(repo.main, "worktree", "add", "-q", "-b", "feat-b", str(path))
+    monkeypatch.chdir(path)
+
+    assert write(capsys, monkeypatch)[0] == 0
+
+    assert (repo.ledger / "feat-b.md").exists()
+    assert old_card.read_text(encoding="utf-8") == before
+
+
+def test_an_answer_after_the_worktree_moved_branch_never_names_the_last_branchs_pr(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-a")
+    head = git(path, "rev-parse", "HEAD").strip()
+    fake_prs(tmp_path, [{"number": 11, "state": "OPEN", "baseRefName": "main", "headRefOid": head}])
+    monkeypatch.chdir(path)
+    assert write(capsys, monkeypatch, "--status", "needs-you", "--reason", "A or B?")[0] == 0
+    git(path, "checkout", "-q", "-b", "feat-b")  # git-spice branch create, before the user answered
+
+    proc = run_resume(path, "UserPromptSubmit", str(Path(sys.base_prefix) / "bin" / "python3"))
+
+    assert proc.returncode == 0, proc.stderr
+    fields = frontmatter(repo.ledger / "feat-a.md")
+    assert ("status: running", 'branch: "feat-b"', "pr: unknown") == (fields[0], fields[3], fields[4])
+
+
+def test_a_stack_worktrees_card_stays_running_when_its_bottom_pr_merged_and_the_rest_of_the_stack_is_open(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import track
+
+    path = repo.add_worktree("feat-a")
+    git(path, "branch", "feat-b")
+    track(repo.main, {"feat-a": ("main", 11), "feat-b": ("feat-a", 12)})
+    head = git(path, "rev-parse", "HEAD").strip()
+    fake_prs_by_branch(
+        tmp_path,
+        {
+            "feat-a": [{"number": 11, "state": "MERGED", "baseRefName": "main", "headRefOid": head}],
+            "feat-b": [{"number": 12, "state": "OPEN", "baseRefName": "feat-a", "headRefOid": head}],
+        },
+    )
+    monkeypatch.chdir(path)
+
+    code, out, _ = write(capsys, monkeypatch)
+
+    assert code == 0
+    assert out.splitlines()[1] == "status: running (PR #11 is merged; its stack still has unmerged branches: feat-b)"
+
+    # Squash-merged on GitHub (nothing of feat-b on main that git can see): the stack is finished.
+    fake_prs_by_branch(
+        tmp_path,
+        {
+            "feat-a": [{"number": 11, "state": "MERGED", "baseRefName": "main", "headRefOid": head}],
+            "feat-b": [{"number": 12, "state": "MERGED", "baseRefName": "main", "headRefOid": head}],
+        },
+    )
+    assert write(capsys, monkeypatch)[1].splitlines()[1] == "status: done (PR #11 is merged)"
+
+
+def test_an_answer_during_a_conflicted_restack_keeps_the_cards_branch_and_pr(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-a")
+    head = git(path, "rev-parse", "HEAD").strip()
+    fake_prs(tmp_path, [{"number": 11, "state": "OPEN", "baseRefName": "main", "headRefOid": head}])
+    monkeypatch.chdir(path)
+    assert write(capsys, monkeypatch, "--status", "needs-you", "--reason", "Which side?")[0] == 0
+    git(path, "checkout", "-q", "--detach")  # a rebase stopped on a conflict
+
+    proc = run_resume(path, "UserPromptSubmit", str(Path(sys.base_prefix) / "bin" / "python3"))
+
+    assert proc.returncode == 0, proc.stderr
+    fields = frontmatter(repo.ledger / "feat-a.md")
+    assert ("status: running", 'branch: "feat-a"', 'pr: "#11"') == (fields[0], fields[3], fields[4])
+
+
+def test_a_record_of_the_card_that_cant_be_read_stops_the_write_instead_of_starting_a_new_card(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-a")
+    fake_prs(tmp_path, [])
+    monkeypatch.chdir(path)
+    assert write(capsys, monkeypatch)[0] == 0
+    git_dir = Path(git(path, "rev-parse", "--absolute-git-dir").strip())
+    (git_dir / "tower-card").write_bytes(b"\xff\xfe not text")
+    git(path, "checkout", "-q", "-b", "feat-b")
+
+    code, _, err = write(capsys, monkeypatch)
+
+    assert code == 1
+    assert "tower-card (it isn't UTF-8)" in err
+    assert not (repo.ledger / "feat-b.md").exists()
+
+
+def test_a_merged_bottom_branch_whose_stack_cant_be_read_keeps_the_card_running(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import unreadable_tracking
+
+    path = repo.add_worktree("feat-a")
+    unreadable_tracking(repo.main, "feat-a")
+    head = git(path, "rev-parse", "HEAD").strip()
+    fake_prs(tmp_path, [{"number": 11, "state": "MERGED", "baseRefName": "main", "headRefOid": head}])
+    monkeypatch.chdir(path)
+
+    code, out, _ = write(capsys, monkeypatch)
+
+    assert code == 0
+    assert "status: running (PR #11 is merged; whether its stack is finished couldn't be checked)" in out

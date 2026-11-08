@@ -2,7 +2,9 @@
 
   - the per-machine config (~/.claude/tower.conf, plain `key=value` lines written by setup.sh) and how to read it
   - which project folder in the notes vault a repo maps to: <projects_dir>/<project.<repo>= or the repo's name>
-  - how a branch becomes a card file name: "/" -> "__", a detached HEAD -> detached-<short sha>
+  - how a branch becomes a card file name: "/" -> "__", a detached HEAD -> detached-<short sha>; and how a card stays
+    with its worktree when the worktree moves to another branch (a stack worktree's worker does): the worktree's own
+    git folder records its card's name (remember_card, followed_card)
   - where a worktree's decisions log lives (Ledger/_decisions/, by its card's name) and how a finished worker's notes
     are archived (Ledger/_archive/)
 
@@ -14,12 +16,14 @@ from __future__ import annotations
 
 import codecs
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tower.gitrepo import git, repo_name
+from tower.gitrepo import NotARepo, git, repo_name
 
 ARCHIVE = "_archive"
+CARD_POINTER = "tower-card"  # in a worktree's own git folder: the name of the card that follows it
 DECISIONS = "_decisions"  # a folder, so the scans that read the Ledger's *.md as cards never see a decisions log
 
 
@@ -106,6 +110,96 @@ def card_name(branch: str | None, sha: str, repo_dir: Path) -> str:
     return branch.replace("/", "__") + ".md"
 
 
+def admin_dir(worktree_root: Path) -> Path | None:
+    """The worktree's own git folder, read from its `.git` (a linked worktree's `.git` is a file, "gitdir:
+    <repo>/.git/worktrees/<name>"; the main checkout's is the folder itself), with no git call; None when there's no
+    `.git` to read. Raises LedgerError when it exists but can't be read."""
+    dot_git = worktree_root / ".git"
+    try:
+        if dot_git.is_dir():
+            return dot_git
+        line = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise LedgerError(f"can't read {dot_git} ({error.strerror or type(error).__name__})") from error
+    if not line.startswith("gitdir:"):
+        return None
+    folder = Path(line[len("gitdir:") :].strip())
+    return folder if folder.is_absolute() else worktree_root / folder
+
+
+def followed_card(git_dir: Path | None) -> str | None:
+    """The card file name a worktree's git folder records (`<git dir>/tower-card`, written by remember_card), or None
+    when it records none. Raises LedgerError when the record exists but can't be read or isn't a card file name:
+    falling back to the branch's card would leave the worktree's real card, kickoff and decisions log behind."""
+    if git_dir is None:
+        return None
+    pointer = git_dir / CARD_POINTER
+    try:
+        name = pointer.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as error:
+        why = error.strerror if isinstance(error, OSError) else "it isn't UTF-8"
+        raise LedgerError(f"can't read {pointer} ({why or type(error).__name__})") from error
+    if not name.endswith(".md") or "/" in name or name.startswith("."):
+        raise LedgerError(f"{pointer} doesn't name a card file: {name[:60]!r}")
+    return name
+
+
+def card_file(worktree_root: Path, branch: str | None, sha: str) -> str:
+    """The card file name of the worktree at worktree_root, on branch at sha: the one its git folder records
+    (followed_card), else the one named after its branch (card_name). Raises LedgerError when the record exists but
+    can't be read."""
+    return followed_card(admin_dir(worktree_root)) or card_name(branch, sha, worktree_root)
+
+
+def remember_card(git_dir: Path, name: str) -> None:
+    """Record name as the card of the worktree whose git folder is git_dir, so the card stays its card when the worktree
+    moves to another branch (a stack worktree's worker does). Git removes the folder with the worktree, so a later
+    worktree at the same path starts without it. Raises OSError when it can't be written."""
+    try:
+        if followed_card(git_dir) == name:
+            return
+    except LedgerError:
+        pass  # an unreadable record is replaced
+    fd, tmp = tempfile.mkstemp(
+        dir=git_dir, prefix=f".{CARD_POINTER}-", suffix=".tmp"
+    )  # unique: two writers can't clash
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(name + "\n")
+        os.replace(tmp, git_dir / CARD_POINTER)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def record_card(worktree_dir: Path, card: Path) -> str:
+    """Record card as the card of the worktree holding worktree_dir (remember_card), unless that's the main checkout
+    (the hub's, which has no card that moves); "" or a warning saying why it couldn't be recorded."""
+    git_dir = git(worktree_dir, "rev-parse", "--absolute-git-dir")
+    common = git(worktree_dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not git_dir or git_dir == common:  # no git folder, or the main checkout's own
+        return ""
+    try:
+        remember_card(Path(git_dir), card.name)
+    except OSError as error:
+        why = error.strerror or type(error).__name__
+        return f"couldn't record the card in the worktree's git folder ({why}), so it won't follow the worktree to another branch"
+    return ""
+
+
+def card_in(ledger_folder: Path, worktree_dir: Path) -> Path:
+    """The card of the worktree holding worktree_dir in ledger_folder (card_file). Raises NotARepo outside a git repo
+    and LedgerError when the worktree's record of its card can't be read."""
+    top = git(worktree_dir, "rev-parse", "--show-toplevel")
+    if top is None:
+        raise NotARepo(f"not a git repo: {worktree_dir}")
+    return ledger_folder / card_file(Path(top), git(worktree_dir, "branch", "--show-current"), "HEAD")
+
+
 def open_ledger(repo_dir: Path) -> Path:
     """The Ledger folder of the repo holding repo_dir, created if needed. Raises NotARepo outside a git repo and
     LedgerError when the ledger can't be found."""
@@ -118,9 +212,8 @@ def open_ledger(repo_dir: Path) -> Path:
 
 
 def card_path(worktree_dir: Path) -> Path:
-    """Where the worktree holding worktree_dir keeps its card; creates the Ledger folder if needed."""
-    branch = git(worktree_dir, "branch", "--show-current")  # "" on a detached HEAD
-    return open_ledger(worktree_dir) / card_name(branch, "HEAD", worktree_dir)
+    """Where the worktree holding worktree_dir keeps its card (card_in); creates the Ledger folder if needed."""
+    return card_in(open_ledger(worktree_dir), worktree_dir)
 
 
 def existing_card_path(worktree_dir: Path) -> Path | None:
@@ -129,7 +222,7 @@ def existing_card_path(worktree_dir: Path) -> Path | None:
     folder = project_dir(repo_name(worktree_dir), read_conf(conf_path())) / "Ledger"
     if not folder.is_dir():
         return None
-    return folder / card_name(git(worktree_dir, "branch", "--show-current"), "HEAD", worktree_dir)
+    return card_in(folder, worktree_dir)
 
 
 def decisions_path(worktree_dir: Path) -> Path:

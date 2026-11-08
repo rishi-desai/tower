@@ -6,7 +6,8 @@ needs you. These are the words its code, skills and docs use.
 ## Work
 
 **Worker**:
-A Claude Code session that works one ticket in its own worktree and branch.
+A Claude Code session that works one ticket in its own worktree and branch, or a whole stack of tickets in one
+stack worktree, one branch per ticket.
 _Avoid_: agent (too broad: the hub is an agent too), job
 
 **Hub**:
@@ -20,6 +21,28 @@ by one stay separate), which GitHub then groups into a stack of its own. GitHub 
 asynchronous merge API, and merging one merges every unmerged PR below it too, onto the stack's
 base (the branch the bottom PR targets). Workers merge a stack with `tower merge`, from the bottom, one PR at a time.
 _Avoid_: train, dependent PRs, chain (that is chained PRs)
+
+**Stack worktree**:
+The one worktree that holds a whole stack, worked by one worker, who moves between the stack's branches in it. A stack
+is sequential (an upper PR can't land before the one below it), so it is one stack = one worktree, not one per
+branch.
+_Avoid_: stack branch worktree, per-branch worktrees
+
+**Parent**:
+The branch a stacked branch is built on: the one below it in its stack, or the stack's base for the bottom branch.
+It is where the branch's PR is based, and what the card's `base:` says before there is a PR.
+_Avoid_: base (alone: it reads as the repo's base branch), upstream (git's word for the remote branch)
+
+**Needs restack**:
+A stacked branch whose parent moved under it: the parent was rebased or amended (it has commits the branch doesn't),
+or the parent merged. The branch still holds the old parent until its worker restacks it. A bottom branch is never
+flagged for the stack's base moving on: GitHub merges it all the same.
+_Avoid_: stale, out of date, behind (that is unshipped work)
+
+**Next to merge**:
+The lowest branch of a stack that hasn't merged and sits on the stack's base or on a merged parent: the only PR of
+the stack that may merge now. Its merge waits for you when the policy key for where it lands is ask.
+_Avoid_: bottom PR (once lower PRs merge, the next one isn't the original bottom), head of the stack
 
 **Chained PRs**:
 PRs whose bases chain (feat2 → feat1 → main) without being a stack, as when each is opened on its own. GitHub moves
@@ -53,7 +76,9 @@ _Avoid_: partial cleanup, orphan card (an orphan card is any card without a work
 A worker's short Markdown note in the vault saying where its worktree stands: status, ticket, PR, what's done, the
 one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
 the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
-A card is named after its worktree's branch, or its commit on a detached HEAD; that name isn't the worktree's label.
+A card is named after its worktree's branch, or its commit on a detached HEAD, when it is first written; that name
+isn't the worktree's label. The card stays with its worktree when the worktree moves to another branch (a stack
+worktree's worker moves between its branches), keeping its first name.
 _Avoid_: status file, report
 
 **Ticket guess**:

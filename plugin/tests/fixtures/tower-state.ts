@@ -56,7 +56,7 @@ export const SHARED: TowerState = {
           "waiting_for": ""
         }
       ],
-      "unshipped_commits": 1,
+      "unshipped_commits": 2,
       "dirty": null,
       "pr": null
     },
@@ -192,7 +192,7 @@ export const SHARED: TowerState = {
   "unshipped": [
     {
       "label": "feat-1",
-      "commits": 1
+      "commits": 2
     },
     {
       "label": "feat-3",
@@ -235,6 +235,10 @@ export const SHARED: TowerState = {
     {
       "label": "feat__2-gone",
       "note": "orphan card (worktree gone), status: done"
+    },
+    {
+      "label": "feat-1",
+      "note": "feat-1 needs a restack (its parent feat-0 moved): run git-spice stack restack there"
     }
   ],
   "policy": {
@@ -248,5 +252,41 @@ export const SHARED: TowerState = {
     "pr_writes": "auto",
     "cleanup": "ask",
     "problems": []
-  }
+  },
+  "stacks": [
+    {
+      "base": "main",
+      "merge_key": "merge_to_main",
+      "next_note": "next to merge: feat-0, PR #10 (merge_to_main is ask: it waits for you)",
+      "worktrees": [
+        "/p/worktrees/feat-1"
+      ],
+      "branches": [
+        {
+          "name": "feat-0",
+          "ticket": "#0",
+          "parent": "main",
+          "depth": 0,
+          "worktree": null,
+          "pr": 10,
+          "pr_state": null,
+          "merged": false,
+          "restack": "",
+          "next": true
+        },
+        {
+          "name": "feat-1",
+          "ticket": "#1",
+          "parent": "feat-0",
+          "depth": 1,
+          "worktree": "/p/worktrees/feat-1",
+          "pr": 11,
+          "pr_state": null,
+          "merged": false,
+          "restack": "its parent feat-0 moved",
+          "next": false
+        }
+      ]
+    }
+  ]
 }

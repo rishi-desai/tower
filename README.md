@@ -14,7 +14,7 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
 
 ## The four rules
 
-1. **One ticket = one branch = one worktree = one main session.** Subagents inside a worktree are fine; two sessions editing the same worktree are not.
+1. **One ticket = one branch = one worktree = one main session.** A stack of tickets is the exception: the whole stack is one worktree with one session, one branch per ticket (see "Starting a stack"). Subagents inside a worktree are fine; two sessions editing the same worktree are not.
 2. **WIP limit** (work in progress): at most N execution slots in use (3 personal, 4 work, set per machine). A worktree holds a slot when its session is busy or waiting on you, or its card says `running` or `needs-you`; one only waiting on CI or review doesn't. New ideas get parked as tickets, not started.
 3. **The hub never reads transcripts.** All state is on disk, so the hub is disposable: `/clear` it and run it again any time.
 4. **Nothing public without your OK, unless your policy says so.** Comments, PR changes, merges and pushes stop for your approval as this machine's profile (`work`, `personal`, `sandbox`) says; edits to your standing rules and to the policy itself always do.
@@ -38,6 +38,13 @@ tower ships as a **Claude Code plugin** (skills + an approval hook) plus a small
 - **Hub**: a session in the repo's main checkout that you ask "what's going on?" or "what's next?". It reports in a fixed order and ends with one suggested action.
 - **Live sessions**: the hub also reads Claude Code's agent view (`claude agents --json`), so it sees a session waiting on you even if its card is stale, and flags a worktree with several sessions in it.
 - **Effective state**: `tower state` (tower's core) weighs the card, live sessions, the event log and git into one status per worktree, with the reason: `needs-you`, `running`, `waiting-ci`, `blocked`, `done`, `ready-to-clean`, `no-card` or `main`. A session waiting on you beats any card; a busy session beats a `needs-you` card (you already answered). The hub, the pane and the WIP count all read it, so they never disagree. From this checkout: `uv run tower state` (add `--json` for the machine-readable form, `--pr` to also ask GitHub about each branch's PR, `--all` for every repo on this machine: each one in the event log, this one, and any with a Ledger folder in the vault).
+- **Stacks**: in a repo that uses git-spice, `tower state` shows each stack as a tree in merge order (bottom first),
+  read from git-spice's own tracking ref without running git-spice, so a scan never writes to the repo. It marks the
+  branch that merges next, with whether that merge waits for you (the policy key for where it lands is `ask`), and
+  flags a branch that **needs restack**: its parent was rebased or amended, or merged. Each such branch also gets a
+  Housekeeping line with the git-spice command that fixes it. A card's `base` is the branch's parent until it has a
+  PR, and a card stays with its worktree when the worker moves to another branch of its stack (the worktree's own
+  git folder records its card's name).
 - **File overlaps**: `tower state` also checks every pair of worktrees (not the main checkout) for files both changed, from git, never from cards: each branch's own commits (not on the other branch, not on the base; a file only while it still differs from the base, so a squash-merged worktree stops counting) plus its uncommitted and untracked files. The hub and the pane list each pair under Housekeeping with the shared files, so two workers editing one file hear about it before merge time. Branches stacked on each other, or cut from the same integration branch, only overlap on files each changed itself.
 
 ## Install
@@ -109,6 +116,17 @@ If the plugin is already installed (for example from a restored `settings.json`)
 
 If the hub says `AT LIMIT`, finish or pause something first, or park the new ticket. It won't refuse if you insist.
 
+### Starting a stack
+
+Tickets that build on each other (`/to-tickets` writes them with `Blocked by` links) can ship as a stack of PRs, one
+per ticket, each based on the one below. Say **"start #40 #41 #42 as a stack"**: the hub starts **one** worktree for the
+whole stack (one worker, one execution slot), with a kickoff that names the tickets bottom first. The worker builds
+each ticket's branch on top of the last with git-spice (`git-spice branch create`), submits them with `git-spice stack
+submit` (GitHub groups them into a stack), and merges them from the bottom with `tower merge`, or leaves the bottom PR
+waiting for you, as the policy says. Why one worktree and not one per branch: git-spice skips any branch checked out
+in another worktree when it restacks, and everything above it (docs/research/git-spice-with-worktrees.md). Install
+git-spice once per machine (`brew install git-spice`; `tower doctor`, which setup.sh runs, checks it).
+
 ### Checking in
 
 - In the hub: **"what needs me?"** (or `/tower:hub`). You get one screen, ordered Needs you → Blocked → Running → Waiting on CI or review → Done → Housekeeping, and one suggested next action.
@@ -145,6 +163,8 @@ so the two can't disagree.
   `start #N` on a `ready-for-agent` issue starts it, `discuss #N` on any other asks the hub to discuss it first;
   an issue a worktree's card already names has no button, only where it runs after its title, e.g. `· running in feat-93-x`),
   What's next? (n), Nudge (asks a cardless session to write its card), and Park an idea.
+- **Stacks:** each git-spice stack as a tree in merge order: which worktree holds it, which branch merges next and
+  whether that waits for you, each branch's PR, and which branches need a restack.
 
 Anything that changes something (starting a ticket, parking an idea) is sent to the hub's Claude as a request,
 so the usual approval prompts still apply.
@@ -207,7 +227,9 @@ first closes those PRs. On chained PRs, move the PR above to the next base (`tow
 command) before merging it. Merging a stacked PR also merges every PR below it, onto the stack's base,
 so the policy judges it by that branch: a PR based on `feat1` in a stack on `main` is a merge into `main`.
 Under `personal`, PRs into branches merge themselves and PRs into `main` wait for you; under `work` you approve every
-PR change.
+PR change. After a lower PR merges, GitHub moves the next one onto the stack's base and rebases it itself, and its
+checks run again; the worker runs `git-spice repo sync` so its local branches follow, and `git fetch` before any later
+`git-spice stack submit` (whose push is refused against a stale copy of the remote branch).
 
 ### Finishing up
 

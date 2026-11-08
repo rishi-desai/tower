@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import Fixture
+from conftest import Fixture, git
 from test_card import NARRATIVE, body, fake_prs, write
 
 from tower import cli
@@ -402,3 +402,18 @@ def test_the_hook_never_creates_a_ledger_folder_in_the_vault(repo: Fixture, work
 
     assert session_start(worker, "compact") == ""
     assert not repo.ledger.exists()
+
+
+def test_a_decision_logged_before_the_first_card_write_follows_the_worktree_to_its_next_branch(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = repo.add_worktree("feat-a")
+    monkeypatch.chdir(path)
+    assert cli.main(["decisions", "add", "chose X over Y because Z"]) == 0
+    git(path, "checkout", "-q", "-b", "feat-b")  # git-spice branch create, before any card write
+
+    assert cli.main(["decisions", "add", "found the auth middleware in src/auth"]) == 0
+
+    log = (repo.ledger / "_decisions" / "feat-a.md").read_text(encoding="utf-8")
+    assert "chose X over Y" in log and "found the auth middleware" in log
+    assert not (repo.ledger / "_decisions" / "feat-b.md").exists()
