@@ -2271,7 +2271,8 @@ def changes_policy(command: SimpleCommand, cwd: str, git_may_hand_files: bool) -
     reads = read_only_words(command, git_may_hand_files)
     unread = [index for index in range(len(words)) if index not in reads]
     interpreters = [index for index in unread if LANGUAGE_RUNNER.fullmatch(program_name(words[index]))]
-    code_runners = [i for i in unread if i in interpreters or program_name(words[i]) in SETUP_CODE_PROGRAMS]
+    is_interpreter = set(interpreters)
+    code_runners = [i for i in unread if i in is_interpreter or program_name(words[i]) in SETUP_CODE_PROGRAMS]
     in_tower = "tower" in cwd.lower()
 
     def code_after(start: int) -> list[str]:
@@ -2317,9 +2318,7 @@ def read_only_words(command: SimpleCommand, git_may_hand_files: bool) -> set[int
         return set(range(first_arg, len(words)))
     if name == "git" and not git_may_hand_files:
         subcommand = first_arg + git_subcommand_at(words[first_arg:])
-        settings = any(
-            word.text == "-c" or word.text.startswith("--config-env") for word in words[first_arg:subcommand]
-        )
+        settings = any(config_setting(words, index) is not None for index in range(first_arg, subcommand))
         if not settings and subcommand < len(words) and words[subcommand].text in GIT_FILE_READERS:
             return {index for index in range(subcommand + 1, len(words)) if not words[index].text.startswith("-")}
     return set()
