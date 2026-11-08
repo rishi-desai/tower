@@ -27,16 +27,18 @@ class NotARepo(Exception):
 
 @dataclass(frozen=True)
 class GitWorktree:
-    """One block of `git worktree list --porcelain`. branch is None on a detached HEAD."""
+    """One block of `git worktree list --porcelain`. branch is None on a detached HEAD, and only then is short_sha
+    set (git's unique short sha, the one in its card's name)."""
 
     path: str
     sha: str
     branch: str | None
+    short_sha: str | None
 
     @property
     def label(self) -> str:
         """How every report names it: the branch, or "(detached <short sha>)"."""
-        return self.branch or f"(detached {self.sha[:7]})"
+        return self.branch or f"(detached {self.short_sha})"
 
 
 def git(cwd: Path, *args: str) -> str | None:
@@ -65,9 +67,15 @@ def list_worktrees(repo_dir: Path) -> list[GitWorktree]:
         elif line.startswith("branch "):
             branch = line[len("branch ") :].replace("refs/heads/", "", 1)
         elif line == "" and path:
-            found.append(GitWorktree(path, sha, branch))
+            found.append(GitWorktree(path, sha, branch, None if branch else short_sha(repo_dir, sha)))
             path, sha, branch = "", "", None
     return found
+
+
+def short_sha(repo_dir: Path, sha: str) -> str:
+    """git's short name for commit sha: longer than core.abbrev when a shorter prefix is ambiguous, so no two commits
+    share it (sha[:7] isn't unique); sha[:7] if git can't say. A detached label and its card name both use it."""
+    return git(repo_dir, "rev-parse", "--short", sha) or sha[:7]
 
 
 def is_main_checkout(directory: Path) -> bool:

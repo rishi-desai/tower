@@ -386,6 +386,51 @@ def test_a_detached_worktree_finds_its_card(repo: Fixture, capsys: pytest.Captur
     assert row["status"] == "blocked"
 
 
+def detach_at_colliding_commits(repo: Fixture) -> tuple[Path, Path]:
+    """Two worktrees detached at two commits whose shas share their first 7 hex characters (a17f3a5; found by a
+    birthday search over the message), so a label cut to 7 characters can't tell them apart."""
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_AUTHOR_DATE": "1700000000 +0000",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "GIT_COMMITTER_DATE": "1700000000 +0000",
+    }
+    empty_tree = git(repo.main, "hash-object", "-t", "tree", "/dev/null").strip()
+    paths = []
+    for n, expected in ((12623, "a17f3a5652404cf7"), (21051, "a17f3a5d346a423f")):
+        sha = subprocess.run(
+            ["git", "commit-tree", empty_tree, "-m", f"collide {n}"],
+            cwd=repo.main,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert sha.startswith(expected)
+        path = repo.add_worktree(f"feat-{n}")
+        git(path, "checkout", "-q", "--detach", sha)
+        paths.append(path)
+    return paths[0], paths[1]
+
+
+def test_two_detached_worktrees_whose_shas_share_7_characters_get_distinct_labels(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A detached label carries git's unique short sha, the one in its card file's name (#90), not sha[:7]."""
+    first, second = detach_at_colliding_commits(repo)
+
+    worktrees = tower_state(capsys)["worktrees"]
+    assert isinstance(worktrees, list)
+    labels = {row["path"]: row["label"] for row in worktrees}
+
+    assert labels[str(first)] != labels[str(second)]
+    for path in (first, second):
+        assert labels[str(path)] == f"(detached {ledger.card_path(path).stem.removeprefix('detached-')})"
+
+
 @pytest.mark.parametrize("detached", [False, True])
 def test_each_row_names_the_card_file_the_core_writes(
     repo: Fixture, capsys: pytest.CaptureFixture[str], detached: bool

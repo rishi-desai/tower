@@ -249,6 +249,22 @@ test("a detached worktree's card button opens the card file the core named, not 
   await ui.unmount()
 })
 
+test('two detached worktrees whose shas share 7 characters each act on their own row', async ($, on) => {
+  // The core labels a detached HEAD with git's unique short sha, which grows past 7 characters to stay unique (#90).
+  const detach = (w: StateWorktree, short: string) => ({ ...w, label: `(detached ${short})`, branch: null, card_file: `detached-${short}.md` })
+  const twins = variant(w => w.label === 'feat-8' ? detach(w, 'a17f3a56') : w.label === 'feat-9' ? detach(w, 'a17f3a5d') : w)
+  const w = world(on, twins)
+  await $.command.run({ command: 'tower' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'card-(detached a17f3a5d)' })
+  expect(w.argvs.at(-1)).toEqual(['open', `obsidian://open?path=${encodeURIComponent('/vault/repo/Ledger/detached-a17f3a5d.md')}`])
+  await ui.press({ key: 'card-(detached a17f3a56)' })
+  expect(w.argvs.at(-1)).toEqual(['open', `obsidian://open?path=${encodeURIComponent('/vault/repo/Ledger/detached-a17f3a56.md')}`])
+  await ui.press({ key: 'orca-(detached a17f3a5d)' })
+  expect(w.argvs.find(argv => argv[0] === 'orca')).toEqual(['orca', 'terminal', 'list', '--worktree', 'path:/p/worktrees/feat-9', '--json'])
+  await ui.unmount()
+})
+
 test('in a worker inside Orca, 0 goes back to the hub; the hub and sessions outside Orca get no band', async ($, on) => {
   const w = world(on, SHARED, { ORCA_TERMINAL_HANDLE: 'term_waiting' })
   await startSession($, on, w, '/p/worktrees/feat-8/src')
