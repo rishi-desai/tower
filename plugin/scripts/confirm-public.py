@@ -542,10 +542,12 @@ DESCRIPTOR = re.compile(r"\d+|-")
 
 @dataclass
 class Redirect:
-    """One redirection of a simple command: its operator (>, >>, <, ...) and its target."""
+    """One redirection of a simple command: its file descriptor (the "2" of 2>, "" for the default), its operator
+    (>, >>, <, ...) and its target."""
 
     operator: str
     target: Word
+    fd: str = ""
 
     @property
     def writes(self) -> bool:
@@ -554,10 +556,12 @@ class Redirect:
 
     @property
     def writes_file(self) -> bool:
-        """Whether it writes into a file a later command can read or run: not /dev/null or another file descriptor
-        (2>&1, >&-)."""
+        """Whether it saves the command's standard output into a file a later command can read or run: a >, >> or &>
+        onto a real file (not /dev/null or another descriptor). A 2> (or other high-fd) redirect saves stderr, not
+        the output of a read, so it isn't a copy of what was read."""
         is_descriptor = self.operator.endswith("&") and bool(DESCRIPTOR.fullmatch(self.target.text))
-        return self.writes and self.target.text != "/dev/null" and not is_descriptor
+        captures_stdout = self.operator.startswith("&") or self.fd in ("", "1")
+        return self.writes and captures_stdout and self.target.text != "/dev/null" and not is_descriptor
 
 
 @dataclass
@@ -852,7 +856,7 @@ class CommandSplitter:
         while self.peek() in (" ", "\t"):
             self.pos += 1
         if self.peek() in ("<", ">", "=") and self.peek(1) == "(":
-            command.redirects.append(Redirect(operator, self.read_process_substitution()))  # e.g. `> >(tee log)`
+            command.redirects.append(Redirect(operator, self.read_process_substitution(), fd))  # e.g. `> >(tee log)`
             return
         if not self.peek() or self.peek() in WORD_END:
             raise Unparseable(f"a {operator} with nothing after it")
@@ -868,7 +872,7 @@ class CommandSplitter:
         elif operator == "<<<" and to_stdin:
             add_stdin(command, target.text)
         else:
-            command.redirects.append(Redirect(operator, target))
+            command.redirects.append(Redirect(operator, target, fd))
 
     def read_heredoc_bodies(self) -> None:
         """Read, in order, the bodies of the heredocs started at this $( ) level or deeper; a line ending inside a
@@ -2090,17 +2094,17 @@ POLICY_CODE = re.compile(
 SETUP_CODE_PROGRAMS = PATH_BUILDERS | {"sed"}
 # Programs that only read the files given to them and write to standard output, so a setup.sh or policy-module path
 # among their arguments is read, not run. Not echo/printf (they don't read files, and printf -v assigns a variable),
-# nor awk/sed (they run a script of their own).
-FILE_READERS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "nl", "od", "xxd", "ls", "stat", "file"}
+# nor awk/sed (they run a script of their own), nor xxd (`xxd in out` writes its second operand).
+FILE_READERS = {"cat", "grep", "egrep", "fgrep", "head", "tail", "wc", "nl", "od", "ls", "stat", "file"}
 FILE_READERS |= {"diff", "cmp"}
 # git subcommands that only read, stage or show the files their operands name. grep (its -O opens files in a pager),
 # commit (its -F/-t go to the editor) and the rest are left out, so they ask: a clean git line with one of these and a
 # setup.sh operand is the only git read that passes. (rg and ag aren't here: ripgrep's --pre runs a program per file,
 # so a search tool needs its own option filtering, like git's, before it could be trusted.)
 GIT_FILE_READERS = {"add", "blame", "diff", "log", "ls-files", "show", "status"}
-# git options, after the subcommand, that hand a file to a program or write git's output to a file: --ext-diff,
-# --textconv, --output and grep's -O/--open-files-in-pager, with any unambiguous prefix git accepts (--ext, --out).
-GIT_DANGEROUS_OPTION = re.compile(r"-O|--open|--ext|--text|--out")
+# git diff's --output=<file> / --output <file>, which writes its output to a file (a copy of the read). The program
+# routes that run a program on the file (an external diff, a textconv, a pager) come from config or the environment,
+# which git_runs_program covers, so they aren't options to match here; grep's -O is moot (grep isn't a read subcommand).
 # Environment variables, assigned on the line, that name a program git runs: an external diff, a pager, an editor.
 GIT_RUN_PROGRAM_ENV = re.compile(
     r"^(?:GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|EDITOR|VISUAL|GIT_SEQUENCE_EDITOR)="
@@ -2117,10 +2121,11 @@ POLICY_MODULE_PATH = os.path.join("src", "tower", "policy.py")
 SED_SWITCHES = re.compile(
     r"-[nErsuz]+|--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox)"
 )
-# One sed statement that only prints, deletes or quits lines picked by number, $ or a /regex/ (1,20p; /^def /p; 5q),
-# so it can't run a command (GNU's e) or write a file (w). The script is split on ; and newlines first, so matching
-# never backtracks over a long one.
-SED_PRINT_STATEMENT = re.compile(r"\s*(?:(?:\d+|\$|/[^/\n]*/)(?:,(?:\d+|\$|/[^/\n]*/))?)?[pdq=]\s*")
+# One sed statement that only prints, deletes or quits lines picked by number, $ or a /regex/ (1,20p; /^def /p; 5q;
+# /a;b/p). A regex may hold an escaped delimiter (\/). sed_statements splits the script first, so matching one
+# statement never backtracks over a long script.
+SED_ADDRESS = r"(?:\d+|\$|/(?:\\.|[^/\n])*/)"
+SED_PRINT_STATEMENT = re.compile(rf"\s*(?:{SED_ADDRESS}(?:,{SED_ADDRESS})?)?[pdq=]\s*")
 
 
 def check_protected_edit(file_path: str) -> str | None:
@@ -2356,7 +2361,7 @@ def read_only_words(command: SimpleCommand, single_command: bool, git_may_run_pr
     substitution and no redirect writing a file, since a pipe, a second command or a captured output could run or save
     what was read. The program must be a FILE_READER (grep, cat), a sed that only prints (sed_only_prints), or git with
     a GIT_FILE_READERS subcommand on a clean line: no global setting (-c, --config-env), no dynamic word, no
-    GIT_DANGEROUS_OPTION after the subcommand, and not GIT_MAY_RUN_PROGRAM (the line can make git run a program)."""
+    --output (git diff writes it), and not GIT_MAY_RUN_PROGRAM (the line can make git run a program)."""
     words = command.words
     program = program_position(words)
     if not single_command or command.substituted or program >= len(words):
@@ -2373,8 +2378,8 @@ def read_only_words(command: SimpleCommand, single_command: bool, git_may_run_pr
         if any(config_setting(words, index) is not None for index in range(first_arg, subcommand)):
             return set()
         after = words[subcommand + 1 :]
-        if any(GIT_DANGEROUS_OPTION.match(word.text) for word in after if word.text.startswith("-")):
-            return set()
+        if any(word.text == "--output" or word.text.startswith("--output=") for word in after):
+            return set()  # git diff --output writes its output to a file (the next word or the =value)
         return {subcommand + 1 + offset for offset, word in enumerate(after) if not word.text.startswith("-")}
     return set()
 
@@ -2431,10 +2436,36 @@ def sed_only_prints(args: list[Word]) -> bool:
         break
     if script is None:
         return False
-    statements = re.split(r"[;\n]", script)
+    statements = sed_statements(script)
     return any(part.strip() for part in statements) and all(
         not part.strip() or SED_PRINT_STATEMENT.fullmatch(part) for part in statements
     )
+
+
+def sed_statements(script: str) -> list[str]:
+    """SCRIPT split into statements on ; and newlines, but not those inside a /regex/ address, where ; is literal, or
+    just after a backslash. The /.../ and its escapes are honoured so a print script with a ; or an escaped / in its
+    regex stays one statement; the scan is linear, so a long script never backtracks."""
+    parts: list[str] = []
+    current: list[str] = []
+    in_regex = False
+    index = 0
+    while index < len(script):
+        char = script[index]
+        if char == "\\" and index + 1 < len(script):
+            current.append(script[index : index + 2])
+            index += 2
+            continue
+        if char == "/":
+            in_regex = not in_regex
+        if char in ";\n" and not in_regex:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return parts
 
 
 def turns_tower_off(words: list[Word]) -> bool:

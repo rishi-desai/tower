@@ -1597,6 +1597,10 @@ SETUP_OR_POLICY_MODULE_READS = [
     "git blame setup.sh",
     "git add setup.sh src/tower/policy.py",
     "wc -l setup.sh 2>/dev/null",  # 2>/dev/null isn't a copy into a file
+    "grep foo setup.sh 2>err.log",  # stderr to a file isn't a copy of the read's output
+    "git diff --text -- setup.sh",  # --text ('treat as text'), not --textconv
+    "git diff -O orderfile -- setup.sh",  # diff's read-only orderfile
+    "sed -n '/a;b/p' setup.sh",  # a ; inside the /regex/ address isn't a statement break
     "grep def src/tower/policy.py",
     "cat src/tower/policy.py",
     "echo 'run ./setup.sh to install'",  # a mention in prose, basename isn't setup.sh
@@ -1665,9 +1669,13 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "cp x src/tower/policy.py",
     "git diff --output=setup.sh",
     "git diff --output=src/tower/policy.py HEAD",
+    "git diff --output setup.sh",
     "dd of=setup.sh if=/dev/null",
     "dd of=src/tower/policy.py",
     'python3 -c \'open("src/tower/policy.py", "w").write("x")\'',
+    "xxd anydata setup.sh",  # xxd's second operand is written
+    "xxd -r payload.hex src/tower/policy.py",
+    "grep foo bar 2> setup.sh",  # stderr into setup.sh overwrites it
 ]
 
 
