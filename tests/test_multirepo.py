@@ -160,12 +160,13 @@ def test_the_hub_report_groups_each_repo_and_lists_the_urgent_one_first(
     assert summary[1].startswith("- repo | needs-you: 0 | blocked: 0 | running: 1 |")
     assert "WIP across repos: 2 (the limit counts per repo)" in summary
 
-    other_report = section(text, f"== REPO: other | {other} ==")
+    other_ledger = repo.ledger.parent.parent / "other" / "Ledger"
+    other_report = section(text, f"== REPO: other | {other} | {other_ledger} ==")
     assert group(other_report, "NEEDS YOU") == [
         "- fix-2 | ticket: #2 | session asker is waiting on you (input needed); the card says running"
     ]
     assert group(other_report, "RUNNING") == ["(none)"]
-    repo_report = section(text, f"== REPO: repo | {repo.main} ==")
+    repo_report = section(text, f"== REPO: repo | {repo.main} | {repo.ledger} ==")
     assert group(repo_report, "NEEDS YOU") == ["(none)"]
     assert group(repo_report, "RUNNING") == ["- feat-1 | ticket: #42 | session builder is busy"]
     assert text.index("== REPO: other") < text.index("== REPO: repo")
@@ -304,3 +305,31 @@ def test_the_gone_note_names_five_folders_and_counts_the_rest(
     assert len(gone) == 1
     assert gone[0].startswith("skipped 7 repos from the event log whose folder is gone: ")
     assert gone[0].endswith("deleted-4 and 2 more")
+
+
+def test_each_repo_heading_names_its_ledger_so_the_hub_can_open_a_rows_card_file(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each WORKTREES row names its card_file; the hub opens <Ledger>/<card_file>, so the heading names the Ledger."""
+    repo.add_worktree("feat-1")
+    repo.write_card("feat-1", "needs-you")
+    log_event(repo, repo.main)
+
+    assert cli.main(["state", "--all"]) == 0
+    text = capsys.readouterr().out
+
+    rows = section(text, f"== REPO: repo | {repo.main} | {repo.ledger} ==")
+    assert any("card_file: feat-1.md" in row for row in rows)
+    assert (repo.ledger / "feat-1.md").is_file()
+
+
+def test_a_repo_with_no_ledger_folder_says_so_in_its_heading(
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("TOWER_CONF", str(repo.agents_json.parent / "missing.conf"))
+    os.chdir(repo.main)
+
+    assert cli.main(["state", "--all"]) == 0
+    text = capsys.readouterr().out
+
+    assert f"== REPO: repo | {repo.main} | no Ledger folder (see NOTE) ==" in text.splitlines()
