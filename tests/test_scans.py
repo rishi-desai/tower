@@ -325,7 +325,8 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
 def fake_gh_prs_by_head(tmp_path: Path, prs: dict[str, list[dict[str, object]]]) -> None:
     """Put a `gh` on PATH that answers like GitHub for these PRs per head branch (newest first, as gh lists them):
     `pr list --head B` keeps --limit's first N, prints only the --json fields asked for, and renders a
-    `{{range .}}...{{.field}}...{{end}}` --template; `auth status` and `repo view` succeed."""
+    `{{range .}}...{{.field}}...{{end}}` --template; `auth status` and `repo view` succeed. --limit and --template are
+    honoured as GitHub would, so a return to the old `--limit 1` template call goes red rather than passing on luck."""
     program = (
         "import json, re, sys\n"
         "args = sys.argv[1:]\n"
@@ -368,9 +369,9 @@ def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
     code, out, _ = run(capsys, "adopt-scan")
 
     assert code == 0
-    pr_rows = {row.split(" | ")[0]: next_row for row, next_row in zip(out.splitlines(), out.splitlines()[1:])}
-    assert pr_rows["- [worktree] shared"] == "    PR: #22 MERGED own work"
-    assert pr_rows["- [worktree] patch-1"] == "    PR: none"
+    assert out.split("    PR: #22 MERGED own work\n")[0].splitlines()[-1].startswith("- [worktree] shared |")
+    assert out.split("    PR: none\n")[0].splitlines()[-1].startswith("- [worktree] patch-1 |")
+    assert "#23" not in out and "#20" not in out
     assert "- parked-fork | 1 commit(s) not on main | PR: none | last: " in out
 
 

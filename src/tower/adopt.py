@@ -125,19 +125,20 @@ def worktree_rows(
 
 def branch_pr(repo_dir: Path, branch: str, with_title: bool) -> tuple[str | None, str]:
     """The branch's newest PR as "#N STATE[ title]", "none" when it has none, or None and gh's error. A fork's PR is
-    never it (a stranger's patch-1 isn't this work), so forks are dropped before the newest is chosen (#77)."""
+    never it (a stranger's patch-1 isn't this work), so forks are dropped before the newest is chosen (#77). Newest,
+    not open first as card.branch_pr chooses: #78 unifies that."""
     out, error = try_gh(repo_dir, "pr", "list", "--head", branch, "--state", "all",
                         "--json", "number,state,title,isCrossRepository")  # fmt: skip
     if out is None:
         return None, error
     try:
-        prs = [p for p in json.loads(out) if from_this_repo(p)]
-        if not prs:
-            return "none", ""
-        pr = max(prs, key=lambda p: int(p["number"]))
-        return f"#{pr['number']} {pr['state']}" + (f" {pr['title']}" if with_title else ""), ""
+        prs = [(int(p["number"]), str(p["state"]), str(p["title"])) for p in json.loads(out) if from_this_repo(p)]
     except (ValueError, TypeError, KeyError, AttributeError):
         return None, f"gh pr list printed something unexpected: {out[:120]!r}"
+    if not prs:
+        return "none", ""
+    number, pr_state, title = max(prs)
+    return f"#{number} {pr_state}" + (f" {title}" if with_title else ""), ""
 
 
 def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str] | None, list[str]]:
