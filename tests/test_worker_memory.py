@@ -1,6 +1,7 @@
 """Tests for worker memory (#93, ADR 0008): the kickoff the hub fixes in the card (`tower card kickoff`), the decisions
 log a worker only appends to (`tower decisions add`), and the SessionStart hook (worker-memory.py) that gives both back,
-with the current card, after compaction, /clear or in a fresh session.
+with the current card, after compaction, /clear or in a fresh session; and the PreCompact hook (precompact-decisions.py)
+that asks the compaction summary to keep the decisions not yet in that log (#97, ADR 0011).
 
 Each test runs on a real throwaway repo (conftest.py's `repo`) with a fake `gh` (test_card.py's fake_prs).
 """
@@ -417,3 +418,134 @@ def test_a_decision_logged_before_the_first_card_write_follows_the_worktree_to_i
     log = (repo.ledger / "_decisions" / "feat-a.md").read_text(encoding="utf-8")
     assert "chose X over Y" in log and "found the auth middleware" in log
     assert not (repo.ledger / "_decisions" / "feat-b.md").exists()
+
+
+def pre_compact(cwd: Path, trigger: str = "auto", focus: str | None = None, python: str = sys.executable) -> str:
+    """Run the PreCompact hook the way Claude Code does (its own `python3 -I`, JSON on stdin); what it printed."""
+    call = {
+        "session_id": "s-1",
+        "hook_event_name": "PreCompact",
+        "trigger": trigger,
+        "custom_instructions": focus,
+        "cwd": str(cwd),
+    }
+    proc = subprocess.run(
+        [python, "-I", str(SCRIPTS / "precompact-decisions.py")],
+        input=json.dumps(call),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("trigger", "python"),
+    [
+        ("auto", sys.executable),
+        ("manual", sys.executable),
+        pytest.param(
+            "auto",
+            SYSTEM_PYTHON,
+            marks=pytest.mark.skipif(not Path(SYSTEM_PYTHON).exists(), reason=f"no {SYSTEM_PYTHON} on this machine"),
+        ),
+    ],
+)
+def test_before_compaction_the_summary_is_told_to_keep_decisions_not_yet_in_the_log_and_the_next_step(
+    repo: Fixture, remembered: Path, trigger: str, python: str
+) -> None:
+    printed = pre_compact(remembered, trigger, python=python)
+
+    log = repo.ledger / "_decisions" / "feat__42-search.md"
+    assert printed.startswith("tower:")  # plain text: stdout that starts with { might be read as JSON output
+    assert "word for word" in printed
+    assert "not already in the decisions log" in printed
+    assert "the exact next step" in printed
+    assert f"# Decisions log ({log}, oldest first)\n" in printed
+    assert printed.endswith("chose SQLite FTS over a LIKE scan because the feed has 40k rows\n")
+    assert KICKOFF not in printed  # the kickoff and card come back whole after compaction; only the log is compared
+
+
+def test_a_users_compact_focus_is_left_to_claude_code_which_puts_it_before_the_hooks_text(remembered: Path) -> None:
+    """Claude Code 2.1.304 joins the /compact focus and every PreCompact hook's stdout (focus first, blank lines
+    between), so repeating the focus would only say it twice (docs/adr/0011)."""
+    printed = pre_compact(remembered, "manual", focus="focus on the API changes")
+
+    assert "focus on the API changes" not in printed
+    assert "any focus the user gave" in printed
+
+
+def test_before_compaction_the_main_checkout_and_a_worktree_with_no_log_print_nothing(
+    repo: Fixture, worker: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert pre_compact(repo.main) == ""
+    assert pre_compact(worker) == ""  # neither
+    card_only = repo.add_worktree("feat/7-other")
+    monkeypatch.chdir(card_only)
+    assert write(capsys, monkeypatch)[0] == 0
+    assert pre_compact(card_only) == ""  # a card, no log
+
+
+def test_before_compaction_a_long_log_keeps_its_newest_decisions_under_claude_codes_cap_and_names_the_file(
+    repo: Fixture, remembered: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for i in range(60):
+        assert decide(capsys, f"decision {i:02d}: " + "y" * 250)[0] == 0
+
+    printed = pre_compact(remembered)
+
+    log = repo.ledger / "_decisions" / "feat__42-search.md"
+    assert len(printed) < 10_000
+    assert "decision 59: " in printed
+    assert "decision 00: " not in printed
+    kept = printed.count("- 20")
+    assert f"({61 - kept} older decisions left out to stay under Claude Code's limit: read {log})" in printed
+
+
+def test_before_compaction_a_log_that_cant_be_read_prints_nothing(repo: Fixture, remembered: Path) -> None:
+    log = repo.ledger / "_decisions" / "feat__42-search.md"
+    log.unlink()
+    log.mkdir()
+
+    assert pre_compact(remembered) == ""
+
+
+@pytest.mark.parametrize("payload", ["not json", "[]", '{"trigger": "auto", "cwd": 5}', '{"cwd": "/no/such/dir"}'])
+def test_before_compaction_input_it_cant_use_prints_nothing_and_never_blocks_compaction(payload: str) -> None:
+    proc = subprocess.run(
+        [sys.executable, "-I", str(SCRIPTS / "precompact-decisions.py")],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert (proc.returncode, proc.stdout) == (0, "")
+
+
+def test_the_precompact_hook_runs_on_manual_and_auto_compaction() -> None:
+    hooks = json.loads((SCRIPTS.parent / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    (entry,) = hooks["PreCompact"]
+    assert entry["matcher"] == "manual|auto"
+    assert [h["command"] for h in entry["hooks"]] == [
+        'python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/precompact-decisions.py"'
+    ]
+
+
+def test_a_log_written_before_the_first_card_is_enough_to_ask_for_unlogged_decisions(
+    repo: Fixture, worker: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert decide(capsys, "chose X over Y because Z")[0] == 0
+
+    printed = pre_compact(worker)
+
+    assert printed.startswith("tower:")
+    assert printed.endswith(" chose X over Y because Z\n")
+
+
+def test_after_compaction_the_worker_is_told_to_log_what_the_summary_kept_as_not_yet_logged(remembered: Path) -> None:
+    told = 'Add anything your summary lists under "Not yet in the decisions log" to the log now'
+    assert told in session_start(remembered, "compact")
+    assert told not in session_start(remembered, "clear")  # no summary after /clear or in a new session
