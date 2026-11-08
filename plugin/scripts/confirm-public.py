@@ -2403,13 +2403,15 @@ def git_subcommand_at(args: list[Word]) -> int:
 
 def git_runs_program(words: list[Word]) -> bool:
     """Whether a simple command's WORDS set git up to run a program on the files it reads: an environment variable for
-    an external diff, a pager, an editor or the exec path (GIT_RUN_PROGRAM_ENV), --exec-path, a `git config` of such a
-    key, or a -c/--config-env of one (git_key_runs_program). Checked over the whole line, so an earlier command's
-    `git config` counts too."""
+    an external diff, a pager, an editor or the exec path (GIT_RUN_PROGRAM_ENV), --exec-path, --paginate (forces the
+    pager), a `git config` of such a key, or a -c/--config-env of one (git_key_runs_program). Checked over the whole
+    line, so an earlier command's `git config` counts too."""
     if any(GIT_RUN_PROGRAM_ENV.match(word.text) for word in words):
         return True
     if any(word.text == "--exec-path" or word.text.startswith("--exec-path=") for word in words):
         return True  # git runs its helpers from this folder
+    if any(word.text == "--paginate" for word in words):
+        return True  # forces the configured pager to run, even with no terminal (a bare global -p does too; see ADR)
     for index in range(len(words)):
         setting = config_setting(words, index)
         if setting is not None and git_key_runs_program(setting.text):

@@ -1650,6 +1650,7 @@ SETUP_OR_POLICY_MODULE_RUNS = [
     "PAGER=sh git grep -h '' setup.sh",
     "git --exec-path=/tmp/evil diff -- setup.sh",  # git runs helpers from the exec path
     "GIT_EXEC_PATH=/tmp/evil git diff -- setup.sh",
+    "git --paginate diff -- setup.sh",  # --paginate forces the configured pager to run
     "GIT_EDITOR=bash git commit --allow-empty -e -F setup.sh",
     "printf '[diff]\\n\\texternal = bash\\n' >> .git/config; git diff -- setup.sh",
     "find . -name setup.sh -exec sh {} ';' -o -name --dry-run",  # --dry-run is find's, not setup.sh's own arg

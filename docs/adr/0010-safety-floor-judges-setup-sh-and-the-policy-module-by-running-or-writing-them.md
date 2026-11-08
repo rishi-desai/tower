@@ -39,7 +39,12 @@ them — a known limit, below).
   A worker that hits a false ask can read the file with the Read tool or split the command.
 - Config set outside the command still isn't seen: a `diff.external` in `~/.gitconfig` lets `git diff -- setup.sh` run
   a program with no prompt. This is the pre-existing "config outside the command" limit (ADR 0009); the sandbox's
-  write-deny on tower's files is the backstop.
+  write-deny on tower's files is the backstop. `git --paginate diff -- setup.sh` asks (it forces the configured pager),
+  but a bare global `-p` doesn't, since `-p` after a subcommand means "patch" (`git log -p`), a plain read; a malicious
+  pager still has to be configured outside the command, so this is the same limit.
+- Only a small set of readers is let through (grep, cat, head, sed-that-prints, git diff/log/show/...). A read with
+  another tool (`jq setup.sh`, `cut -c1-80 setup.sh`, `strings setup.sh`) asks. The set grows when a stall shows a tool
+  is a pure reader; the acceptance's grep/cat/sed/git-diff are covered.
 - A write to a bare basename after a `cd` into `src/tower` (`cd src/tower && sed -i … policy.py`) isn't caught: the
   module is known by its repo path, and a bare `policy.py` is too common to claim. A sed `w`/`r` filename inside the
   script word is likewise not parsed, nor is a path a program builds at run time (`open(os.path.join(...), "w")`); a
