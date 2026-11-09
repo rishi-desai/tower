@@ -56,7 +56,8 @@ def read_conf(path: Path) -> dict[str, str]:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
-        line_number = data.count(b"\n", 0, error.start) + 1
+        # The bad byte's line as the loop below splits them (\r alone ends one too); "x" stands in for that byte.
+        line_number = len((data[: error.start].decode("utf-8") + "x").splitlines())
         raise ConfUnreadable(f"{path} isn't UTF-8 text (line {line_number})") from error
     conf: dict[str, str] = {}
     for line in text.splitlines():
@@ -64,6 +65,16 @@ def read_conf(path: Path) -> dict[str, str]:
         if sep and key and not key.startswith("#"):
             conf[key] = value
     return conf
+
+
+def conf_or_why() -> tuple[dict[str, str] | None, str]:
+    """tower.conf (conf_path()) read, or None and why it couldn't be (ConfUnreadable), for reports that go on without
+    its settings. None, not an empty config: a broken file may well set projects_dir, so nothing that only follows
+    from a missing setting (run setup.sh) applies."""
+    try:
+        return read_conf(conf_path()), ""
+    except ConfUnreadable as error:
+        return None, str(error)
 
 
 def conf_get(conf: dict[str, str], key: str, default: str = "") -> str:

@@ -60,11 +60,9 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
     caller's working folder), ignored outside a git repo. Never raises for one bad repo: a folder that's gone or isn't
     a git repo any more is skipped and noted."""
     notes: list[str] = []
-    try:
-        conf: dict[str, str] | None = ledger.read_conf(ledger.conf_path())
-    except ledger.LedgerError as error:
-        notes.append(f"{error}, so Ledger folders weren't looked for")
-        conf = None
+    conf, conf_why = ledger.conf_or_why()  # read once and noted here, not once per repo
+    if conf_why:
+        notes.append(f"{conf_why}, so its settings weren't used and Ledger folders weren't looked for")
 
     agents = sessions.read_agents()  # one `claude agents --json` for every repo, not one per repo
     reports: list[state.Report] = []
@@ -75,7 +73,7 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
             gone.append(path)
             continue
         try:
-            report = state.gather(Path(path), with_pr=with_pr, now=now, agents_read=agents)
+            report = state.gather(Path(path), with_pr=with_pr, now=now, agents_read=agents, conf_read=(conf, conf_why))
         except NotARepo:
             # list_worktrees can't tell "not a repo" from git failing or timing out, so the note doesn't guess.
             notes.append(f"skipped {path}: git couldn't list its worktrees (no longer a repo, or git failed)")

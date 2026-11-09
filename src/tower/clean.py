@@ -245,10 +245,9 @@ def resolve(
 
 def ledger_for(main_checkout: Path) -> tuple[Path | None, str]:
     """The repo's Ledger folder, or None and why it can't be found."""
-    try:
-        conf = ledger.read_conf(ledger.conf_path())
-    except ledger.LedgerError as error:
-        return None, str(error)
+    conf, conf_why = ledger.conf_or_why()
+    if conf is None:
+        return None, conf_why
     return ledger.ledger_dir(repo_name(main_checkout), conf)
 
 

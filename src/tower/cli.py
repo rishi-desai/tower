@@ -415,7 +415,7 @@ def show_policy() -> int:
     """Print the policy for the repo holding the current folder."""
     loaded = policy.load()
     repo_policy, slug = loaded.for_folder(Path("."))
-    print("\n".join(policy.describe(repo_policy, slug, sorted(loaded.profiles))))
+    print("\n".join(policy.describe(repo_policy, slug, sorted(loaded.profiles), loaded.conf_error)))
     return 0
 
 

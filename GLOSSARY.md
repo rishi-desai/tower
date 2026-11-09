@@ -136,7 +136,8 @@ _Avoid_: board, tracker
 **Machine config** (`tower.conf`):
 This machine's own settings, written by setup.sh: where the vault's projects live, which project folder a repo maps
 to, the worktrees folder, the WIP limit. One that can't be read, or isn't UTF-8 text, is broken, never mistaken for a
-machine that was never set up: tower says why wherever it needed it.
+machine that was never set up: tower says why wherever it needed it, once in a report's notes, and says nothing that
+would only follow from having no settings (no vault folder set, run setup.sh, a problem in the policy file).
 _Avoid_: config (alone: it reads as runtime config), settings
 
 **Archived card**:

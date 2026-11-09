@@ -54,7 +54,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
@@ -176,6 +176,7 @@ class Policy:
     problems: tuple[str, ...] = ()
     broken: str = ""
     machine_wip: tuple[int, str] = (3, "the default")
+    conf_error: str = ""  # why tower.conf couldn't be read: its settings weren't used, but the policy file is fine
 
     def for_repo(self, slug: str | None) -> RepoPolicy:
         """The policy for the repo whose `owner/repo` is slug (None: no GitHub remote, so no override applies)."""
@@ -265,18 +266,16 @@ class Policy:
 
 
 def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
-    """Read the policy file (default: policy_path()) and tower.conf. Never raises: what can't be read is a problem.
+    """Read the policy file (default: policy_path()) and tower.conf. Never raises: what can't be read in the policy
+    file is a problem; a tower.conf that can't be read is conf_error instead, since the policy file isn't at fault.
 
     With no policy file, tower.conf's old push_approval/pr_approval are migrated into a new one first (see migrate()),
     unless migrate_conf is False (setup.sh's dry run): then the file counts as missing.
     """
     path = policy_path() if path is None else path
     problems: list[str] = []
-    try:
-        conf = ledger.read_conf(ledger.conf_path())
-    except ledger.LedgerError as error:
-        problems.append(f"{error}, so its settings weren't used")
-        conf = {}
+    read, conf_error = ledger.conf_or_why()
+    conf = read or {}
     machine_wip = (ledger.wip_limit(conf), f"wip_limit in {display_path(ledger.conf_path())}")
     if not conf.get("wip_limit", "").isdigit():
         machine_wip = (machine_wip[0], "the default")
@@ -286,15 +285,24 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
         text = migrate(path, conf, problems) if migrate_conf else None
     except (OSError, UnicodeDecodeError) as error:
         problems.append(f"can't read {display_path(path)}")
-        return Policy(path, True, problems=tuple(problems), broken=error_reason(error), machine_wip=machine_wip)
+        return Policy(
+            path,
+            True,
+            problems=tuple(problems),
+            broken=error_reason(error),
+            machine_wip=machine_wip,
+            conf_error=conf_error,
+        )
     if text is None:
-        return Policy(path, False, problems=tuple(problems), machine_wip=machine_wip)
+        return Policy(path, False, problems=tuple(problems), machine_wip=machine_wip, conf_error=conf_error)
     try:
         document = parse_toml(text)
     except TomlError as error:
         problems.append(f"{display_path(path)}: {error}")
-        return Policy(path, True, problems=tuple(problems), broken=str(error), machine_wip=machine_wip)
-    return from_document(path, document, problems, machine_wip)
+        return Policy(
+            path, True, problems=tuple(problems), broken=str(error), machine_wip=machine_wip, conf_error=conf_error
+        )
+    return replace(from_document(path, document, problems, machine_wip), conf_error=conf_error)
 
 
 def error_reason(error: Exception) -> str:
@@ -491,13 +499,16 @@ FLOOR_NOTE = (
 )
 
 
-def describe(repo_policy: RepoPolicy, slug: str | None, profiles: list[str]) -> list[str]:
-    """`tower policy`'s report: the profile for the repo whose `owner/repo` is slug, why, each key, the problems."""
+def describe(repo_policy: RepoPolicy, slug: str | None, profiles: list[str], conf_error: str = "") -> list[str]:
+    """`tower policy`'s report: the profile for the repo whose `owner/repo` is slug, why, each key, why tower.conf
+    couldn't be read (Policy.conf_error) if it couldn't, the problems."""
     where = slug or "this folder (no GitHub origin)"
     lines = [f"tower policy for {where}: {repo_policy.profile}", f"why: {repo_policy.why}"]
     lines.append(f"  {'push':<16} {repo_policy.push:<6} {PUSH_HELP[repo_policy.push]}")
     lines += [f"  {key:<16} {repo_policy.value(key):<6} {help_text}" for key, help_text in KEY_HELP.items()]
     lines.append(f"  {'wip_limit':<16} {repo_policy.wip_limit:<6} {repo_policy.wip_limit_from}")
+    if conf_error:
+        lines.append(f"tower.conf: {conf_error}, so its settings weren't used")
     if repo_policy.problems:
         lines += ["problems:", *(f"  - {problem}" for problem in repo_policy.problems)]
     else:
@@ -577,7 +588,7 @@ def migration_profile() -> str | None:
     try:
         modes = legacy_modes(ledger.read_conf(ledger.conf_path()))
     except ledger.LedgerError:
-        return None  # load() reports an unreadable tower.conf; setup.sh's own read of it fails first
+        return None  # load() reports an unreadable tower.conf (conf_error); setup.sh's own read of it fails first
     if modes is None:
         return None
     return STRICTEST if modes == ("every", "every") else "migrated"

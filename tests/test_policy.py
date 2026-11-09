@@ -150,6 +150,26 @@ def test_wip_limit_comes_from_tower_conf_when_the_profile_has_none(home: Path) -
     assert (repo_policy.wip_limit, repo_policy.wip_limit_from) == (7, f"wip_limit in {home.parent / 'tower.conf'}")
 
 
+@pytest.mark.parametrize("profile_wip", ["", "wip_limit = 5\n"])
+def test_a_tower_conf_that_isnt_utf8_is_named_on_its_own_line_not_as_a_policy_problem(
+    home: Path, profile_wip: str
+) -> None:
+    """The policy file is fine, so it isn't one of its problems; `tower policy` still names it, whether or not the
+    profile sets its own WIP limit (#86)."""
+    conf = home.parent / "tower.conf"
+    conf.write_bytes(b"wip_limit=7\nprojects_dir=/Users/caf\xe9/vault\n")
+    write_policy(home, f'default_profile = "sandbox"\n[profiles.sandbox]\n{profile_wip}')
+
+    loaded = policy.load()
+    repo_policy = loaded.for_repo(None)
+    lines = policy.describe(repo_policy, None, sorted(loaded.profiles), loaded.conf_error)
+
+    assert repo_policy.problems == ()
+    assert loaded.conf_error == f"{conf} isn't UTF-8 text (line 2)"
+    assert f"tower.conf: {conf} isn't UTF-8 text (line 2), so its settings weren't used" in lines
+    assert "problems: none" in lines
+
+
 @pytest.mark.parametrize(
     ("text", "expected", "problem"),
     [
@@ -491,13 +511,13 @@ def test_for_checkout_reads_the_repo_from_git(home: Path, tmp_path: Path) -> Non
     assert policy.for_checkout(tmp_path / "not-a-repo-or-missing")[1] is None
 
 
-def test_a_tower_conf_that_isnt_utf8_is_a_problem_not_a_crash(home: Path) -> None:
+def test_a_tower_conf_that_isnt_utf8_gives_the_strictest_profile_not_a_crash(home: Path) -> None:
     (home.parent / "tower.conf").write_bytes(b"push_approval=\xff\n")
 
     repo_policy = policy.load().for_repo(None)
 
     assert gates(repo_policy) == WORK
-    assert any("isn't UTF-8" in p for p in repo_policy.problems)
+    assert not (home / "policy.toml").exists()  # nothing to migrate from a file that couldn't be read
 
 
 @pytest.mark.parametrize(
