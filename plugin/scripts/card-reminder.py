@@ -46,14 +46,14 @@ def session_start(transcript_path: str) -> float | None:
     return getattr(st, "st_birthtime", None)
 
 
-def place(cwd: str) -> tuple[str, bool] | None:
+def top_and_main_checkout(cwd: str) -> tuple[str, bool] | None:
     """(top folder, whether it's the main checkout) for the worktree holding cwd, or None outside one. The main
-    checkout is the one whose git dir is the shared one, as `git worktree list` lists it first
-    (tower's gitrepo.is_main_checkout)."""
+    checkout is the one whose git dir is the shared one, the same test as tower's ledger.record_card."""
     paths = run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"], cwd)
-    if paths is None or len(paths.splitlines()) != 3:
+    lines = paths.rstrip("\n").split("\n") if paths else []
+    if len(lines) != 3:
         return None
-    top, git_dir, common = paths.splitlines()
+    top, git_dir, common = lines
     return top, os.path.realpath(git_dir) == os.path.realpath(common)
 
 
@@ -90,7 +90,7 @@ def main() -> int:
         return 0  # we already sent Claude back once; let it stop
     cwd = event.get("cwd") or os.getcwd()
     started = session_start(event.get("transcript_path", ""))
-    found = place(cwd)
+    found = top_and_main_checkout(cwd)
     if started is None or found is None:
         return 0
     top, in_main_checkout = found
