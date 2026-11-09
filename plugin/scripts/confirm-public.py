@@ -133,7 +133,8 @@ that isn't JSON at all passes, leaving the call to Claude Code's own rules.)
 
 Limits: this sees only the command text. These are not caught:
   - scripts and programs: `bash script.sh`, `python x.py`, `make`, or anything that calls the GitHub
-    API itself (such as curl with a token, or subprocess.run(["gh", ...]) in Python);
+    API itself (such as curl with a token, or subprocess.run(["gh", ...]) in Python), and code an interpreter or
+    another code runner reads from a file or a pipe (`python3 script.py`, `awk -f prog.awk`, `cat x | awk -f -`);
   - commands built at run time: a variable or command output used as the program or as eval/-c code
     (`$GIT push`, `eval "$(...)"`, `bash -c "$CMD"`) or in a variable naming a command git runs
     (GIT_SSH_COMMAND="$CMD", EDITOR; a git setting's value asks instead), xargs input that supplies the subcommand, or a
@@ -390,7 +391,8 @@ SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh"}
 # Programs that run a string argument as shell code (ssh host 'cmd', watch 'cmd', su -c 'cmd', GNU parallel's command
 # template, flock -c 'cmd', npx -c 'cmd', npm exec -c 'cmd').
 CODE_STRING_RUNNERS = {"ssh", "su", "runuser", "watch", "tmux", "screen", "script", "parallel", "flock", "npx", "npm"}
-# Interpreters whose code is another language: only `git ...`/`gh ...` text inside it is checked.
+# Interpreters whose code is another language: only `git ...`/`gh ...` text inside it (EMBEDDED_COMMAND) is checked,
+# as in every code runner's code (is_code_runner, CommandChecker.embedded_reasons).
 LANGUAGE_RUNNER = re.compile(r"(?:python|node|perl|ruby|osascript|php|deno|bun|lua)[\d.]*")
 EMBEDDED_COMMAND = re.compile(r"(?<![\w./-])(?:git|gh)[ \t]+[^'\"`\n;|&)]*")
 # The programs that start an invocation we check: env for its -S string, source/. for the code they read.
@@ -1199,11 +1201,21 @@ class CommandChecker:
             found = protected_reasons(
                 command, code, self.cwd, folders, self.spend, self.makes_links, single_command, git_unsafe
             )
+            found += self.embedded_reasons(code, depth)
             program = program_of(command.words)
             for index in range(len(command.words)):
                 found += self.check_invocation(command, index, program, depth)
             reasons += [reason for reason in dict.fromkeys(found) if reason not in reasons]
         return reasons
+
+    def embedded_reasons(self, code: list[str], depth: int) -> list[str]:
+        """Reasons to ask for the git and gh commands written in CODE, the code a program in a command runs (runner_code:
+        an interpreter's, awk's, a sed's that can run a command, vim's and the other code runners', in its words and in
+        a heredoc or here-string on its standard input), each checked like a command line at DEPTH + 1: a gh write by
+        its key, a push by push. Its text counts whether or not the code visibly runs it (awk '/gh pr/' notes may
+        ask), since telling would take a parser per language (#138). Each distinct command is checked once."""
+        commands = dict.fromkeys(match.group() for text in code for match in EMBEDDED_COMMAND.finditer(text))
+        return [reason for command in commands for reason in self.check(command, depth + 1)]
 
     def note_folders(self, words: list[Word]) -> None:
         """Record the folder a simple command cds or pushds into, from the session's folder and from the line's last
@@ -1258,7 +1270,8 @@ class CommandChecker:
             return self.check_shell(args, command, program.runs(index), depth)
         if name in CODE_STRING_RUNNERS:  # each argument with spaces or operators may be a command line
             return [r for arg in args if re.search(r"[\s;|&]", arg.text) for r in self.check(arg.text, depth + 1)]
-        if is_language:  # code in another language: check the git/gh commands and tower merges written inside it
+        if is_language:  # code in another language: check the tower merges and cleans written inside it (its git and
+            # gh commands are checked with every code runner's, in embedded_reasons)
             found: list[str] = []
             if gives_code(args):  # the code and the arguments after it (sys.argv) together
                 joined = " ".join(arg.text for arg in args)
@@ -1266,9 +1279,7 @@ class CommandChecker:
                     self.merges.append(PendingMerge("tower merge (in interpreter code)", self.tower_gates(), False))
                 if TOWER_WORD.search(joined) and CLEAN_WORD.search(joined) and self.tower_gates().asks("cleanup"):
                     found.append(f"{CLEANUP_REASON}, in interpreter code")
-            return found + [
-                r for arg in args for m in EMBEDDED_COMMAND.finditer(arg.text) for r in self.check(m.group(), depth + 1)
-            ]
+            return found
         if name == "gh":
             reason = self.check_gh(args, is_whole_command=depth == 0 and index == 0)
         else:  # git, or one of its dashed executables (libexec/git-core/git-push)
@@ -3431,13 +3442,21 @@ def git_key_runs_program(setting: str) -> bool:
 
 
 def sed_runs_commands(args: list[Word]) -> bool:
-    """Whether sed run with ARGS may run a shell command, read as an allow-list: it doesn't when it has no word from a
-    variable, no option but SED_SWITCHES, an in-place edit (SED_IN_PLACE) or -e, and each statement of its scripts
-    (the -e values, or the first bare operand when no -e comes before it, as sed_only_prints reads them) is a print,
-    delete, quit or =, an s command whose flags only change the match (SED_SUBSTITUTE_FLAGS), or
-    a y command, behind at most an address or range it can read (SED_ADDRESSES). Anything else may: GNU's e command or s///e,
-    a script file (-f), an option it doesn't know (-l 5, an abbreviated --e=), braces, or an address it can't read
-    (a regex with its own delimiter), which is where a run can hide."""
+    """Whether sed run with ARGS may run a shell command, read as an allow-list: it doesn't when its words can be read
+    (sed_scripts) and each statement of its scripts is a print, delete, quit or =, an s command whose flags only change
+    the match (SED_SUBSTITUTE_FLAGS), or a y command, behind at most an address or range it can read (SED_ADDRESSES).
+    Anything else may: GNU's e command or s///e, braces, or an address it can't read (a regex with its own delimiter),
+    which is where a run can hide."""
+    scripts = sed_scripts(args)
+    return scripts is None or not all(
+        sed_statement_is_plain(part) for script in scripts for part in sed_statements(script)
+    )
+
+
+def sed_scripts(args: list[Word]) -> list[str] | None:
+    """The scripts sed run with ARGS runs: the -e values, or the first bare operand when no -e comes before it, as
+    sed_only_prints reads them. None when they can't be told: a word from a variable, or an option but SED_SWITCHES, an
+    in-place edit (SED_IN_PLACE) or -e (a script file with -f, an option it doesn't know: -l 5, an abbreviated --e=)."""
     scripts: list[str] = []
     saw_expression = saw_operand = False
     index = 0
@@ -3445,7 +3464,7 @@ def sed_runs_commands(args: list[Word]) -> bool:
         word = args[index]
         expression = SED_EXPRESSION.fullmatch(word.text)
         if word.dynamic:
-            return True
+            return None
         if expression:
             attached = expression.group(1) if expression.group(1) is not None else expression.group(2)
             scripts.append(attached or (args[index + 1].text if index + 1 < len(args) else ""))
@@ -3454,12 +3473,27 @@ def sed_runs_commands(args: list[Word]) -> bool:
         elif word.text == "--" or SED_SWITCHES.fullmatch(word.text) or SED_IN_PLACE.fullmatch(word.text):
             pass
         elif word.text.startswith("-") and word.text != "-":
-            return True
+            return None
         else:
             scripts += [word.text] if not saw_expression and not saw_operand else []
             saw_operand = True
         index += 1
-    return not all(sed_statement_is_plain(part) for script in scripts for part in sed_statements(script))
+    return scripts
+
+
+def sed_run_texts(args: list[Word]) -> list[str]:
+    """The text sed run with ARGS may hand to the shell, as written in its scripts (sed_scripts): what follows an e
+    command, and an s command's replacement (s/.*/gh pr comment 5/e). It is checked with the rest of sed's words
+    (runner_code), where a command right after the s command's delimiter wouldn't be found as one."""
+    texts: list[str] = []
+    for statement in (part for script in sed_scripts(args) or [] for part in sed_statements(script)):
+        command = SED_ADDRESSES.sub("", statement, count=1).strip()
+        if command.startswith("e"):
+            texts.append(command[1:])
+        elif len(command) > 1 and command[0] == "s":
+            parts = re.split(rf"(?<!\\){re.escape(command[1])}", command[2:])
+            texts += parts[1:2]
+    return texts
 
 
 def sed_statement_is_plain(statement: str) -> bool:
@@ -3558,12 +3592,14 @@ def runner_code(command: SimpleCommand, spend: Callable[[int], None]) -> list[st
         name = program_name(words[index])
         if not is_code_runner(name):
             continue
+        run_texts: list[str] = []
         if name in SED_NAMES:
-            spend(scan_cost(words, index, len(words)))  # its scripts are read from the words after it
+            spend(2 * scan_cost(words, index, len(words)))  # its scripts are read from the words after it, twice
             if not sed_runs_commands(words[index + 1 :]):
                 continue
+            run_texts = sed_run_texts(words[index + 1 :])
         spend(scan_cost(words, program, len(words)) + len(command.stdin_text or ""))
-        return [word.text for word in words[program + 1 :]] + [command.stdin_text or ""]
+        return [word.text for word in words[program + 1 :]] + [command.stdin_text or ""] + run_texts
     return []
 
 

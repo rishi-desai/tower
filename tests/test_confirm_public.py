@@ -774,6 +774,76 @@ def test_a_gh_write_in_code_git_runs_asks_with_its_own_reason(tmp_path: Path, co
     assert "gh pr comment posts or changes something on GitHub (comments=ask)" in str(decision)
 
 
+# A gh write or push written in the code awk, sed, vim and the other code runners run, or in an interpreter's heredoc
+# or here-string, is judged like one written in python3 -c code (#138).
+CODE_RUNNERS_RUN_GH = [
+    "awk 'BEGIN{system(\"gh pr comment 5 -b hi\")}'",
+    "vim -c '!gh pr comment 5 -b hi'",
+    "python3 <<'EOF'\nimport os; os.system('gh pr comment 5 -b hi')\nEOF",
+    "node <<< \"require('child_process').execSync('gh pr comment 5 -b hi')\"",
+    "ex -sc '!gh pr comment 5 -b hi' -c q",
+    "sed 's/.*/gh pr comment 5 -b hi/e' notes.md",
+    "awk -f - <<'EOF'\nBEGIN{system(\"gh pr comment 5 -b hi\")}\nEOF",
+    "emacs --batch --eval '(shell-command \"gh pr comment 5 -b hi\")'",
+]
+
+
+@pytest.mark.parametrize("push", PUSH_MODES)
+@pytest.mark.parametrize("command", CODE_RUNNERS_RUN_GH)
+def test_a_gh_write_in_a_code_runners_code_asks_with_its_own_reason(tmp_path: Path, command: str, push: str) -> None:
+    """The gh write in their code is judged by its own key (comments), in every push mode."""
+    decision = run_hook(tmp_path, bash(command), push=push, pr="none")
+    assert asks(decision)
+    assert "gh pr comment posts or changes something on GitHub (comments=ask)" in str(decision)
+
+
+@pytest.mark.parametrize(
+    ("command", "force"),
+    [
+        ("awk 'BEGIN{system(\"git push --force origin main\")}'", True),
+        ("vim -c '!git push --force origin main'", True),
+        ("python3 <<'EOF'\nimport os; os.system('git push --force origin main')\nEOF", True),
+        ("awk 'BEGIN{system(\"git push origin main\")}'", False),
+        ("python3 <<'EOF'\nimport os; os.system('git push origin main')\nEOF", False),
+    ],
+)
+def test_a_push_in_a_code_runners_code_is_judged_as_a_push(tmp_path: Path, command: str, force: bool) -> None:
+    """A force push there asks under push=force; a plain one passes under force and asks under every."""
+    assert asks(run_hook(tmp_path, bash(command), push="force")) == force
+    assert asks(run_hook(tmp_path, bash(command), push="every"))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -n '/gh pr/p' notes.md",  # this sed can't run a command, so its script isn't code
+        "python3 scripts/post.py",  # code read from a file isn't read (Limits)
+        "awk '{print $1}' notes.md",
+        "cat <<'EOF'\ngh pr comment 5 -b hi\nEOF",  # a heredoc to a program that runs no code
+    ],
+)
+def test_code_without_a_gh_write_passes(tmp_path: Path, command: str) -> None:
+    assert run_hook(tmp_path, bash(command), pr="none") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("awk 'BEGIN{" + "x=1;" * 400_000 + 'system("gh pr comment 5 -b hi")}\'', id="huge awk body"),
+        pytest.param(
+            "python3 <<'EOF'\n" + "".join(f"os.system('gh pr view {n}')\n" for n in range(100_000)) + "EOF",
+            id="heredoc of many gh commands",
+        ),
+    ],
+)
+def test_a_huge_code_runner_body_is_checked_in_time(tmp_path: Path, command: str) -> None:
+    """The code is paid for from the work budget as it is read, and each embedded command as it is checked, so a huge
+    body asks (by its gh write, or as too big to check) well inside the hook's timeout."""
+    start = time.monotonic()
+    assert asks(run_hook(tmp_path, bash(command), pr="none"))
+    assert time.monotonic() - start < 10
+
+
 @pytest.mark.parametrize("push", PUSH_MODES)
 def test_a_bang_alias_is_judged_by_what_it_runs_not_as_a_possible_push(tmp_path: Path, push: str) -> None:
     """A `!` alias runs shell code, so its prompt names the gh write in it, not a push it never makes."""
