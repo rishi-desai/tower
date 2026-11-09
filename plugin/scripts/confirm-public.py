@@ -1037,9 +1037,8 @@ class CommandChecker:
         chdirs = wrapper_folders(words, program_of(words), self.spend)
         if chdirs:
             parts = [os.path.expanduser(folder.text) for folder in chdirs]
-            self.spend(
-                len(self.cd_folder) + sum(len(part) for part in parts)
-            )  # the copy onto the cds' path (the session's folder is short)
+            # each join copies its base and the parts: onto the session's folder and onto the cds' path
+            self.spend(len(self.cwd) + len(self.cd_folder) + 2 * sum(len(part) for part in parts))
             dynamic = any(folder.dynamic for folder in chdirs)
             self.folders += [Word(os.path.join(base, *parts), dynamic) for base in (self.cwd, self.cd_folder)]
 
@@ -1088,7 +1087,8 @@ class CommandChecker:
             reason = self.check_gh(args, is_whole_command=depth == 0 and index == 0)
         else:  # git, or one of its dashed executables (libexec/git-core/git-push)
             # env -C DIR / sudo -D DIR before git work like git -C DIR, so a later git -C joins onto DIR
-            self.spend(index)  # the words before git, looked through for wrappers (their options pay as they're read)
+            # the words before git, whose names are read for wrappers (their options pay as they're read)
+            self.spend(scan_cost(command.words, 0, index))
             moved = [
                 part
                 for folder in wrapper_folders(command.words[:index], program, self.spend)
@@ -1673,8 +1673,7 @@ def env_hides_variables(words: list[Word], index: int, spend: Callable[[int], No
     only known at run time, which may expand to assignments (env $(cat vars) git push). (An env that xargs, parallel
     or find run may get assignments from them: sets_git_config counts that.) The options read are paid for with
     SPEND: this env may be another option's value (env -u env), and reading from each runs to the end of the line."""
-    command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
-    spend(scan_cost(words, index, min(command_at + 1, len(words))))  # what it runs is read too
+    command_at = read_paid_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1, spend).command_at
     return command_at < len(words) and hides_name(words[command_at])
 
 
@@ -1738,8 +1737,7 @@ def wrapper_folders(words: list[Word], program: Program, spend: Callable[[int], 
     for index in range(program.at, len(words)):
         name = program_name(words[index]) if program.runs(index) else ""
         if name in WRAPPER_SYNTAX:
-            options = read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1)
-            spend(scan_cost(words, index, min(options.command_at + 1, len(words))))  # what it runs is read too
+            options = read_paid_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1, spend)
             found += options.chdirs
     return found
 
@@ -1766,6 +1764,16 @@ def shell_text(word: Word) -> str:
     if not word.dynamic:
         return shlex.quote(word.text)
     return '"' + word.text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def read_paid_wrapper_options(
+    words: list[Word], wrapper: WrapperSyntax, start: int, spend: Callable[[int], None]
+) -> WrapperOptions:
+    """read_wrapper_options from word START of WORDS, paid for with SPEND: the words it read and the one it stopped at
+    (what the wrapper runs), characters included, for the checks that read them again from every env or sudo word."""
+    options = read_wrapper_options(words, wrapper, start)
+    spend(scan_cost(words, start, min(options.command_at + 1, len(words))))
+    return options
 
 
 def read_wrapper_options(args: list[Word], wrapper: WrapperSyntax, start: int = 0) -> WrapperOptions:

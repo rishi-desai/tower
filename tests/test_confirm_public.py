@@ -1786,10 +1786,6 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("x" * 300_000 + " cd" * 60_000 + "; git push --force", id="cd after a long program"),
         pytest.param("x" * 300_000 + " git-x" * 60_000 + "; git push --force", id="dashed git after a long program"),
         pytest.param("{" * 300_000 + "cat" + " tower/setup.sh" * 30_000, id="setup.sh after a long program"),
-        pytest.param("x" * 1_000_000 + " git" * 600 + "; git push --force", id="git after a long program"),
-        pytest.param(
-            "sudo" + " -u sudo" * 480 + " " + "x" * 1_000_000 + "; git push --force", id="long wrapped command"
-        ),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
@@ -1804,6 +1800,26 @@ def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: st
     assert decision is None or "approval hook failed" not in str(decision["permissionDecisionReason"])
     if command.endswith("git push --force"):
         assert asks(decision)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("x" * 1_000_000 + " git" * 600 + "; git push --force", id="git after a long program"),
+        pytest.param(
+            "sudo" + " -u sudo" * 480 + " " + "x" * 1_000_000 + "; git push --force", id="long wrapped command"
+        ),
+    ],
+)
+def test_a_long_word_read_again_for_each_later_word_runs_out_of_budget(command: str) -> None:
+    """A check that reads a long word again for each later word (git's look for wrappers before it, a wrapper's read
+    of the command it runs) pays for its characters each time, so these lines run out of budget and ask. Before, they
+    rescanned the word hundreds of times for free and were judged with budget left, in 4.5-6.7 s: under the timing
+    test's 10 s bar, so only the budget shows it."""
+    hook = load_hook()
+    checker = hook.CommandChecker(hook.SessionPolicy(hook.STRICTEST_GATES, "test"), "/tmp")
+    with pytest.raises(hook.TooComplex):
+        checker.reasons(command)
 
 
 def test_a_line_of_many_cds_runs_out_of_budget_before_building_every_folder() -> None:
