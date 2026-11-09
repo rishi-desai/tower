@@ -63,13 +63,14 @@ turning tower's plugin off: `claude plugin disable|uninstall|remove` or `claude 
 tower, with a name from a variable or none, disable --all, or any name xargs, parallel or find may add; `claude plugin
 marketplace add` of any source, since a marketplace's name is in its source and one named tower replaces tower's
 (Claude Code 2.1.304, tried in a scratch CLAUDE_CONFIG_DIR: "Marketplace 'tower' was already added from ... and now
-points at ...", and the installed plugin loads from the new source); or running Claude Code without tower's hook:
-claude with --bare, --safe-mode, --restricted, --settings, --setting-sources without user, or a word whose start
-comes from a variable, claude run by xargs, parallel or find, and any claude on a line that sets CLAUDE_CODE_SIMPLE,
-CLAUDE_CODE_SAFE_MODE, CLAUDE_CONFIG_DIR or HOME. A Bash command naming tower.conf, the policy file, another file
-in ~/.claude/tower, a Claude Code settings file or a .claude folder itself (cp settings.json ~/.claude/) asks unless it
-only reads it with a program like cat, grep, tail or jq, and so does one writing to a path under .claude that comes
-from a variable or $'...' quoting.
+points at ...", and the installed plugin loads from the new source; `claude plugin update` and `marketplace update`
+pass, since they refresh tower from the source its marketplace already has); or running Claude Code without tower's
+hook: claude with --bare, --safe-mode, --restricted, --settings or --setting-sources without user, claude run by xargs,
+parallel or find, a claude on a line that sets CLAUDE_CODE_SIMPLE, CLAUDE_CODE_SAFE_MODE, CLAUDE_CONFIG_DIR or HOME,
+and one given a word from a variable on a line that spells out one of those options elsewhere (F=--bare; claude $F).
+A Bash command naming tower.conf, the policy file, another file in ~/.claude/tower, a Claude Code settings file or a
+.claude folder itself (cp settings.json ~/.claude/) asks unless it only reads it with a program like cat, grep, tail or
+jq, and so does one writing to a path under .claude that comes from a variable or $'...' quoting.
 
 A file named tower.conf or policy.toml anywhere else (a test fixture in a temp folder) isn't tower's: a Bash path
 ending in either name counts only when it resolves to tower's file, the way the Edit check judges, relative to
@@ -161,6 +162,7 @@ Limits: this sees only the command text. These are not caught:
     reads), by git under config set outside the command that hands files to a program (diff.external, a
     textconv or filter, a pager), or through a glob or a variable set outside the command. Claude Code's own
     permission rules or sandbox (a write-deny on ~/.claude/tower) are the backstop for that;
+  - a claude option from a variable or command output on a line that spells out none of them (claude $(cat opts));
   - Claude Code run another way (npx @anthropic-ai/claude-code, a script, an alias or another name for it), or as
     another user (sudo claude, su -c), whose own settings may not enable tower, and an edit of the installed plugin's
     own files or of known_marketplaces.json under ~/.claude/plugins/.
@@ -1091,6 +1093,7 @@ class CommandChecker:
         self.judged_before_config = False
         self.judged_before_remotes = False
         self.runs_claude = False  # the line may run Claude Code, nested code included
+        self.claude_hidden_word = False  # a claude the line runs gets a word whose start comes from a variable
 
     def spend(self, units: int) -> None:
         """Use UNITS of the work budget; raise TooComplex once it is gone."""
@@ -1121,9 +1124,16 @@ class CommandChecker:
             self.restart()
             found = self.check(command_line)
             found += [reason for reason in self.variable_code_reasons() if reason not in found]
-        if self.runs_claude and any(name in self.assigned for name in CLAUDE_HOOKLESS_VARIABLES):
-            # the safety floor: a claude the line runs may see them, wherever the line sets them
-            found += [] if HOOKLESS_CLAUDE_REASON in found else [HOOKLESS_CLAUDE_REASON]
+        # the safety floor: a claude the line runs may see these variables wherever the line sets them; and a word from
+        # a variable that claude gets may be an option the line spells out elsewhere (F=--bare; claude $F), while one
+        # that is only a prompt ("$PROMPT") isn't, on a line that names no such option
+        hookless_variable = self.runs_claude and (
+            any(name in self.assigned for name in CLAUDE_HOOKLESS_VARIABLES)
+            or any(EXPANDING.search(name) or has_expansion(name) for name in self.assigned)
+        )
+        hidden_option = self.claude_hidden_word and HOOKLESS_MENTION.search(command_line)
+        if (hookless_variable or hidden_option) and HOOKLESS_CLAUDE_REASON not in found:
+            found.append(HOOKLESS_CLAUDE_REASON)
         return found + [reason for reason in self.merge_reasons() if reason not in found]
 
     def restart(self) -> None:
@@ -1169,6 +1179,7 @@ class CommandChecker:
             self.git_remotes_unknown = self.git_remotes_unknown or write == MOVING_WRITE
             self.git_may_run_program = self.git_may_run_program or git_runs_program(command.words)
             self.runs_claude = self.runs_claude or runs_claude(command.words)
+            self.claude_hidden_word = self.claude_hidden_word or claude_takes_hidden_word(command.words)
         # A read of setup.sh or the policy module is let through only when it is the line's one simple command; a pipe,
         # a second command or a substitution (each adds a command) asks, so the floor fails closed (ADR 0010).
         single_command = depth == 0 and len(commands) == 1
@@ -2023,8 +2034,8 @@ def sets_git_config(words: list[Word], variables: list[tuple[str, Word]], spend:
     program = program_position(words)
     if any(GIT_CONFIG_ASSIGNMENT.match(word.text) for word in words[:program]):
         return True
-    if any(GIT_CONFIG_NAME.fullmatch(name) or has_expansion(name) for name, _ in variables):
-        return True  # a name from a variable may be one: printf -v "$N", builtin read "$N", declare -n r="$N"
+    if any(GIT_CONFIG_NAME.fullmatch(name) or EXPANDING.search(name) or has_expansion(name) for name, _ in variables):
+        return True  # a name the shell builds or from a variable may be one: printf -v "$N", declare -n r="$N"
     name = program_name(words[program]) if program < len(words) else ""
     args = words[program + 1 :]
     if name in WRAPPERS:
@@ -2204,9 +2215,12 @@ def variables_set(words: list[Word]) -> list[tuple[str, Word]]:
     variables: list[tuple[str, Word]] = []
     for word in found:
         match = ASSIGNMENT.match(word.text)
+        name, equals, value = word.text.partition("=")
         if match is not None:
             added = match.group().endswith("+=")
             variables.append((assigned_name(match), Word(word.text[match.end() :], word.dynamic or added)))
+        elif equals and EXPANDING.search(name) and not name.startswith("-"):  # env X_{A,B}=1: names the shell builds
+            variables.append((name, Word(value, dynamic=True)))
     unknown = Word("", dynamic=True)
     setter = program  # the builtin that sets them, past builtin and command (and command's -p)
     while setter < len(words) and program_name(words[setter]) in BUILTIN_RUNNERS:
@@ -2920,9 +2934,11 @@ CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", "")
 CLAUDE_SETTINGS_FILES = ("settings.json", "settings.local.json")
 # Bash: the names of tower.conf and the policy file, and of Claude Code's settings files when CLAUDE_CONFIG_DIR moves
 # them out of a .claude folder. A path ending in one counts only when it resolves to tower's (see names_tower_file), so
-# a commit message or a fixture in a temp folder doesn't.
+# a commit message or a fixture in a temp folder doesn't. In code, which can build any path, tower's own names count
+# by their text alone (TOWER_OWN_FILE_NAME); settings.json, which most projects have, still has to resolve.
+TOWER_OWN_FILE_NAME = re.compile(r"tower\.conf|policy\.toml", re.IGNORECASE)
 TOWER_FILE_NAME = re.compile(
-    r"tower\.conf|policy\.toml" + (r"|settings(?:\.local)?\.json" if CLAUDE_CONFIG_DIR else ""), re.IGNORECASE
+    TOWER_OWN_FILE_NAME.pattern + (r"|settings(?:\.local)?\.json" if CLAUDE_CONFIG_DIR else ""), re.IGNORECASE
 )
 # Bash: the rest of ~/.claude/tower/ (event log, the folder itself) and Claude Code's settings files, by their text.
 TOWER_FOLDER_MENTION = re.compile(
@@ -2959,24 +2975,29 @@ TOWER_FILE_REASON = (
 )
 TOWER_PLUGIN_REASON = "the command may turn off tower's plugin, whose hook asks for these approvals"
 HOOKLESS_CLAUDE_REASON = (
-    "the command runs Claude Code without tower's hook (--bare, --safe-mode, --restricted, --settings, --setting-sources "
-    "without user, or CLAUDE_CODE_SIMPLE, CLAUDE_CODE_SAFE_MODE, CLAUDE_CONFIG_DIR or HOME set on the line), so what "
-    "that session does wouldn't be checked"
+    "the command runs Claude Code without tower's hook (--bare, --safe-mode, --restricted, --settings, "
+    "--setting-sources without user, or CLAUDE_CODE_SIMPLE, CLAUDE_CODE_SAFE_MODE, CLAUDE_CONFIG_DIR or HOME set on "
+    "the line), so what that session does wouldn't be checked"
 )
 # claude's options that start a session without tower's hook: --bare skips plugins' hooks, --safe-mode turns plugins
 # off, --restricted skips the user's settings (where tower is enabled); --settings adds settings that can turn hooks
-# off (disableAllHooks, enabledPlugins), and --setting-sources without user leaves the user's out (claude --help, 2.1.x).
+# off (disableAllHooks, enabledPlugins), and --setting-sources without user leaves the user's out (claude --help,
+# 2.1.x).
 CLAUDE_HOOKLESS_OPTIONS = {"--bare", "--safe-mode", "--restricted"}
 CLAUDE_SETTINGS_OPTION = "--settings"
 CLAUDE_SOURCES_OPTION = "--setting-sources"
 # Variables that start a nested claude without tower's hook: --bare's and --safe-mode's own, and the folders Claude Code
 # reads its settings and plugins from (CLAUDE_CONFIG_DIR, else ~/.claude), where another has no tower in it.
 CLAUDE_HOOKLESS_VARIABLES = ("CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "CLAUDE_CONFIG_DIR", "HOME")
-# Text that may run claude without tower's hook, for a command that couldn't be checked fully or another language's code.
+# Text that may run claude without tower's hook, for a command that couldn't be checked fully or another language's
+# code.
 CLAUDE_MENTION = re.compile(r"\bclaude\b", re.IGNORECASE)
 HOOKLESS_MENTION = re.compile(
     r"--(?:bare|safe-mode|restricted|settings|setting-sources)\b|\bCLAUDE_(?:CODE_SIMPLE|CODE_SAFE_MODE|CONFIG_DIR)\b"
+    r"|(?<![\w$])HOME="  # HOME set, not $HOME read: a line that only reads it (cd $HOME) names no such option
 )
+# find's options that run a command (find -name claude only names a file).
+FIND_EXEC_OPTIONS = {"-exec", "-execdir", "-ok", "-okdir"}
 # `claude plugin` subcommands that turn a plugin off (uninstall's alias is remove), and `claude plugin marketplace`
 # ones that remove a marketplace with its plugins (remove's alias is rm).
 PLUGIN_OFF_VERBS = {"disable", "uninstall", "remove"}
@@ -2995,6 +3016,13 @@ PLUGIN_OFF_MENTION = (
     re.compile(r"\bclaude\b", re.IGNORECASE),
     re.compile(r"\bplugins?\b", re.IGNORECASE),
     re.compile(rf"\b(?:{'|'.join(sorted(PLUGIN_OFF_VERBS | MARKETPLACE_OFF_VERBS))})\b", re.IGNORECASE),
+)
+# Text that may add a marketplace, whose source can name it tower (see plugin_args_turn_tower_off), in this order.
+MARKETPLACE_ADD_MENTION = (
+    PLUGIN_OFF_MENTION[0],
+    PLUGIN_OFF_MENTION[1],
+    re.compile(r"\bmarketplace\b", re.IGNORECASE),
+    re.compile(r"\badd\b", re.IGNORECASE),
 )
 POLICY_COMMAND_REASON = (
     "the command may change tower's policy (tower policy use, its policy module, or tower's setup.sh), "
@@ -3197,7 +3225,9 @@ def protected_reasons(
     targets = [(redirect.writes, redirect.target.text) for redirect in command.redirects]
     named: list[tuple[Word | None, str]] = [(word, word.text) for word in command.words if word.text]
     named += [(None, target) for _, target in targets] + [(None, command.stdin_text or "")]
-    needs_resolving = not judged_by_text and any(TOWER_FILE_NAME.search(text) for _, text in named)
+    needs_resolving = any(
+        TOWER_FILE_NAME.search(text) and not (judged_by_text and TOWER_OWN_FILE_NAME.search(text)) for _, text in named
+    )
     arguments = folder_arguments(command.words[program + 1 :], session, spend) if needs_resolving else []
 
     def names_tower(own: Word | None, text: str) -> bool:
@@ -3209,7 +3239,8 @@ def protected_reasons(
             return False
         spend(len(arguments))  # gathering the folders, before names_tower_file pays to look each one up
         others = [folder for word, folder in arguments if word is not own]
-        return judged_by_text or names_tower_file(text, session, others, spend)
+        own_name = judged_by_text and bool(TOWER_OWN_FILE_NAME.search(text))
+        return own_name or names_tower_file(text, session, others, spend)
 
     if any(writes and names_tower(None, target) for writes, target in targets):
         return [TOWER_FILE_REASON]
@@ -3440,7 +3471,7 @@ def turns_tower_off(words: list[Word]) -> bool:
     if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
         return False
     if any(LANGUAGE_RUNNER.fullmatch(program_name(word)) for word in words[program:]) and any(
-        mentions_in_order(word.text, PLUGIN_OFF_MENTION) for word in words[program + 1 :]
+        mentions_plugin_off(word.text) for word in words[program + 1 :]
     ):
         return True
     index = claude_position(words, program)
@@ -3460,34 +3491,92 @@ def claude_position(words: list[Word], program: int) -> int | None:
     return next((i for i in range(program, len(words)) if program_name(words[i]) == "claude"), None)
 
 
+def mentions_plugin_off(text: str) -> bool:
+    """Whether TEXT (code, or a command that couldn't be checked fully) mentions claude, plugin and an off verb, or
+    claude, plugin, marketplace and add, in that order. Each search is linear (mentions_in_order)."""
+    return mentions_in_order(text, PLUGIN_OFF_MENTION) or mentions_in_order(text, MARKETPLACE_ADD_MENTION)
+
+
+def claude_runs_at(words: list[Word], program: int) -> int | None:
+    """Index of the word that runs claude in a simple command's WORDS, whose program is word PROGRAM: the one
+    claude_position finds, unless it is only an argument, of git or gh (git commit -m claude), of a find without
+    -exec (find / -name claude), or of a reading program that xargs, parallel or find -exec runs (xargs grep -l
+    claude): the first word after the last of them that isn't an option or a value without letters (-n 1, -I {}). A
+    launcher this hook doesn't know still runs it (uv run claude, mise exec -- claude)."""
+    index = claude_position(words, program)
+    if index is None or index == program:
+        return index
+    name = program_name(words[program])
+    if name in ("git", "gh") or name in READ_ONLY_PROGRAMS:
+        return None
+    if name == "find" and not any(word.text in FIND_EXEC_OPTIONS for word in words[program:index]):
+        return None
+    suppliers = [
+        i
+        for i in range(program, index)
+        if program_name(words[i]) in ARGUMENT_SUPPLIERS or words[i].text in FIND_EXEC_OPTIONS
+    ]
+    if suppliers:
+        supplied = next(
+            (
+                i
+                for i in range(suppliers[-1] + 1, index)
+                if not words[i].text.startswith("-") and re.search(r"[A-Za-z]", words[i].text)
+            ),
+            index,
+        )
+        if supplied < index and program_name(words[supplied]) in {"git", "gh", *READ_ONLY_PROGRAMS}:
+            return None
+    return index
+
+
 def runs_claude(words: list[Word]) -> bool:
-    """Whether a simple command's WORDS may run Claude Code: claude among them, unless the program only reads or
-    prints its words (echo, grep), or another language's code that mentions claude."""
+    """Whether a simple command's WORDS may run Claude Code, for the variables that start it without tower's hook:
+    the claude word claude_runs_at finds, or another language's code that mentions claude."""
     program = program_position(words)
-    if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
+    if program >= len(words):
         return False
-    names = [program_name(word) for word in words[program:]]
-    if any(LANGUAGE_RUNNER.fullmatch(name) for name in names):
-        return any(CLAUDE_MENTION.search(word.text) for word in words[program + 1 :]) or "claude" in names
-    return "claude" in names
+    if any(LANGUAGE_RUNNER.fullmatch(program_name(word)) for word in words[program:]) and any(
+        CLAUDE_MENTION.search(word.text) for word in words[program + 1 :]
+    ):
+        return True
+    return claude_runs_at(words, program) is not None
+
+
+def mentions_hookless_claude(text: str) -> bool:
+    """Whether TEXT (code, or a command that couldn't be checked fully) mentions claude and an option or variable that
+    starts it without tower's hook. Two searches, each linear."""
+    return bool(CLAUDE_MENTION.search(text) and HOOKLESS_MENTION.search(text))
+
+
+def claude_takes_hidden_word(words: list[Word]) -> bool:
+    """Whether claude, in a simple command's WORDS, gets a word whose start is only known at run time ("$FLAGS",
+    "$(cat opts)"), which may be one of the options that start it without tower's hook. The prompt after a -- can't."""
+    program = program_position(words)
+    index = claude_runs_at(words, program) if program < len(words) else None
+    if index is None:
+        return False
+    args = words[index + 1 :]
+    end = next((i for i, word in enumerate(args) if word.text == "--"), len(args))
+    return any(has_expansion(word.text[:1]) for word in args[:end])
 
 
 def runs_claude_without_hook(words: list[Word]) -> bool:
     """Whether a simple command's WORDS start a nested Claude Code session without tower's hook: claude (the word
     claude_position finds) with --bare, --safe-mode or --restricted, --settings (inline JSON or a file: either can turn
-    hooks off), --setting-sources without user (or from a variable), or a word whose start is only known at run time,
-    which may be one of them ("$FLAGS"); claude run by xargs, parallel or find, which may add one; or another
-    language's code that mentions claude and one of them. The variables that do the same (CLAUDE_CODE_SIMPLE, ...) are
-    judged for the whole line, in CommandChecker.reasons. Linear: one look at each word."""
+    hooks off) or --setting-sources without user (or from a variable), or an option whose name the shell builds
+    (--{bare,x}, --$X, --settings$X); claude run by xargs, parallel or find, which may add one; or another language's code that mentions claude and one of them. The variables that do the same
+    (CLAUDE_CODE_SIMPLE, ...), and a word from a variable that may be one of the options, are judged for the whole line
+    in CommandChecker.reasons. Linear: one look at each word."""
     program = program_position(words)
-    if not runs_claude(words):
+    if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
         return False
     names = [program_name(word) for word in words[program:]]
     if any(LANGUAGE_RUNNER.fullmatch(name) for name in names) and any(
-        CLAUDE_MENTION.search(word.text) and HOOKLESS_MENTION.search(word.text) for word in words[program + 1 :]
+        mentions_hookless_claude(word.text) for word in words[program + 1 :]
     ):
         return True
-    index = claude_position(words, program)
+    index = claude_runs_at(words, program)
     if index is None:
         return False
     if any(program_name(word) in ARGUMENT_SUPPLIERS for word in words[program:index]):
@@ -3499,12 +3588,14 @@ def runs_claude_without_hook(words: list[Word]) -> bool:
             return False  # the rest is claude's prompt
         if text in CLAUDE_HOOKLESS_OPTIONS or text.partition("=")[0] == CLAUDE_SETTINGS_OPTION:
             return True
+        if text.startswith(("-", "{")) and EXPANDING.search(text):  # --{bare,x}: the shell makes the option
+            return True
+        if text.startswith("-") and has_expansion(text.partition("=")[0]):  # --$X, --settings$X: so does a variable
+            return True
         if text.partition("=")[0] == CLAUDE_SOURCES_OPTION:
             sources = Word(text.partition("=")[2], word.dynamic) if "=" in text else following
             if sources.dynamic or "user" not in sources.text.split(","):
                 return True
-        if has_expansion(text[:1]):
-            return True
     return False
 
 
@@ -3519,7 +3610,7 @@ def plugin_args_turn_tower_off(args: list[Word], supplied: bool) -> bool:
     verb_at, verbs = next_operand(args, 0), PLUGIN_OFF_VERBS
     if verb_at is not None and args[verb_at].text == "marketplace":  # its own subcommand comes next
         verb_at, verbs = next_operand(args, verb_at + 1), MARKETPLACE_OFF_VERBS
-        if verb_at is not None and args[verb_at].text == "add":
+        if verb_at is not None and (args[verb_at].text == "add" or args[verb_at].dynamic):  # a variable may say add
             return True
     if verb_at is None or not (args[verb_at].dynamic or args[verb_at].text in verbs):
         return False
@@ -3601,10 +3692,9 @@ def decide(call: object) -> tuple[list[str], str] | None:
         mentions_policy = mentions_in_order(command, POLICY_COMMAND_MENTION) or SETUP_MENTION.search(command)
         if mentions_policy and POLICY_COMMAND_REASON not in reasons:
             reasons.append(POLICY_COMMAND_REASON)
-        if mentions_in_order(command, PLUGIN_OFF_MENTION) and TOWER_PLUGIN_REASON not in reasons:
+        if mentions_plugin_off(command) and TOWER_PLUGIN_REASON not in reasons:
             reasons.append(TOWER_PLUGIN_REASON)
-        hookless = CLAUDE_MENTION.search(command) and HOOKLESS_MENTION.search(command)
-        if hookless and HOOKLESS_CLAUDE_REASON not in reasons:
+        if mentions_hookless_claude(command) and HOOKLESS_CLAUDE_REASON not in reasons:
             reasons.append(HOOKLESS_CLAUDE_REASON)
     if not reasons:
         return None
