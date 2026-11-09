@@ -259,10 +259,9 @@ def check_vault() -> Check:
     """The vault folder holding every project's Ledger (projects_dir in tower.conf) exists."""
     conf_path = ledger.conf_path()
     fix = f"set projects_dir in {conf_path} to your vault's projects folder, or re-run setup.sh"
-    try:
-        conf = ledger.read_conf(conf_path)
-    except ledger.ConfUnreadable as error:  # it may well set projects_dir: it just couldn't be read
-        return Check("vault", FAIL, str(error), f"fix or remove {conf_path}, then run setup.sh again")
+    conf, conf_why = ledger.conf_or_why()
+    if conf is None:  # it may well set projects_dir: it just couldn't be read
+        return Check("vault", FAIL, conf_why, f"fix or remove {conf_path}, then run setup.sh again")
     try:
         root = ledger.projects_root(conf)
     except ledger.LedgerError as error:  # unset or missing

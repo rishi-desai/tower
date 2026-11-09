@@ -451,7 +451,9 @@ def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_worktrees_are_still_repor
 
     result = tower_state(capsys)
 
-    assert result["notes"] == [f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used"]
+    assert result["notes"] == [
+        f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used and no cards were read"
+    ]
     assert rows(result)["feat-1"]["status"] == "running"
 
 
@@ -464,7 +466,9 @@ def test_a_tower_conf_that_cant_be_read_is_noted_once(
 
     result = tower_state(capsys)
 
-    assert result["notes"] == [f"can't read {conf} (Is a directory), so its settings weren't used"]
+    assert result["notes"] == [
+        f"can't read {conf} (Is a directory), so its settings weren't used and no cards were read"
+    ]
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])

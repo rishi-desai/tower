@@ -286,7 +286,7 @@ def gather(
     if conf_read is None:
         conf, conf_why = ledger.conf_or_why()
         if conf_why:
-            notes.append(f"{conf_why}, so its settings weren't used")
+            notes.append(f"{conf_why}, so its settings weren't used and no cards were read")
     else:
         conf = conf_read[0]
 
