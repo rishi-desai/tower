@@ -384,7 +384,9 @@ def write_card(
         updated=time.strftime(TIME_FORMAT),
         branch=branch or "none",
         pr="unknown" if gh_error else f"#{pr.number}" if pr else "none",
-        base=pr.base if pr else (stacks.parent_of(worktree, branch) if branch else None) or repo_base(worktree),
+        base=(pr.base if pr else None)
+        or (stacks.parent_of(worktree, branch) if branch else None)
+        or repo_base(worktree),
         reason=reason if status in NEEDS_REASON else "",
     )
     write_atomically(path, render(front, body, extra_properties(old_lines)), if_absent)

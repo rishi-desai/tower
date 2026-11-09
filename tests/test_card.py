@@ -154,6 +154,20 @@ def test_a_heading_inside_a_code_block_is_code_and_files_touched_is_kept(
     assert body(repo.ledger / "feat-7.md") == "\n" + narrative
 
 
+def test_a_pr_gh_gave_no_base_for_falls_back_to_the_repos_base(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """github.branch_pr leaves a missing baseRefName as "": the card says the repo's base, never an empty one."""
+    path = repo.add_worktree("feat-42-search")
+    fake_prs(tmp_path, [{"number": 57, "state": "OPEN", "headRefOid": git(path, "rev-parse", "HEAD").strip()}])
+    monkeypatch.chdir(path)
+
+    code, _, _ = write(capsys, monkeypatch)
+
+    assert code == 0
+    assert 'base: "main"' in frontmatter(repo.ledger / "feat-42-search.md")
+
+
 def test_an_open_pr_makes_the_card_waiting_on_ci(
     repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

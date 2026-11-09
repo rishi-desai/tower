@@ -633,7 +633,7 @@ def pull_requests(repo_dir: Path, worktrees: list[GitWorktree]) -> tuple[dict[st
         pr, _ = found[wt.branch]
         if pr is None:
             continue
-        kept, _ = github.unless_earlier_work(Path(wt.path), pr)  # the card says why it was dropped
+        kept, _ = github.unless_earlier_work(Path(wt.path), pr)  # as on the card, which tells its worker why
         if kept is not None:
             prs[wt.branch] = as_pr(kept)
     errors = [error for _, error in found.values() if error]
