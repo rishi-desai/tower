@@ -1008,6 +1008,7 @@ class CommandChecker:
             # git can't be trusted to only read: it may run a program on the files, or run under config the hook can't
             # read or in another repo
             git_unsafe = self.git_may_run_program or self.git_config_from_env or self.names_git_env
+            self.spend(len(self.folders))  # each command is judged against every folder the line cds into so far
             folders = self.folders + searched
             found = protected_reasons(
                 command, self.cwd, folders, self.spend, self.makes_links, single_command, git_unsafe
@@ -1184,10 +1185,10 @@ class CommandChecker:
         Each folder counts both from the session's folder and from the line's last cd, since which applies depends
         on subshells; past MAX_FOLDERS distinct folders, it's the strictest rather than run git that often."""
         folders = list(self.folders)
+        parts = [os.path.expanduser(folder.text) for folder in git_folders]
         for base in {self.cwd, self.cd_folder}:
-            joined = base
-            for folder in git_folders:
-                joined = os.path.join(joined, os.path.expanduser(folder.text))
+            # one join builds the path once; joining folder by folder copies it again each time (sudo -D x -D x ...)
+            joined = os.path.join(base, *parts)
             if git_folders:
                 folders.append(Word(joined, any(folder.dynamic for folder in git_folders)))
         folders = list({(folder.text, folder.dynamic): folder for folder in folders}.values())  # each one once

@@ -1777,6 +1777,8 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("sudo" + " -u sudo" * 8_000 + "; git push --force", id="sudo options"),
         pytest.param("env" + " -u env" * 4_000 + "; git push", id="env options"),
         pytest.param("env" + " -u env" * 1_000 + " git" * 40, id="git after env options"),
+        pytest.param("sudo" + " -D sudo" * 990 + " git push", id="git in sudo's folders"),
+        pytest.param("cd a; " * 40_000, id="many cds"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
