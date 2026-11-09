@@ -1899,21 +1899,86 @@ def test_a_push_asks_when_its_saved_settings_cant_be_read_in_time(widget: Path, 
 @pytest.mark.parametrize(
     ("command", "reads"),
     [
-        ("git status", False),
-        ("git log --oneline -3", False),
-        ("git config user.name x", False),
+        ("git status", True),  # any git command may run a command its saved settings name (#139)
+        ("git log --oneline -3", True),
+        ("git config user.name x", True),
         ("gh pr view 5", False),
+        ("ls -la", False),
         ("git push origin", True),
-        ("git p origin", True),  # p isn't one of git's own commands, so it may be a saved alias
+        ("git p origin", True),
     ],
 )
-def test_only_a_push_or_a_possible_alias_reads_the_saved_settings(widget: Path, command: str, reads: bool) -> None:
-    """Commands that don't push leave git's config unread, so they cost nothing more than before."""
+def test_only_git_commands_read_the_saved_settings(widget: Path, command: str, reads: bool) -> None:
+    """Every git command reads its repo's saved settings, once per folder; a command that runs no git reads nothing."""
     env = fake_git_env(widget, "log")
     assert not asks(run_hook(widget.parent, in_widget(widget, command), policy=PERSONAL, env=env))
     log = widget.parent / "git.log"
     calls = log.read_text(encoding="utf-8") if log.exists() else ""
     assert ("--get-regexp" in calls) == reads
+
+
+def test_a_line_of_git_commands_reads_each_folders_settings_once(widget: Path) -> None:
+    """The read is cached for the hook run, so a line of many git commands in one folder costs one read."""
+    env = fake_git_env(widget, "log")
+    assert not asks(run_hook(widget.parent, in_widget(widget, "git status && git log -1 && git diff"), env=env))
+    calls = (widget.parent / "git.log").read_text(encoding="utf-8")
+    assert calls.count("--get-regexp") == 1
+
+
+# Command-running settings already saved in the repo's or the user's config, which any later git command may run (#139)
+SAVED_COMMAND_SETTINGS = [
+    ("core.pager", "gh pr comment 5 -b hi", "git log"),
+    ("diff.external", "gh pr comment 5 -b hi", "git diff"),
+    ("core.sshCommand", "gh pr comment 5 -b hi; ssh", "git fetch"),
+    ("credential.helper", "!gh pr comment 5 -b hi", "git fetch"),
+    ("alias.x", "!gh pr comment 5 -b hi", "git x"),
+    ("alias.r", "rebase --exec 'gh pr comment 5 -b hi'", "git r main"),
+]
+
+
+@pytest.mark.parametrize("where", ["repo", "home"])
+@pytest.mark.parametrize(("key", "value", "command"), SAVED_COMMAND_SETTINGS)
+def test_a_gh_write_in_a_saved_setting_asks_with_its_own_reason(
+    widget: Path, key: str, value: str, command: str, where: str
+) -> None:
+    """A gh write saved in a command-running setting asks with the gh write's reason, whether the repo's config or the
+    user's ~/.gitconfig (the hook's HOME) holds it; in a profile where comments ask, push=force."""
+    target = ["--file", str(widget.parent / ".gitconfig")] if where == "home" else []
+    subprocess.run(["git", "-C", str(widget), "config", *target, key, value], check=True)
+    decision = run_hook(widget.parent, in_widget(widget, command), push="force", env=widget_env(widget, None))
+    assert asks(decision)
+    assert "gh pr comment posts or changes something on GitHub (comments=ask)" in str(decision)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "command"),
+    [
+        ("core.pager", "less", "git log"),
+        ("credential.helper", "!gh auth git-credential", "git fetch"),
+        ("credential.helper", '!f() { echo "password=$TOKEN"; }; f', "git status"),  # saved text is checked as written
+        ("alias.st", "!git status --short", "git st"),
+    ],
+)
+def test_a_saved_setting_that_only_reads_passes(widget: Path, key: str, value: str, command: str) -> None:
+    subprocess.run(["git", "-C", str(widget), "config", key, value], check=True)
+    assert run_hook(widget.parent, in_widget(widget, command), push="force", env=widget_env(widget, None)) is None
+
+
+def test_a_saved_bang_alias_is_judged_by_its_code_not_as_a_possible_push(widget: Path) -> None:
+    """A saved `!` alias's code is checked, so its prompt names the gh write in it, not a push it never makes."""
+    subprocess.run(["git", "-C", str(widget), "config", "alias.x", "!gh repo delete o/r --yes"], check=True)
+    decision = run_hook(widget.parent, in_widget(widget, "git x"), push="force", env=widget_env(widget, None))
+    assert decision is not None
+    reason = str(decision["permissionDecisionReason"])
+    assert "gh repo delete may change something on GitHub" in reason
+    assert "push" not in reason
+
+
+def test_a_git_command_asks_when_its_saved_settings_cant_be_read(widget: Path) -> None:
+    """A read of the saved settings that fails makes any git command ask: what they make it run can't be checked."""
+    decision = run_hook(widget.parent, in_widget(widget, "git log -1"), env=fake_git_env(widget, "fail"))
+    assert asks(decision)
+    assert "saved settings couldn't be read" in str(decision)
 
 
 @pytest.mark.parametrize(

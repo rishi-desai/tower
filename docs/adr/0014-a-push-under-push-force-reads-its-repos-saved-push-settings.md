@@ -43,8 +43,9 @@ that may force.
   asks even when that repo has no such setting.
 - On a stalled disk each folder's read adds up to 3 s beside its `git remote -v`; past the hook's 30 s timeout the call
   is refused (ADR 0012), which is safe.
-- A saved `!` alias counts as a push that may force rather than having its code checked: reading command-running
-  settings from saved config (#82 checks only those written in the line) is a possible follow-up.
+- A saved `!` alias's code is checked as code since #139 (ADR 0015), which widened this read to the settings that
+  name a command and runs it for every git command; such an alias counts as a push that may force only when it hands
+  git's words on (`"$@"`).
 - Settings written in the same line, before the push runs, aren't in the saved config yet. A write that can make a
   push force or alias a subcommand (`remote.<name>.mirror` or `.push`, `alias.*`, `include*`, `git config --edit`,
   `git remote add --mirror=push`, `clone --mirror`) counts as config the hook can't read; one that only moves where a
