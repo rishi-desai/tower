@@ -5,7 +5,7 @@ judged that from the command text, so settings saved before the command went uns
 true` in one Bash call and `git push origin` in the next passed, and so did `git p origin` with `alias.p = push
 --force` saved (#83). Now, when a push runs under `push = "force"`, or a subcommand that isn't one of git's own (so may
 be an alias) runs under `every` or `force`, the hook reads the settings saved in that push's repo with one `git config
---null --get-regexp '^(remote\..*\.(mirror|push)|alias\..*)$'`. A remote that mirrors, a `+` or `:` push refspec, an
+--null --get-regexp '^(remote\..*\.(mirror|push)|alias\..*)$'`. A remote that mirrors, a `+` or `:<ref>` push refspec, an
 alias that expands to a forcing push, a `!` alias, or a read that fails or outlasts its 3 seconds makes the push one
 that may force.
 
@@ -21,7 +21,11 @@ that may force.
 - **Not push URLs**: `remote.<name>.pushurl` and `url.<base>.pushInsteadOf` change where a push goes, and `git remote
   -v`, which already decides the profile, applies both.
 - **Only for a push or a possible alias**: `git status`, `git log` and a lone `git config user.name x` read nothing.
-  Each folder is read once per command line, for the same work-budget cost as its `git remote -v`.
+  Each folder is read once per command line, for the same work-budget cost as its `git remote -v`. For a subcommand
+  that may only be an alias (`git lfs`, `git diff-tree`), a folder from a variable is left out rather than making it
+  ask: an alias saved only in that repo is a Limit. An alias found is read as what it stands for with git's options
+  before it still applying (`git -c remote.origin.mirror=true p`), and so is one that writes a push setting (`alias.cfg
+  = config`).
 
 ## Considered options
 
@@ -41,6 +45,10 @@ that may force.
   is refused (ADR 0012), which is safe.
 - A saved `!` alias counts as a push that may force rather than having its code checked: reading command-running
   settings from saved config (#82 checks only those written in the line) is a possible follow-up.
-- Settings written in the same line, before the push runs, aren't in the saved config yet; a `git config` or `git
-  remote` write of a push setting, or a `clone --mirror`, in the line counts as config the hook can't read instead.
+- Settings written in the same line, before the push runs, aren't in the saved config yet. A write that can make a
+  push force or alias a subcommand (`remote.<name>.mirror` or `.push`, `alias.*`, `include*`, `git config --edit`,
+  `git remote add --mirror=push`, `clone --mirror`) counts as config the hook can't read; one that only moves where a
+  push goes (a remote's URL, `url.*`, `git remote add`, `set-url` or `rename`) counts as a repo the hook can't tell,
+  which matters only when `[repos]` gives repos their own profiles. `push.*` settings change neither, so `git remote
+  add origin ... && git push -u origin main` stays a plain push.
   Settings changed another way (an edit of `.git/config`, a script) stay a Limit.
