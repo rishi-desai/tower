@@ -32,13 +32,15 @@ class GhError(Exception):
 @dataclass(frozen=True)
 class BranchPr:
     """A branch's PR as GitHub reports it. state is OPEN, MERGED or CLOSED; head is its head commit (for a merged PR,
-    as it was when it merged), "" when gh didn't give a full commit id; base and url are "" when gh didn't give them."""
+    as it was when it merged), "" when gh didn't give a full commit id; base, url and title are "" when gh didn't give
+    them."""
 
     number: int
     state: str
     base: str
     head: str
     url: str
+    title: str
 
 
 def from_this_repo(pr: dict[str, object]) -> bool:
@@ -143,7 +145,7 @@ def newest_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
     """(branch's PR, gh's error): its open PR, else its newest, never one from a fork (a stranger's patch-1 isn't this
     work), from one `gh pr list --head` in directory. The one place "open first, else newest" is decided. gh's error is
     "" when GitHub answered."""
-    fields = "number,state,baseRefName,headRefOid,url,isCrossRepository"
+    fields = "number,state,baseRefName,headRefOid,url,title,isCrossRepository"
     out, error = try_gh(directory, "pr", "list", "--head", branch, "--state", "all", "--json", fields)
     if out is None:
         return None, error
@@ -155,6 +157,7 @@ def newest_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
                 str(p.get("baseRefName", "")),
                 head_commit(p.get("headRefOid")),
                 str(p.get("url", "")),
+                str(p.get("title", "")),
             )
             for p in json.loads(out)
             if from_this_repo(p)
