@@ -150,7 +150,6 @@ def test_wip_limit_comes_from_tower_conf_when_the_profile_has_none(home: Path) -
     assert (repo_policy.wip_limit, repo_policy.wip_limit_from) == (7, f"wip_limit in {home.parent / 'tower.conf'}")
 
 
-
 def test_a_tower_conf_that_isnt_utf8_is_named_by_wip_limit_not_listed_as_a_policy_problem(home: Path) -> None:
     """The policy file is fine: only the WIP limit it takes from tower.conf fell back, so that's where it shows (#86)."""
     conf = home.parent / "tower.conf"
@@ -161,6 +160,7 @@ def test_a_tower_conf_that_isnt_utf8_is_named_by_wip_limit_not_listed_as_a_polic
 
     assert repo_policy.problems == ()
     assert (repo_policy.wip_limit, repo_policy.wip_limit_from) == (3, f"the default ({conf} isn't UTF-8 text (line 2))")
+
 
 @pytest.mark.parametrize(
     ("text", "expected", "problem"),
