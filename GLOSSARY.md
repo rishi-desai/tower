@@ -82,10 +82,9 @@ worktree's worker moves between its branches), keeping its first name.
 _Avoid_: status file, report
 
 **Label**:
-How every report and the pane name a worktree: its branch, or on a detached HEAD `(detached <commit>)`, where the
-commit is written as short as git can while no other commit in the repo starts the same way (seven characters
-usually, more when that is ambiguous). No two worktrees share one, and a detached worktree's card, when first written,
-carries the same commit.
+How every report and the pane name a worktree: its branch, or on a detached HEAD `(detached <commit>)`, the commit
+written as the shortest prefix that no other commit in the repo shares. A detached worktree's card, when first
+written, is named with the same prefix.
 _Avoid_: name (alone: the card's name can differ), short sha (alone: seven characters can be ambiguous)
 
 **Ticket guess**:

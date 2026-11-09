@@ -239,7 +239,8 @@ test("clicking a name lands on the terminal Orca says is waiting, not the newest
 })
 
 test("a detached worktree's card button opens the card file the core named, not one rebuilt from its label", async ($, on) => {
-  // git's short sha can be longer than the label's 7 characters (an ambiguous prefix in a big repo), as here (#65).
+  // A card keeps the name it was first written with when its worktree moves to another commit, so the label's sha
+  // can differ from the card file's, as here (#65).
   const detached = variant(w => w.label !== 'feat-8' ? w : { ...w, label: '(detached 3f9a982)', branch: null, card_file: 'detached-3f9a9829c738.md' })
   const w = world(on, detached)
   await $.command.run({ command: 'tower' })

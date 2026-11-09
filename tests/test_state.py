@@ -381,7 +381,7 @@ def test_a_detached_worktree_finds_its_card(repo: Fixture, capsys: pytest.Captur
     short = git(path, "rev-parse", "--short", "HEAD").strip()
     (repo.ledger / f"detached-{short}.md").write_text("---\nstatus: blocked\n---\n", encoding="utf-8")
 
-    row = rows(tower_state(capsys))[f"(detached {git(path, 'rev-parse', 'HEAD')[:7]})"]
+    row = rows(tower_state(capsys))[f"(detached {short})"]
 
     assert row["status"] == "blocked"
 
