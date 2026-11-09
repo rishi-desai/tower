@@ -3,7 +3,7 @@
 Three parts, re-read by the SessionStart hook (plugin/scripts/worker-memory.py) after compaction, /clear, or in a fresh
 session on the worktree:
 
-    kickoff         the hub's first prompt, a fixed section of the card (card.set_kickoff, card.split_kickoff)
+    kickoff         the hub's first prompt, a fixed section of the card (card.set_kickoff, state.split_kickoff)
     card            the worktree's current card, as it was last written
     decisions log   Ledger/_decisions/<card name>: one dated line per decision or discovery, only ever appended to
                     (`tower decisions add`); tower clean archives it with the card
@@ -25,7 +25,7 @@ import os
 import time
 from pathlib import Path
 
-from tower import card, ledger
+from tower import card, ledger, state
 from tower.gitrepo import git, is_main_checkout
 
 MAX_DECISION = 300  # characters: a line, not a paragraph; every line is re-read on each restart
@@ -86,7 +86,7 @@ def session_context(worktree: Path, source: str) -> str:
     if card_text is None and log_text is None and not card_problem and not log_problem:
         return ""
     front, body = card.split_card(card_text or "")
-    rest, kickoff = card.split_kickoff(body)
+    rest, kickoff = state.split_kickoff(body)
     branch = card.read_frontmatter(front).get("branch") or card_file.stem
     header = (
         f"tower worker memory for this worktree ({branch}), given back {RESTARTS[source]}: the hub's kickoff word for"

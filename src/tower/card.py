@@ -50,17 +50,16 @@ from pathlib import Path
 from tower import ledger, stacks, state
 from tower.github import BranchPr, from_this_repo, try_gh, worktree_pr
 from tower.gitrepo import git, guess_ticket, is_main_checkout, list_worktrees
+from tower.state import HEADING, KICKOFF, is_kickoff_heading, split_kickoff  # state reads the kickoff back too
 
 SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
 REQUIRED = ("Done", "Why it matters", "Needs you", "Verify")
 ALIASES = {"verify it yourself": "Verify"}
-KICKOFF = "Kickoff"
 # Characters. Claude Code shows the first 2,000 of SessionStart output that passes its cap, and the kickoff comes first.
 MAX_KICKOFF = 1500
 REQUESTS = ("running", "needs-you", "blocked", "done")
 NEEDS_REASON = ("needs-you", "blocked")
 PROPERTIES = ("status", "ticket", "updated", "branch", "pr", "base", "reason")  # what the core writes
-HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 TIME_FORMAT = "%Y-%m-%dT%H:%M"
 
@@ -166,26 +165,6 @@ def normalize_kickoff(text: str) -> str:
     if any(HEADING.match(line) for line in kickoff.splitlines()):
         raise CardError("a kickoff can't contain a ## heading: the card would read it as a section")
     return kickoff
-
-
-def split_kickoff(body: str) -> tuple[str, str | None]:
-    """(the card's body without its ## Kickoff section, the kickoff's text or None when it has none). The kickoff is
-    the last "## Kickoff" line to the next "## " line or the end, code blocks or not: a worker's unclosed ``` must
-    never hide it, and neither the narrative (parse_sections) nor a kickoff (normalize_kickoff) can hold such a line."""
-    lines = body.split("\n")
-    starts = [i for i, line in enumerate(lines) if is_kickoff_heading(line)]
-    if not starts:
-        return body, None
-    start = starts[-1]
-    end = next((i for i in range(start + 1, len(lines)) if HEADING.match(lines[i])), len(lines))
-    rest = "\n".join(lines[:start] + lines[end:]).rstrip("\n") + "\n"
-    return rest, "\n".join(lines[start + 1 : end]).strip("\n")
-
-
-def is_kickoff_heading(line: str) -> bool:
-    """Whether line is the ## Kickoff heading."""
-    heading = HEADING.match(line)
-    return heading is not None and heading.group(1).lower() == KICKOFF.lower()
 
 
 def with_kickoff(body: str, kickoff: str) -> str:
