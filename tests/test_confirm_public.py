@@ -782,7 +782,11 @@ def test_only_the_approval_hook_blocks_when_it_fails() -> None:
     out mustn't stop the session, so they keep Claude Code's default, which carries on without them."""
     hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
     blocking = [
-        h["command"] for entries in hooks.values() for entry in entries for h in entry["hooks"] if "onFailure" in h
+        h["command"]
+        for entries in hooks.values()
+        for entry in entries
+        for h in entry["hooks"]
+        if h.get("onFailure") == "block"
     ]
     assert blocking == ['python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/confirm-public.py"']
 

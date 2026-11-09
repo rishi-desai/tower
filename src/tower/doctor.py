@@ -165,11 +165,13 @@ def check_agents() -> Check:
 def check_claude_code() -> Check:
     """Claude Code is 2.1.295 or later, which honors the approval hook's onFailure: a hook run that times out or can't
     start blocks the command instead of letting it through. Only ever a warning: tower works on an older one, only
-    less safely, and the plugin and agents checks already fail when claude is missing."""
+    less safely, and the plugin and agents checks already fail when claude is missing. It asks the claude first on
+    PATH where doctor runs; a repo that pins an older one with mise, or a session started before an update, may run
+    another."""
     since = ".".join(str(part) for part in FAILS_CLOSED_SINCE)
     proc, why = run_tool("claude", "--version")
     if proc is None:
-        return Check("claude-code", WARN, why, INSTALL_CLAUDE)
+        return Check("claude-code", WARN, why, INSTALL_CLAUDE if "not on PATH" in why else "run: claude --version")
     if proc.returncode != 0:
         return Check("claude-code", WARN, f"claude --version failed ({last_line(proc)})", "run: claude --version")
     found = CLAUDE_VERSION.match(proc.stdout.strip())
@@ -179,11 +181,11 @@ def check_claude_code() -> Check:
     version = found.group(0)
     if tuple(int(part) for part in found.groups()) < FAILS_CLOSED_SINCE:
         detail = (
-            f"Claude Code {version} is older than {since}, so an approval hook that times out or can't start lets"
-            " the command through"
+            f"Claude Code {version} is older than {since}, so an approval hook that runs past its 30 s or can't start"
+            " lets the command through unchecked"
         )
         return Check("claude-code", WARN, detail, f"run: claude update (to {since} or later)")
-    return Check("claude-code", OK, f"Claude Code {version} blocks a command when the approval hook times out")
+    return Check("claude-code", OK, f"Claude Code {version} honors the approval hook's onFailure (since {since})")
 
 
 def check_installed(name: str, commands: tuple[str, ...], install: str, version_must_mention: str = "") -> Check:

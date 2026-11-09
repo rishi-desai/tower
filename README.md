@@ -458,9 +458,10 @@ Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-split
 `hooks.json` gives the hook 30 seconds and `"onFailure": "block"`: a run that times out, a `python3` that can't start
 or an unexpected exit makes Claude Code refuse the call instead of running it unchecked. A refusal isn't a prompt: the
 agent sees it and can retry or split the command. The hook also runs before Edit, Write and MultiEdit, so a broken
-`python3` blocks every action until it's fixed, loudly on purpose. This needs Claude Code 2.1.295 or later; an older one
-ignores `onFailure` and lets the call through when the hook times out (after 30 seconds, not its default 10 minutes),
-and `tower doctor` warns about it. The other hooks are bookkeeping and keep Claude Code's default: one that fails
+`python3` blocks every action until it's fixed, loudly on purpose. This needs Claude Code 2.1.295 or later. An older one
+ignores `onFailure` and lets the call through unchecked when the hook times out, now after 30 seconds instead of 10
+minutes, so a check slower than that no longer gets to ask; `tower doctor` warns about such a Claude Code (#134 would
+make a slow check ask on any version). The other hooks are bookkeeping and keep Claude Code's default: one that fails
 never stops a session. See docs/adr/0012.
 
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python

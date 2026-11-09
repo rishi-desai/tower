@@ -212,6 +212,7 @@ def test_claude_code_older_than_2_1_295_warns_that_the_approval_hook_fails_open(
 
 @pytest.mark.parametrize("version", ["2.1.295", "2.1.1000", "3.0.0"])  # 2.1.1000 comes before 2.1.295 as text
 def test_claude_code_2_1_295_or_later_passes(bin_dir: Path, version: str) -> None:
+    """From 2.1.295 on, the approval hook fails closed; versions are compared as numbers, not text."""
     fake_claude(bin_dir, version=f"{version} (Claude Code)")
     check = doctor.check_claude_code()
     assert check.status == "ok"
@@ -219,6 +220,7 @@ def test_claude_code_2_1_295_or_later_passes(bin_dir: Path, version: str) -> Non
 
 
 def test_a_claude_code_version_doctor_cant_read_warns_with_what_it_printed(bin_dir: Path) -> None:
+    """Output that doesn't start with a version may be a format change: it is shown, with the fix for one."""
     fake_claude(bin_dir, version="Claude Code (nightly)")
     check = doctor.check_claude_code()
     assert check.status == "warn"
@@ -227,10 +229,20 @@ def test_a_claude_code_version_doctor_cant_read_warns_with_what_it_printed(bin_d
 
 
 def test_claude_version_that_fails_warns_with_its_error_not_as_a_format_change(bin_dir: Path) -> None:
+    """A claude --version that exits non-zero is broken, so its own error is shown, not the format-change fix."""
     fake_tool(bin_dir, "claude", "echo 'claude: config is corrupt' >&2; exit 1")
     check = doctor.check_claude_code()
     assert check.status == "warn"
     assert "config is corrupt" in check.detail
+    assert check.fix == "run: claude --version"
+
+
+def test_a_claude_that_cannot_be_run_is_not_told_to_install_claude_code(bin_dir: Path) -> None:
+    """A claude on PATH that won't start (not executable, or slower than doctor's timeout) is broken, not missing."""
+    (bin_dir / "claude").write_text("#!/bin/sh\n", encoding="utf-8")  # no execute bit
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "PermissionError" in check.detail
     assert check.fix == "run: claude --version"
 
 
