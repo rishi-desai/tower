@@ -151,7 +151,8 @@ def branch_prs(gh: Gh, branch: str) -> tuple[list[BranchPr] | None, str]:
     listed: GitHub is asked only for the PRs whose head is this repo owner's branch (`head=OWNER:BRANCH`), so however
     many strangers' forks open PRs from a branch of the same name (patch-1), none pushes this repo's own out of the
     answer, as they could out of gh pr list's first 30. Of what it lists, a PR whose head repo isn't this repo, or that
-    doesn't say (a deleted fork), is left out: unsure means fork. Only the BRANCH_PRS_PER_PAGE newest are read.
+    doesn't say (a deleted fork), is left out: unsure means fork. GitHub gives BRANCH_PRS_PER_PAGE at most, and a full
+    page is "couldn't read" (an older open PR may be past it), as is a listing of other branches' PRs.
 
     The repo is the one gh pr list would ask (`gh repo view`: the remote's host, gh repo set-default, a renamed repo's
     current owner), not gh api's {owner}/{repo}, which come from the first remote and go to github.com.
@@ -188,17 +189,19 @@ def branch_prs(gh: Gh, branch: str) -> tuple[list[BranchPr] | None, str]:
         pulls = json.loads(listed.out)
     except ValueError:
         return None, unexpected
-    if not isinstance(pulls, list):
+    if not isinstance(pulls, list) or not all(isinstance(pull, dict) for pull in pulls):
         return None, unexpected
+    if len(pulls) >= BRANCH_PRS_PER_PAGE:  # an older open PR on the branch may be past the page
+        return None, f"GitHub listed {len(pulls)} PRs from {branch}, its most at once, so older ones may be missing"
     prs = []
     for pull in pulls:
+        if not pull_from_this_repo(pull):  # first, so a stranger's odd record can't stop this repo's being read
+            continue
+        if json_at(pull, "head", "ref") != branch:  # GitHub lists every PR when it can't use a head filter
+            return None, f"GitHub didn't filter its PRs by the branch {branch}, so they weren't read"
         number, state = json_at(pull, "number"), json_at(pull, "state")
         if not isinstance(number, int) or state not in ("open", "closed"):
             return None, unexpected
-        if json_at(pull, "head", "ref") != branch:  # GitHub lists every PR when it can't use a head filter
-            return None, f"GitHub didn't filter its PRs by the branch {branch}, so they weren't read"
-        if not pull_from_this_repo(pull):
-            continue
         prs.append(
             BranchPr(
                 number,

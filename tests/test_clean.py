@@ -432,6 +432,29 @@ def test_a_listing_github_didnt_filter_by_branch_is_unreadable_not_no_pr(repo: F
     assert str(worker.path) in worktree_paths(repo)
 
 
+def test_a_strangers_odd_record_doesnt_stop_the_worktrees_pr_being_read(repo: Fixture) -> None:
+    """Only this repo's records are checked: a deleted fork's pull GitHub lists in an unexpected state is skipped as
+    a fork's, and the worktree's merged PR still counts."""
+    worker = merged_worker(repo, "patch-1")
+    worker.github.pulls += [FakePull(2, base="main", head="patch-1", state="queued", head_repo=None)]
+
+    assert run_clean(repo, worker, "patch-1", dry_run=True)[-1] == "result: True"
+
+
+def test_a_full_page_of_a_branchs_prs_is_unreadable_not_complete(repo: Fixture) -> None:
+    """GitHub gives at most 100 PRs a page: with a full page, an older open PR on the branch may be missing, so tower
+    clean can't tell whether work goes on there."""
+    worker = merged_worker(repo, "feat-1")
+    worker.github.pulls += [FakePull(n, base="main", head="feat-1", state="closed") for n in range(2, 101)]
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[1] == (
+        "  - couldn't read feat-1's PR from GitHub (GitHub listed 100 PRs from feat-1, its most at once, so older ones"
+        " may be missing)"
+    )
+
+
 def test_all_cleans_every_merged_worker_that_passes_and_says_why_the_others_stay(repo: Fixture) -> None:
     worker = merged_worker(repo)
     second = repo.add_worktree("feat-2")
