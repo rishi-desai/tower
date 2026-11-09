@@ -83,7 +83,7 @@ _Avoid_: status file, report
 
 **Label**:
 How every report and the pane name a worktree: its branch, or on a detached HEAD `(detached <commit>)`, the commit
-written short (seven characters or more), as long as it takes for no other commit in the repo to start the same way.
+written short, but long enough that no other commit in the repo starts the same way.
 A detached worktree's card, when first written, is named with the same prefix.
 _Avoid_: name (alone: the card's name can differ), short sha (alone: seven characters can be ambiguous)
 
