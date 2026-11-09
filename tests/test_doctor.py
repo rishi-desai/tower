@@ -135,7 +135,7 @@ def test_gh_logged_in_outside_a_github_repo_passes(bin_dir: Path, tmp_path: Path
 
 def fake_claude(bin_dir: Path, plugins: str = "[]", agents: str = "[]", version: str = "2.1.304 (Claude Code)") -> None:
     """A fake claude printing plugins for `plugin list --json`, agents for `agents --json` and version for
-    `--version`."""
+    `--version` (whose "$1 $2" ends in a space: there is no $2)."""
     (bin_dir / "plugins.json").write_text(plugins, encoding="utf-8")
     (bin_dir / "agents.json").write_text(agents, encoding="utf-8")
     fake_tool(
@@ -224,6 +224,14 @@ def test_a_claude_code_version_doctor_cant_read_warns_with_what_it_printed(bin_d
     assert check.status == "warn"
     assert "nightly" in check.detail
     assert "claude update" in check.fix
+
+
+def test_claude_version_that_fails_warns_with_its_error_not_as_a_format_change(bin_dir: Path) -> None:
+    fake_tool(bin_dir, "claude", "echo 'claude: config is corrupt' >&2; exit 1")
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "config is corrupt" in check.detail
+    assert check.fix == "run: claude --version"
 
 
 def test_no_claude_command_only_warns_in_the_version_check(bin_dir: Path) -> None:

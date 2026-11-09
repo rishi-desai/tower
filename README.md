@@ -454,11 +454,11 @@ The hook reads a command the way the shell would: quotes, `&&`/`;`/`|`/newlines,
 `xargs`, `eval`, `sudo`, `ssh`, `watch`, ...). Text that only mentions a command (`git commit -m "fix git push"`) doesn't ask.
 Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-splits-commands-itself.md`.
 
-**It fails closed.** A command too big to check within the hook's work budget asks, in a second or two. Past that,
+**It fails closed.** A command too big to check within the hook's work budget asks within a few seconds. Past that,
 `hooks.json` gives the hook 30 seconds and `"onFailure": "block"`: a run that times out, a `python3` that can't start
 or an unexpected exit makes Claude Code refuse the call instead of running it unchecked. A refusal isn't a prompt: the
-agent sees it and can retry or split the command. The hook also runs before Edit and Write, so a broken `python3`
-blocks every action until it's fixed, loudly on purpose. This needs Claude Code 2.1.295 or later; an older one
+agent sees it and can retry or split the command. The hook also runs before Edit, Write and MultiEdit, so a broken
+`python3` blocks every action until it's fixed, loudly on purpose. This needs Claude Code 2.1.295 or later; an older one
 ignores `onFailure` and lets the call through when the hook times out (after 30 seconds, not its default 10 minutes),
 and `tower doctor` warns about it. The other hooks are bookkeeping and keep Claude Code's default: one that fails
 never stops a session. See docs/adr/0012.

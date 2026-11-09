@@ -1816,8 +1816,9 @@ def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: st
     """Checks that look at each word (does an interpreter get code, does it run tower, cd, git or a wrapper, does it
     change the policy) either stay linear or pay for everything they read, characters included: rescanning the rest
     of the line, or the words before it, once per word took 12-92 s on these, growing with the square of the padding
-    until the hook's timeout blocks the command without asking. A crash, which the hook turns into a quick ask, doesn't count
-    as in time, and the personal profile asks for every force push, so a quicker check may not let one through."""
+    until the hook's timeout blocks the command without asking. A crash, which the hook turns into a quick ask,
+    doesn't count as in time, and the personal profile asks for every force push, so a quicker check may not let one
+    through."""
     start = time.monotonic()
     decision = run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')
     assert time.monotonic() - start < 10

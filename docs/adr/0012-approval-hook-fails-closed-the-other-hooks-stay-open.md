@@ -33,9 +33,10 @@ carry on.
   until it's fixed: loud on purpose.
 - A refusal isn't a prompt. The agent sees `hook error: … timed out; blocking because onFailure is "block"` and can
   retry or split the command; you can't approve the call through.
-- Claude Code before 2.1.295 ignores `onFailure` (2.1.294's `claude plugin validate --strict` passes with it and
-  accepts any value for it, while still rejecting a bad `timeout`), so the plugin loads there and fails open as before,
-  now after 30 s instead of 10 minutes. `tower doctor` warns about such a Claude Code.
+- Claude Code before 2.1.295 ignores `onFailure` rather than rejecting the plugin: 2.1.294's `claude plugin validate
+  --strict` passes with it and accepts any value for it (while still rejecting a bad `timeout`), and a live 2.1.294
+  session loaded the plugin, ran the approval hook past its timeout and then ran the command. There it fails open as
+  before, now after 30 s instead of 10 minutes. `tower doctor` warns about such a Claude Code.
 - `claude plugin validate --strict` (2.1.304) rejects a wrong `onFailure` value but not a misspelled key, so
   `tests/test_confirm_public.py` pins the key and its value.
 - Checked on 2.1.304: a PreToolUse hook that slept past its timeout with `onFailure: "block"` refused the call; the same

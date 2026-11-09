@@ -40,7 +40,7 @@ HOOKS_FIX = (
 CAN_PUSH = ("WRITE", "MAINTAIN", "ADMIN")  # gh repo view's viewerPermission values that allow a push
 # The first Claude Code that honors hooks.json's onFailure: "block", which makes the approval hook fail closed (#127).
 FAILS_CLOSED_SINCE = (2, 1, 295)
-VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")  # the start of `claude --version`'s line: "2.1.304 (Claude Code)"
+CLAUDE_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")  # how `claude --version`'s line starts: "2.1.304 (Claude Code)"
 
 
 @dataclass(frozen=True)
@@ -170,9 +170,12 @@ def check_claude_code() -> Check:
     proc, why = run_tool("claude", "--version")
     if proc is None:
         return Check("claude-code", WARN, why, INSTALL_CLAUDE)
-    found = VERSION.match(proc.stdout.strip()) if proc.returncode == 0 else None
+    if proc.returncode != 0:
+        return Check("claude-code", WARN, f"claude --version failed ({last_line(proc)})", "run: claude --version")
+    found = CLAUDE_VERSION.match(proc.stdout.strip())
     if found is None:
-        return Check("claude-code", WARN, f"can't read Claude Code's version ({last_line(proc)})", FORMAT_FIX)
+        detail = f"claude --version printed something unexpected: {proc.stdout.strip()[:80]!r}"
+        return Check("claude-code", WARN, detail, FORMAT_FIX)
     version = found.group(0)
     if tuple(int(part) for part in found.groups()) < FAILS_CLOSED_SINCE:
         detail = (
