@@ -251,6 +251,10 @@ PUSHES = [
     "GIT_DIR=/tmp/e/.git git push origin main",  # another repo's own config is that repo's, as with git -C
     # a -c value from a variable can't make a plain push force unless its key could
     'git -c "user.email=$EMAIL" push origin x',
+    # a push in the shell code git runs: rebase --exec, a `!` alias's (with the words after it) (#82)
+    "git rebase --exec 'git push' main",
+    "git rebase -x 'git push origin HEAD' origin/main",
+    "git -c alias.p='!git push' p origin x",
 ]
 FORCE = [
     "git push --force origin x",
@@ -280,9 +284,7 @@ FORCE = [
     "bash -c 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push'",
     "git --config-env=remote.origin.mirror=MIRROR push origin",
     "git --config-env remote.origin.push=REFSPEC push origin",
-    'git -c "$SETTING" push origin',
     "git -c alias.p='push --mirror' p origin",
-    "git --config-env=alias.p=ALIAS p origin",
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.p GIT_CONFIG_VALUE_0='push --mirror' git p origin",
     # an alias that gives git its own options first or runs shell code; variables that move git's config files; and
     # a variable name only known at run time
@@ -313,6 +315,10 @@ FORCE = [
     "git --config-env=user.name=NAME push origin",
     "sudo GIT_CONFIG_GLOBAL=/tmp/evil git push",
     "export GIT_CONFIG_PARAMETERS; git push",
+    # a forcing push in the shell code git runs; git passes the words after a `!` alias to its code (#82)
+    "git rebase --exec 'git push --force' main",
+    "git submodule foreach 'git push --force origin HEAD'",
+    "git -c alias.p='!git push' p --force origin x",
 ]
 READS = [
     "gh pr view 5",
@@ -422,6 +428,19 @@ READS = [
     "HOMEBREW_NO_AUTO_UPDATE=1 brew install jq; git status",
     "env -S 'git status'",
     "env -u '#' -S 'git status'",
+    # shell code git runs that only tests, reads or edits locally (#82): workers run these unattended
+    "git -c core.pager=cat log",
+    "git -c core.editor=true commit --amend --no-edit",
+    "git rebase --exec 'npm test' main",
+    "git rebase -x 'uv run pytest -q' origin/main",
+    "git submodule foreach 'git pull'",
+    "git bisect run uv run pytest -q",
+    "GIT_EDITOR=true git rebase --continue",
+    "GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash main",
+    "git config --global core.editor 'code --wait'",
+    "GIT_SSH_COMMAND='ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes' git fetch",
+    "git -c protocol.file.allow=always submodule update --init",
+    "git -c pager.log=false log -3",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -451,6 +470,23 @@ UNCHECKABLE = [
     "printf 'git push\\0' | xargs -0 bash -c",
     "echo 'gh pr comment 5 -b hi' | xargs -I{} sh -c '{}'",
     "cat <<$'EOF'\nx\nEOF\ngh pr comment 5 -b hi\n$'EOF'",
+    # shell code git would run that is only known at run time: the shell parses what the variable holds as code too,
+    # so core.sshCommand="ssh -i $KEY" runs whatever KEY adds; a setting from a variable may be any such key (#82)
+    'git -c core.sshCommand="$X" fetch',
+    'git -c "core.pager=$(cat pager)" log',
+    "git --config-env=core.sshCommand=X fetch",
+    'git rebase --exec "$CMD" main',
+    'git submodule foreach "$CMD"',
+    'git bisect run "$TEST"',
+    'git -c "$SETTING" push origin',
+    "git --config-env=alias.p=ALIAS p origin",
+    'git config core.pager "$P"',
+    'GIT_SSH_COMMAND="ssh -i $KEY" git fetch',
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager git log",
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="$K" GIT_CONFIG_VALUE_0=less git log',
+    # an ext:: URL runs the command it names once git is told to allow ext, which it refuses by default
+    "git -c protocol.ext.allow=always fetch origin",
+    "GIT_ALLOW_PROTOCOL=ext:https git submodule update --init",
 ]
 
 
@@ -576,6 +612,85 @@ def test_commands_that_cant_be_checked_ask(tmp_path: Path, command: str, push: s
     """Commands the hook can't split, or can't see into (a shell fed from a pipe or <( ), a gh subcommand or
     method from a variable), ask in every mode."""
     assert asks(run_hook(tmp_path, bash(command), push=push, pr="none"))
+
+
+# Shell code git itself runs, written in the command line (#82): a setting's value that names a command, given with
+# -c, --config-env or GIT_CONFIG_* (its value on the line), a clone's -c or a `git config` that saves it; a `!`
+# alias's code; the command a subcommand takes (submodule foreach, rebase --exec, bisect run, difftool -x, ...); and
+# the variables naming a command git runs. A gh write in it asks in every push mode, with its own reason.
+GIT_RUNS_GH = [
+    # the issue's rows
+    "git -c diff.external='sh -c \"gh pr comment 5 -b hi\"' diff",
+    "git -c core.sshCommand='gh pr comment 5 -b hi; ssh' fetch",
+    "git -c alias.x='!gh pr comment 5 -b hi' x",
+    "git submodule foreach 'gh pr comment 5 -b hi'",
+    "git bisect run sh -c 'gh pr comment 5 -b hi'",
+    # the other keys that run a command, by the forms git takes their value in
+    "git -c core.pager='gh pr comment 5 -b hi' log",
+    "git -c core.editor='gh pr comment 5 -b hi' commit",
+    "git -c sequence.editor='gh pr comment 5 -b hi' rebase -i main",
+    "git -c core.fsmonitor='gh pr comment 5 -b hi' status",
+    "git -c core.askPass='gh pr comment 5 -b hi' fetch",
+    "git -c credential.helper='!gh pr comment 5 -b hi' fetch",
+    "git -c credential.https://github.com.helper='!gh pr comment 5 -b hi' fetch",
+    "git -c gpg.program='gh pr comment 5 -b hi' commit -S -m x",
+    "git -c filter.lfs.clean='gh pr comment 5 -b hi' add .",
+    "git -c diff.x.textconv='gh pr comment 5 -b hi' log -p",
+    "git -c merge.ours.driver='gh pr comment 5 -b hi' merge main",
+    "git -c uploadpack.packObjectsHook='gh pr comment 5 -b hi' fetch",
+    "git -c submodule.lib.update='!gh pr comment 5 -b hi' submodule update",
+    "git -c pager.log='gh pr comment 5 -b hi' log",
+    # --config-env and GIT_CONFIG_* with the value on the line, and a value git saves for later
+    "X='gh pr comment 5 -b hi' git --config-env=core.sshCommand=X fetch",
+    "export X='gh pr comment 5 -b hi'; git --config-env core.pager=X log",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0='gh pr comment 5 -b hi' git fetch",
+    "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!gh pr comment 5 -b hi'; git x",
+    "env GIT_CONFIG_PARAMETERS=\"'core.pager'='gh pr comment 5 -b hi'\" git log",
+    "git config core.pager 'gh pr comment 5 -b hi'",
+    "git config --global alias.x '!gh pr comment 5 -b hi'",
+    "git config set --local core.sshCommand 'gh pr comment 5 -b hi'",
+    "git clone -c core.sshCommand='gh pr comment 5 -b hi' git@github.com:o/r.git",
+    # subcommands' options that take a command, in the forms git's option parser accepts
+    "git rebase --exec 'gh pr comment 5 -b hi' main",
+    "git rebase --exec='gh pr comment 5 -b hi' main",
+    "git rebase --exe 'gh pr comment 5 -b hi' main",
+    "git rebase -ix 'gh pr comment 5 -b hi' main",
+    "git rebase -x'gh pr comment 5 -b hi' main",
+    "git submodule --quiet foreach --recursive 'gh pr comment 5 -b hi'",
+    "git difftool -x 'gh pr comment 5 -b hi' main",
+    "git filter-branch --tree-filter 'gh pr comment 5 -b hi' HEAD",
+    "git fetch --upload-pack='gh pr comment 5 -b hi; git-upload-pack' ../other",
+    "git push --receive-pack='gh pr comment 5 -b hi; git-receive-pack' ../other main",
+    # a -c alias read as what it stands for, its own options included, through a chain
+    "git -c alias.r=rebase r --exec 'gh pr comment 5 -b hi' main",
+    "git -c alias.a=b -c alias.b='-c core.pager=\"gh pr comment 5 -b hi\" log' a",
+    # the variables naming a command git runs, wherever the line sets them
+    "GIT_SSH_COMMAND='gh pr comment 5 -b hi; ssh' git fetch",
+    "export GIT_EDITOR='gh pr comment 5 -b hi'; git commit",
+    "EDITOR='gh pr comment 5 -b hi' git commit",
+    "env PAGER='gh pr comment 5 -b hi' git log",
+    # inside code that is itself checked
+    "bash -c \"git -c core.pager='gh pr comment 5 -b hi' log\"",
+]
+
+
+@pytest.mark.parametrize("push", PUSH_MODES)
+@pytest.mark.parametrize("command", GIT_RUNS_GH)
+def test_a_gh_write_in_code_git_runs_asks_with_its_own_reason(tmp_path: Path, command: str, push: str) -> None:
+    """git runs these as shell code, so the gh write in them is judged by its own key (comments), in every push mode."""
+    decision = run_hook(tmp_path, bash(command), push=push, pr="none")
+    assert asks(decision)
+    assert "gh pr comment posts or changes something on GitHub (comments=ask)" in str(decision)
+
+
+@pytest.mark.parametrize("push", PUSH_MODES)
+def test_a_bang_alias_is_judged_by_what_it_runs_not_as_a_possible_push(tmp_path: Path, push: str) -> None:
+    """A `!` alias runs shell code, so its prompt names the gh write in it, not a push it never makes."""
+    decision = run_hook(tmp_path, bash("git -c alias.x='!gh repo delete owner/repo --yes' x"), push=push, pr="none")
+    assert decision is not None
+    reason = str(decision["permissionDecisionReason"])
+    assert "gh repo delete may change something on GitHub" in reason
+    assert "push" not in reason
 
 
 @pytest.mark.parametrize(
@@ -832,6 +947,7 @@ ARGV_CODE = "python3 -c 'from tower import cli; import sys; cli.main(sys.argv[1:
 RUNPY_CODE = """python3 -I -c 'import runpy; runpy.run_path("/x/scripts/run-tower.py", run_name="__main__")' merge 5"""
 TIGHT_CODE = "python3 -c \"__import__('tower.cli').cli.main(['merge','5'])\""
 GIT_CONFIG_MIRROR = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true"
+DELETE_REPO = "'sh -c \"gh repo delete owner/repo --yes\"'"
 POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bool]] = [
     # (id, command, base gh reports for a merge (with its stack's base for a stacked PR) or None, asks in work,
     # personal, sandbox)
@@ -927,6 +1043,12 @@ POLICY_MATRIX: list[tuple[str, str, str | tuple[str, str] | None, bool, bool, bo
     ("reads never ask: gh workflow list", "gh workflow list", None, False, False, False),
     ("reads never ask: gh gist list", "gh gist list", None, False, False, False),
     ("no key: gh subcommand from a variable", "gh pr $action 5", None, True, True, False),
+    # shell code git runs from the line (#82): what it does is judged by its own key, and code from a variable can't be
+    ("no key: gh repo delete in git's diff.external", f"git -c diff.external={DELETE_REPO} diff", None, *ASKS),
+    ("comments: a comment git submodule foreach runs", "git submodule foreach 'gh pr comment 5 -b hi'", None, *ASKS),
+    ("push: a plain push git rebase --exec runs", "git rebase --exec 'git push' main", None, True, False, False),
+    ("push: a force push git rebase -x runs", "git rebase -x 'git push -f' main", None, *ASKS),
+    ("unchecked: git's core.sshCommand from a variable", 'git -c core.sshCommand="$X" fetch', None, *ASKS),
     ("unchecked: a shell reading a pipe", "echo 'git push' | bash", None, True, True, False),
     ("unchecked: an unclosed quote", "git push 'origin", None, True, True, False),
     ("reads never ask", "gh pr view 5 && git status", None, False, False, False),
@@ -1814,6 +1936,14 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("x" * 300_000 + " cd" * 60_000 + "; git push --force", id="cd after a long program"),
         pytest.param("x" * 300_000 + " git-x" * 60_000 + "; git push --force", id="dashed git after a long program"),
         pytest.param("{" * 300_000 + "cat" + " tower/setup.sh" * 30_000, id="setup.sh after a long program"),
+        pytest.param(
+            "git " + " ".join(f"-c alias.a{i}=a{i + 1}" for i in range(3_000)) + " a0" + " x" * 50_000,
+            id="git alias chain",
+        ),
+        pytest.param(
+            "GIT_CONFIG_KEY_0=core.pager " * 20_000 + "GIT_CONFIG_VALUE_0=less " * 20_000 + "git log", id="git config"
+        ),
+        pytest.param("git rebase " + "-x true " * 40_000 + "main; git push --force", id="rebase execs"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
