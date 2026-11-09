@@ -997,7 +997,7 @@ class CommandChecker:
         self.simple_commands += len(commands)
         for command in commands:
             self.note_folders(command.words)
-            self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words)
+            self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words, self.spend)
             self.git_may_run_program = self.git_may_run_program or git_runs_program(command.words)
         # A read of setup.sh or the policy module is let through only when it is the line's one simple command; a pipe,
         # a second command or a substitution (each adds a command) asks, so the floor fails closed (ADR 0010).
@@ -1031,7 +1031,7 @@ class CommandChecker:
             path = os.path.expanduser(target.text)
             self.folders += [Word(os.path.join(self.cwd, path)), Word(os.path.join(self.cd_folder, path))]
             self.cd_folder = os.path.join(self.cd_folder, path)
-        chdirs = wrapper_folders(words)
+        chdirs = wrapper_folders(words, self.spend)
         if chdirs:
             parts = [os.path.expanduser(folder.text) for folder in chdirs]
             dynamic = any(folder.dynamic for folder in chdirs)
@@ -1048,9 +1048,7 @@ class CommandChecker:
         is_language = bool(LANGUAGE_RUNNER.fullmatch(name))
         is_git_dashed = name.startswith("git-") and runs_as_program(command.words, index, program)  # not `man git-push`
         if name in TOWER_PROGRAMS and runs_tower(command.words, index, program):
-            # A merge is judged at the end, like gh pr merge; a clean now, by the cleanup key. Both read the words
-            # before tower (what launches it) as well as after, so they pay for the whole command
-            self.spend(len(command.words))
+            # A merge is judged at the end, like gh pr merge; a clean now, by the cleanup key
             self.note_tower_merge(command.words, index, depth == 0)
             return self.tower_clean_reasons(command.words, index, program)
         if name not in INVOKERS and not is_git_dashed and not is_language:
@@ -1085,7 +1083,9 @@ class CommandChecker:
         else:  # git, or one of its dashed executables (libexec/git-core/git-push)
             # env -C DIR / sudo -D DIR before git work like git -C DIR, so a later git -C joins onto DIR
             self.spend(index)  # the words before git, read for those options
-            moved = [part for folder in wrapper_folders(command.words[:index]) for part in (Word("-C"), folder)]
+            moved = [
+                part for folder in wrapper_folders(command.words[:index], self.spend) for part in (Word("-C"), folder)
+            ]
             git_args = [*moved, *(args if name == "git" else [Word(name[4:]), *args])]
             reason = check_git(git_args, lambda: self.push_mode(git_args), self.git_config_from_env)
         return [reason] if reason else []
@@ -1098,6 +1098,7 @@ class CommandChecker:
         position = next_operand(words, index + 1)
         if position is None or not (words[position].dynamic or words[position].text == "merge"):
             return
+        self.spend(len(words))  # what launches tower is read as well as what follows it
         launcher, after = words[:index], words[position + 1 :]
         from_python = bool(launcher) and program_name(launcher[0]).startswith("python")
         readable = (
@@ -1122,6 +1123,7 @@ class CommandChecker:
         position = next_operand(words, index + 1)
         if position is None or not (words[position].dynamic or words[position].text == "clean"):
             return []
+        self.spend(len(words))  # what launches tower is read as well as what follows it
         launcher, after = words[program:index], words[position + 1 :]
         direct = (
             not launcher
@@ -1605,12 +1607,12 @@ def is_unreadable_config(key: str) -> bool:
     return has_expansion(key) or bool(GIT_HIDING_CONFIG.fullmatch(key.lower()))
 
 
-def sets_git_config(words: list[Word]) -> bool:
+def sets_git_config(words: list[Word], spend: Callable[[int], None]) -> bool:
     """Whether a simple command's WORDS may set a GIT_CONFIG_VARIABLE: an assignment before its program
     (GIT_CONFIG_COUNT=1 git push, or alone), one among the words of a wrapper like env or sudo, or a name that
     export, read or declare sets. A name only known at run time may be one: env $(cat vars) git push, export "$N=1",
     or an env that xargs, parallel or find run (xargs -I{} env {} git push). Other words only name one (echo
-    GIT_CONFIG_COUNT=1, unset, a commit message)."""
+    GIT_CONFIG_COUNT=1, unset, a commit message). Each env's options read are paid for with SPEND."""
     program = program_position(words)
     if any(GIT_CONFIG_ASSIGNMENT.match(word.text) for word in words[:program]):
         return True
@@ -1622,16 +1624,20 @@ def sets_git_config(words: list[Word]) -> bool:
         names = [program_name(word) for word in words]
         supplier = next((i for i in range(program, len(words)) if names[i] in ARGUMENT_SUPPLIERS), len(words))
         return any(
-            i > supplier or env_hides_variables(words, i) for i in range(program, len(words)) if names[i] == "env"
+            i > supplier or env_hides_variables(words, i, spend)
+            for i in range(program, len(words))
+            if names[i] == "env"
         )
     return name in VARIABLE_SETTERS and any(GIT_CONFIG_NAME.match(word.text) or hides_name(word) for word in args)
 
 
-def env_hides_variables(words: list[Word], index: int) -> bool:
+def env_hides_variables(words: list[Word], index: int, spend: Callable[[int], None]) -> bool:
     """Whether the env at word INDEX of WORDS may set variables its words don't show: what it runs starts with a word
     only known at run time, which may expand to assignments (env $(cat vars) git push). (An env that xargs, parallel
-    or find run may get assignments from them: sets_git_config counts that.)"""
+    or find run may get assignments from them: sets_git_config counts that.) The options read are paid for with
+    SPEND: this env may be another option's value (env -u env), and reading from each runs to the end of the line."""
     command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
+    spend(command_at - index)
     return command_at < len(words) and hides_name(words[command_at])
 
 
@@ -1685,16 +1691,20 @@ WRAPPER_SYNTAX = {
 }
 
 
-def wrapper_folders(words: list[Word]) -> list[Word]:
+def wrapper_folders(words: list[Word], spend: Callable[[int], None]) -> list[Word]:
     """The folders a simple command's WORDS tell env (-C, --chdir) or sudo (-D, --chdir) to run its command in, in
-    order (each relative to the one before). A -C inside env -S's string is found when that is checked."""
+    order (each relative to the one before). A -C inside env -S's string is found when that is checked. Each
+    wrapper's options read are paid for with SPEND: an env or sudo word may be another option's value (sudo -u sudo),
+    and reading from each runs to the end of the line."""
     found: list[Word] = []
     first = program_position(words)  # runs_as_program's test, with the program found once rather than per word
     wrapped = first < len(words) and program_name(words[first]) in WRAPPERS
     for index in range(first, len(words)):
         name = program_name(words[index])
         if name in WRAPPER_SYNTAX and (index == first or wrapped):
-            found += read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1).chdirs
+            options = read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1)
+            spend(options.command_at - index)
+            found += options.chdirs
     return found
 
 

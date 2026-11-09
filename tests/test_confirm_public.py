@@ -1772,16 +1772,21 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("A=1 " * 10_000 + "echo " + "git-x " * 10_000, id="dashed git"),
         pytest.param("A=1 " * 10_000 + "echo " + "tower " * 10_000, id="tower"),
         pytest.param("A=1 " * 100_000 + "tower " * 1_000, id="tower after many assignments"),
-        pytest.param("uv " + "x " * 400_000 + "tower merge " * 900, id="tower merge after many words"),
+        pytest.param("python3 " + "-I " * 100_000 + "tower merge " * 900, id="tower merge after many words"),
+        pytest.param("sudo" + " -u sudo" * 8_000 + "; git push --force", id="sudo options"),
+        pytest.param("env" + " -u env" * 4_000 + "; git push", id="env options"),
+        pytest.param("env" + " -u env" * 1_000 + " git" * 40, id="git after env options"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
-    """Checks that look at each word (does an interpreter get code, does it run tower, cd or git, does it change the
-    policy) run before the work budget or pay only for the words after their own, so they stay linear: rescanning
-    the rest of the line, or the words before it, once per word took 12-92 s on these, past the hook timeout."""
+    """Checks that look at each word (does an interpreter get code, does it run tower, cd, git or a wrapper, does it
+    change the policy) either stay linear or pay for every word they read: rescanning the rest of the line, or the
+    words before it, once per word took 12-92 s on these, growing with the square of the padding until the hook's
+    timeout lets the command through. A crash, which the hook turns into a quick ask, doesn't count as in time."""
     start = time.monotonic()
-    run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')
+    decision = run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')
     assert time.monotonic() - start < 10
+    assert decision is None or "approval hook failed" not in str(decision["permissionDecisionReason"])
 
 
 @pytest.mark.parametrize(
