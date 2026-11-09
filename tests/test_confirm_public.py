@@ -1452,6 +1452,31 @@ FLOOR_COMMANDS = [
     "echo '{\"disableAllHooks\": true}' > .claude/settings.local.json",
     "sed -i '' 's/true/false/' ~/.claude/settings.json",
     "jq '.enabledPlugins[\"tower@tower\"] = false' ~/.claude/settings.json > /tmp/s && mv /tmp/s ~/.claude/settings.json",
+    # a nested Claude Code session without tower's hook (#87): options that skip plugins' hooks or the user's settings,
+    # settings that can turn hooks off, the variables that do the same, and Claude Code's folder moved elsewhere
+    "claude --settings '{\"disableAllHooks\":true}' -p 'comment on PR 5'",
+    "claude --settings=/tmp/no-hooks.json -p x",
+    "claude --bare -p 'comment on PR 5'",
+    "claude -p --safe-mode 'comment on PR 5'",
+    "claude --restricted --tools Bash -p x",
+    "claude --setting-sources project -p x",
+    "claude --setting-sources=project,local -p x",
+    'claude --setting-sources "$SOURCES" -p x',
+    "CLAUDE_CODE_SIMPLE=1 claude -p 'comment on PR 5'",
+    "export CLAUDE_CODE_SIMPLE=1; claude -p x",
+    "env CLAUDE_CODE_SAFE_MODE=1 claude -p x",
+    "CLAUDE_CONFIG_DIR=/tmp/empty claude -p x",
+    "HOME=/tmp/e claude -p x",
+    "for i in 1 2; do claude -p x; export CLAUDE_CODE_SIMPLE=1; done",
+    "F=--bare; claude $F -p x",
+    'claude "$OPTIONS" -p x',
+    "echo --bare | xargs claude -p x",
+    "bash -c 'claude --bare -p x'",
+    "python3 -c 'import os; os.system(\"claude --bare -p x\")'",
+    "echo 'claude --bare -p x' | bash",
+    # adding a marketplace, whose name is in its source: one named tower replaces tower's (#87)
+    "claude plugin marketplace add ./evil-tower",
+    "claude plugin marketplace add owner/repo --scope user",
 ]
 
 
@@ -1485,6 +1510,14 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
         "claude plugin enable tower@tower",
         "claude plugin update tower@tower",
         "claude plugin marketplace list",
+        "claude plugin marketplace update tower",
+        # a nested Claude Code session that keeps tower's hook, and text that only names an option (#87)
+        "claude -p 'x'",
+        "claude -p 'run --bare tests'",
+        'claude -p "Review $FILE"',
+        "claude --setting-sources user,project -p x",
+        "claude --model opus -p x -- --bare",
+        "echo claude --bare",
         "sudo claude plugin disable some-other-plugin --scope user",
         "echo claude plugin disable tower",
         "jq -r .model ~/.claude/settings.json",
@@ -1499,6 +1532,24 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
 def test_sandbox_asks_nothing_else(tmp_path: Path, command: str) -> None:
     """In sandbox, reading tower's settings, and everything outside the floor, needs no approval."""
     assert run_hook(tmp_path, bash(command), policy='default_profile = "sandbox"\n') is None
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_the_floor_covers_the_settings_files_in_claude_config_dir(tmp_path: Path, profile: str) -> None:
+    """When Claude Code runs with CLAUDE_CONFIG_DIR (its folder moved from ~/.claude), the hook has it too, and the
+    settings files there are on the floor like ~/.claude's: an edit or a Bash write asks, a read doesn't (#87)."""
+    folder = tmp_path / ".claude-work"
+    folder.mkdir()
+    policy, env = f'default_profile = "{profile}"\n', {"CLAUDE_CONFIG_DIR": str(folder)}
+    for name in ("settings.json", "settings.local.json"):
+        call = {"tool_name": "Write", "tool_input": {"file_path": str(folder / name)}}
+        assert asks(run_hook(tmp_path, call, policy=policy, env=env))
+    for command in (f"echo '{{}}' > {folder}/settings.json", f"cd {folder} && sed -i '' s/a/b/ settings.json"):
+        assert asks(run_hook(tmp_path, bash(command), policy=policy, env=env))
+    for command in (f"cat {folder}/settings.json", "echo x > .vscode/settings.json"):
+        assert run_hook(tmp_path, bash(command), policy=policy, env=env) is None
+    elsewhere = {"tool_name": "Write", "tool_input": {"file_path": str(folder / "settings.json")}}
+    assert run_hook(tmp_path, elsewhere, policy=policy) is None  # without the variable it's just a file
 
 
 def test_the_prompt_names_the_profile(tmp_path: Path) -> None:
