@@ -1,5 +1,5 @@
 /** A worktree's effective state, as src/tower/state.py's STATUSES name them. */
-export type Status = 'needs-you' | 'running' | 'waiting-ci' | 'blocked' | 'done' | 'ready-to-clean' | 'no-card' | 'main'
+export type Status = 'needs-you' | 'running' | 'waiting-ci' | 'blocked' | 'done' | 'ready-to-clean' | 'no-card' | 'card-unknown' | 'main'
 
 /** One Claude session open in a worktree, as `tower state --json` lists it. waiting means waiting on you. */
 export type StateSession = { name: string; kind: string; activity: 'busy' | 'waiting' | 'idle'; waiting_for: string }

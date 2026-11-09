@@ -165,6 +165,7 @@ function badgeOf(status: Status | 'session-waiting', isStale: boolean): { label:
     case 'waiting-ci': return { label: 'WAITING CI', color: 'inactive' }
     case 'done': return { label: 'DONE', color: 'success' }
     case 'ready-to-clean': return { label: 'CLEAN UP', color: 'success' }
+    case 'card-unknown': return { label: 'CARD ?', color: 'inactive' } // the card couldn't be checked: not "no card"
     case 'main': return { label: 'MAIN', color: 'inactive' }
     default: return { label: 'NO CARD', color: 'inactive' }
   }

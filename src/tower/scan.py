@@ -69,7 +69,7 @@ def adopt_line(report: state.Report) -> str:
     unreadable) is never a reason: the hub would plan from facts it doesn't have, and the NOTE lines already say so."""
     reasons: list[str] = []
     worktrees = [facts for facts, _ in report.worktrees if not facts.is_main]
-    no_card = sum(1 for facts in worktrees if facts.card is None and not facts.card_unreadable)
+    no_card = sum(1 for facts in worktrees if facts.card is None and not facts.card_unknown)
     if no_card >= 2 and no_card * 2 > len(worktrees):
         reasons.append(f"{no_card} of {len(worktrees)} worktrees have no card")
     roots = {os.path.realpath(facts.path) for facts, _ in report.worktrees}

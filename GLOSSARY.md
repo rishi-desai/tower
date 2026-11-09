@@ -175,6 +175,12 @@ busy or waiting on you, or whose card says running or needs-you, except a worktr
 (waiting-ci, even while its session watches the PR) and the main checkout (the hub's, and never a worker's).
 _Avoid_: WIP item, active worktree
 
+**Card unknown** (`card-unknown`):
+A worktree whose card tower couldn't check: the Ledger couldn't be found, or the card file couldn't be read. It is
+never taken as having no card: the card may say work goes on, so a merged PR doesn't make the worktree ready to clean
+up, and it is no reason to adopt. A live session still says what it shows (busy is running, waiting is needs-you).
+_Avoid_: no card (that is a card tower looked for and didn't find), missing card
+
 **Waiting on CI** (`waiting-ci`):
 A worker whose work is finished and whose PR only waits on CI, a review or a merge. It holds no execution slot, even
 while its session watches the PR. A card says it, or tower infers it from an open PR with no session working.

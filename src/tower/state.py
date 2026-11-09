@@ -12,6 +12,7 @@ it:
     ready-to-clean  nothing uncommitted, and the PR merged with no commits past its head, or every commit is on the
                     base branch: the worktree can go
     no-card         no card, or one whose status tower doesn't know
+    card-unknown    the card couldn't be checked (no Ledger found, or its file couldn't be read): never taken as none
     main            the main checkout
 
 The facts, in the order they win: live sessions (`claude agents --json`; when that isn't available, the event log's
@@ -45,7 +46,17 @@ from tower.gitrepo import GitWorktree, git, list_worktrees, repo_name
 from tower.overlaps import Overlap, find_overlaps
 from tower.sessions import owning_worktree
 
-STATUSES = ("needs-you", "running", "waiting-ci", "blocked", "done", "ready-to-clean", "no-card", "main")
+STATUSES = (
+    "needs-you",
+    "running",
+    "waiting-ci",
+    "blocked",
+    "done",
+    "ready-to-clean",
+    "no-card",
+    "card-unknown",
+    "main",
+)
 CARD_STATUSES = ("running", "needs-you", "waiting-ci", "blocked", "done")
 SLOT_STATUSES = ("running", "needs-you")
 STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flagged STALE
@@ -100,7 +111,8 @@ class WorktreeFacts:
     """Everything known about one worktree. sessions_known is False when neither live sessions nor recent events
     could be read, so "no sessions" means "don't know". unshipped_commits, dirty and pr are None when unknown;
     dirty is also None when no rule needs it (only done cards and merged PRs are checked: `git status` is slow).
-    card_unreadable is True when a card file exists but couldn't be read: card is None, but not because there's none.
+    card_unknown is True when the card couldn't be checked (the Ledger couldn't be found, or the card file couldn't be
+    read): card is None, but not because there's none.
     commits_after_merge counts HEAD's commits that a merged PR's head doesn't have (work the merge didn't take); None
     when the PR isn't merged or git couldn't compare (no head from gh, or that commit isn't in this clone).
     open_in_stack names the other branches of the stack this worktree holds that haven't merged (stacks.py): its
@@ -120,7 +132,7 @@ class WorktreeFacts:
     unshipped_commits: int | None
     dirty: bool | None
     pr: Pr | None
-    card_unreadable: bool = False
+    card_unknown: bool = False
     commits_after_merge: int | None = None
     open_in_stack: tuple[str, ...] | None = ()
 
@@ -156,6 +168,8 @@ def decide(worktree: WorktreeFacts) -> Verdict:
         watching = f"session {busy[0].name} is busy (watching CI, or fixing it without updating the card)"
         return verdict("waiting-ci", f"{WAITING_CI_CARD}; {watching}", worktree)
     if busy:
+        if worktree.card_unknown:
+            return verdict("running", f"the card couldn't be checked, but session {busy[0].name} is busy", worktree)
         if card_status is None:
             return verdict("running", f"no card yet, but session {busy[0].name} is busy", worktree)
         if card_status == "needs-you" and not worktree.sessions_known:
@@ -170,6 +184,12 @@ def decide(worktree: WorktreeFacts) -> Verdict:
         return verdict("running", f"the card says {card_status} but session {busy[0].name} is busy again", worktree)
 
     pr = worktree.pr
+    if worktree.card_unknown:
+        # The card may say work goes on (running, needs-you, blocked), so a merged PR can't settle it.
+        if pr and pr.state == "MERGED":
+            reason = f"PR #{pr.number} is merged, but the card couldn't be checked (it may say work goes on)"
+            return verdict("card-unknown", reason, worktree)
+        return verdict("card-unknown", "the card couldn't be checked", worktree)
     # A merged PR settles a card that says the work is finished (or no card), never one that says work goes on: the
     # branch name may have been reused after an old PR merged.
     if pr and pr.state == "MERGED" and card_status not in ("running", "needs-you", "blocked"):
@@ -344,7 +364,7 @@ def gather(
     for index, wt in enumerate(worktrees):
         is_main = index == 0
         card = None
-        card_unreadable = False
+        card_unknown = not is_main  # until the Ledger is found and the card read (or found missing)
         pr = prs.get(wt.branch) if wt.branch else None
         try:
             card_file = ledger.card_file(Path(wt.path), wt.branch, wt.sha)
@@ -356,7 +376,7 @@ def gather(
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
             notes_before = len(notes)
             card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
-            card_unreadable = len(notes) > notes_before  # card_or_note notes only a card it couldn't read
+            card_unknown = len(notes) > notes_before  # card_or_note notes only a card it couldn't read
         # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise. Commits
         # past a merged PR's head only matter once nothing is uncommitted.
         dirty = is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None
@@ -374,7 +394,7 @@ def gather(
             else unshipped(Path(main.path), base, wt.branch or wt.sha),
             dirty=dirty,
             pr=pr,
-            card_unreadable=card_unreadable,
+            card_unknown=card_unknown,
             commits_after_merge=commits_after(Path(wt.path), pr.head_oid)
             if dirty is False and pr and pr.state == "MERGED"
             else None,
@@ -799,8 +819,8 @@ def merge_key(report: Report, stack: stacks.Stack) -> str:
     return "merge_to_main" if stack.base == default else "merge_to_branch"
 
 
-# The hub's report groups, in report order, and the effective statuses in each. ready-to-clean and no-card are
-# Housekeeping, with the leftovers below.
+# The hub's report groups, in report order, and the effective statuses in each. ready-to-clean, no-card and
+# card-unknown are Housekeeping, with the leftovers below.
 GROUPS = (
     ("NEEDS YOU", ("needs-you",)),
     ("BLOCKED", ("blocked",)),
@@ -943,7 +963,7 @@ def cleanup(report: Report) -> list[tuple[str, str]]:
         if v.status == "ready-to-clean":
             items.append((facts.label, f"ready to clean up: {v.reason}"))
         if not facts.is_main and facts.card is None:
-            items.append((facts.label, "no card"))
+            items.append((facts.label, "card couldn't be checked" if facts.card_unknown else "no card"))
         elif facts.card and facts.card.status not in CARD_STATUSES:
             items.append((facts.label, f"unknown card status: {facts.card.status or '?'}"))
         if facts.card and facts.card.stale:

@@ -483,6 +483,49 @@ def test_without_a_ledger_it_still_reports_sessions(
     assert (result["slots"], result["wip_limit"]) == (1, 4)
 
 
+def test_without_a_ledger_no_worktree_is_called_card_less_or_ready_to_clean(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Cards that were never looked for are unknown, not missing: a merged PR doesn't make the worktree ready to clean
+    up (its card may say work goes on), and a worktree nobody works isn't card-less (#131)."""
+    merged = repo.add_worktree("merged")
+    repo.add_worktree("quiet")
+    busy = repo.add_worktree("busy")
+    repo.sessions(interactive("w1", busy, "busy"))
+    head = git(merged, "rev-parse", "HEAD").strip()
+    pr = {"number": 7, "state": "MERGED", "headRefName": "merged", "headRefOid": head, "url": "u"}
+    fake_gh_pr_list(tmp_path, [{**pr, "isCrossRepository": False}])
+    (tmp_path / "tower.conf").write_text("wip_limit=4\n", encoding="utf-8")
+
+    found = rows(tower_state(capsys, "--pr"))
+
+    assert (found["merged"]["status"], found["merged"]["reason"]) == (
+        "card-unknown",
+        "PR #7 is merged, but the card couldn't be checked (it may say work goes on)",
+    )
+    assert (found["quiet"]["status"], found["quiet"]["reason"]) == ("card-unknown", "the card couldn't be checked")
+    assert (found["busy"]["status"], found["busy"]["reason"]) == (
+        "running",
+        "the card couldn't be checked, but session w1 is busy",
+    )
+
+
+def test_an_unreadable_card_with_a_merged_pr_isnt_ready_to_clean(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A card the vault won't hand over (permissions, an iCloud file not downloaded) may say work goes on (#131)."""
+    path = repo.add_worktree("merged")
+    repo.write_card("merged", "running").chmod(0)
+    head = git(path, "rev-parse", "HEAD").strip()
+    pr = {"number": 7, "state": "MERGED", "headRefName": "merged", "headRefOid": head, "url": "u"}
+    fake_gh_pr_list(tmp_path, [{**pr, "isCrossRepository": False}])
+
+    result = tower_state(capsys, "--pr")
+
+    assert rows(result)["merged"]["status"] == "card-unknown"
+    assert {"label": "merged", "note": "card couldn't be checked"} in result["housekeeping"]  # type: ignore[operator]
+
+
 def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_worktrees_are_still_reported(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
