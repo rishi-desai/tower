@@ -28,6 +28,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -255,6 +256,12 @@ PUSHES = [
     "git rebase --exec 'git push' main",
     "git rebase -x 'git push origin HEAD' origin/main",
     "git -c alias.p='!git push' p origin x",
+    # settings and variables that don't change what a push does, set in the same line (#83)
+    "git config user.email me@example.com && git push origin x",
+    "git remote -v && git push origin x",
+    "for f in a b; do git add $f; done; git push origin x",
+    "while read -r line; do echo $line; done < notes.txt; git push origin x",
+    "printf -v msg %s done; git push origin x",
 ]
 FORCE = [
     "git push --force origin x",
@@ -320,6 +327,33 @@ FORCE = [
     "git submodule foreach 'git push --force origin HEAD'",
     "git -c alias.p='!git push' p --force origin x",
     "git -c alias.p='!f() { git \"$@\"; }; f' p push --force origin main",  # its code hands git's words on
+    # push settings written by another command of the line, which the hook reads only as saved before it runs, and
+    # variables that move git's config set without an assignment word (#83)
+    "git config remote.origin.mirror true && git push origin",
+    "git config --add remote.origin.push '+refs/heads/*:refs/heads/*'; git push origin",
+    "git config alias.p 'push --force' && git p origin",
+    "git config set alias.p 'push --force' && git p origin",
+    "git config --global include.path /tmp/mirror.cfg && git push origin",
+    "git config --edit && git push origin",
+    "git remote add --mirror=push backup ../backup && git push backup",
+    "git remote set-url --push origin ../elsewhere && git push origin",
+    "git clone --mirror ../a b && git -C b push",
+    "git clone -c remote.origin.mirror=true ../a b && git -C b push",
+    (
+        "for i in 1 2; do git push origin; eval 'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror "
+        "GIT_CONFIG_VALUE_0=true'; done"
+    ),
+    "f() { git push origin main; }; eval 'HOME=/tmp/e'; f",
+    "for HOME in /tmp/e; do git push origin main; done",
+    "select HOME in /tmp/e; do git push origin main; done",
+    "printf -v HOME %s /tmp/e; git push origin main",
+    "builtin read HOME <<< /tmp/e; git push origin main",
+    "command read HOME <<< /tmp/e; git push origin main",
+    "read -r XDG_CONFIG_HOME <<< /tmp/e; git push origin main",
+    "declare -n r=HOME; r=/tmp/e; git push origin main",
+    ": ${HOME::=/tmp/e}; git push origin main",
+    ": ${GIT_CONFIG_COUNT:=1}; git push origin main",
+    'for GIT_DIR in "$X"; do git push origin main; done',
 ]
 READS = [
     "gh pr view 5",
@@ -444,6 +478,11 @@ READS = [
     "git -c pager.log=false log -3",
     # a variable naming a command, holding another variable: checked as written, like bash -c "$CMD" (Limits)
     'GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy -o IdentitiesOnly=yes" git fetch',
+    # push settings written with nothing that pushes after them, and git's own commands under them (#83)
+    "git config user.name x",
+    "git config remote.origin.mirror true && git status",
+    "git config alias.p 'push --force'",
+    "for HOME in /tmp/e; do git log -1; done",
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -1490,6 +1529,108 @@ def test_every_remote_counts_so_repointing_one_only_tightens(widget: Path, remot
     assert sandbox_widget_asks(widget, "gh pr comment 5 -b hi")
 
 
+# --- Push settings saved in the repo, which a push under push=force reads when it runs (#83, ADR 0014) -------------
+
+PERSONAL = 'default_profile = "personal"\n'
+# (settings saved with `git config --add`, a command): "{included}" is a file whose own config makes origin mirror
+SAVED_PUSH_SETTINGS: list[tuple[list[tuple[str, str]], str]] = [
+    ([("remote.origin.mirror", "true")], "git push origin"),
+    ([("remote.origin.push", "+refs/heads/*:refs/heads/*")], "git push origin"),
+    ([("remote.origin.push", ":refs/heads/old")], "git push origin"),
+    ([("alias.p", "push --force")], "git p origin"),
+    ([("alias.p", "-c remote.origin.mirror=true push")], "git p origin"),
+    ([("alias.p", "!git push --mirror")], "git p"),
+    ([("alias.q", "p"), ("alias.p", "push --mirror")], "git q origin"),
+    ([("remote.origin.mirror", "true")], "git -c alias.up=push up origin"),
+    ([("include.path", "{included}")], "git push origin"),
+]
+
+
+def save_settings(widget: Path, settings: list[tuple[str, str]]) -> None:
+    """Save SETTINGS in the widget checkout's config, as an earlier tool call could have."""
+    included = widget.parent / "mirror.cfg"
+    included.write_text('[remote "origin"]\n\tmirror = true\n', encoding="utf-8")
+    for key, value in settings:
+        value = value.format(included=included)
+        subprocess.run(["git", "-C", str(widget), "config", "--add", key, value], check=True)
+
+
+@pytest.mark.parametrize(("settings", "command"), SAVED_PUSH_SETTINGS)
+def test_a_push_under_saved_settings_that_can_force_asks_under_push_force(
+    widget: Path, settings: list[tuple[str, str]], command: str
+) -> None:
+    """In a repo without the settings the push passes in personal; once they are saved there, it asks."""
+    env = widget_env(widget, None)
+    assert not asks(run_hook(widget.parent, in_widget(widget, command), policy=PERSONAL, env=env))
+    save_settings(widget, settings)
+    assert asks(run_hook(widget.parent, in_widget(widget, command), policy=PERSONAL, env=env))
+
+
+@pytest.mark.parametrize(
+    "command", ["git -C widget push origin", "cd widget && git push origin", "env -C widget git push"]
+)
+def test_the_saved_settings_read_are_those_of_the_repo_the_push_acts_on(widget: Path, command: str) -> None:
+    """A push run in another folder (git -C, cd, env -C) reads that repo's settings, not the session folder's."""
+    save_settings(widget, [("remote.origin.mirror", "true")])
+    call = {**bash(command), "cwd": str(widget.parent)}
+    assert asks(run_hook(widget.parent, call, policy=PERSONAL, env=widget_env(widget, None)))
+
+
+# Logs each call, then for `git config --get-regexp` fails or stalls as FAKE_GIT says; otherwise runs the real git.
+FAKE_GIT = """#!{python}
+import json, os, sys, time
+with open(os.environ["FAKE_GIT_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+if "--get-regexp" in sys.argv:
+    if os.environ["FAKE_GIT"] == "fail":
+        sys.exit(128)
+    if os.environ["FAKE_GIT"] == "slow":
+        time.sleep(30)
+os.execv({git!r}, [{git!r}, *sys.argv[1:]])
+"""
+
+
+def fake_git_env(widget: Path, behavior: str) -> dict[str, str]:
+    """The widget fixture's environment with a fake git first on PATH that does BEHAVIOR (fail, slow or log)."""
+    folder = widget.parent / "fake-git"
+    folder.mkdir(exist_ok=True)
+    git = folder / "git"
+    git.write_text(FAKE_GIT.format(python=sys.executable, git=shutil.which("git")), encoding="utf-8")
+    git.chmod(0o755)
+    env = widget_env(widget, None)
+    log = str(widget.parent / "git.log")
+    return {**env, "PATH": f"{folder}{os.pathsep}{env['PATH']}", "FAKE_GIT": behavior, "FAKE_GIT_LOG": log}
+
+
+@pytest.mark.parametrize("behavior", ["fail", "slow"])
+def test_a_push_asks_when_its_saved_settings_cant_be_read_in_time(widget: Path, behavior: str) -> None:
+    """A read of the saved settings that fails, or outlasts its time limit, makes the push one that may force."""
+    start = time.monotonic()
+    call = in_widget(widget, "git push origin")
+    assert asks(run_hook(widget.parent, call, policy=PERSONAL, env=fake_git_env(widget, behavior)))
+    assert time.monotonic() - start < 10
+
+
+@pytest.mark.parametrize(
+    ("command", "reads"),
+    [
+        ("git status", False),
+        ("git log --oneline -3", False),
+        ("git config user.name x", False),
+        ("gh pr view 5", False),
+        ("git push origin", True),
+        ("git p origin", True),  # p isn't one of git's own commands, so it may be a saved alias
+    ],
+)
+def test_only_a_push_or_a_possible_alias_reads_the_saved_settings(widget: Path, command: str, reads: bool) -> None:
+    """Commands that don't push leave git's config unread, so they cost nothing more than before."""
+    env = fake_git_env(widget, "log")
+    assert not asks(run_hook(widget.parent, in_widget(widget, command), policy=PERSONAL, env=env))
+    log = widget.parent / "git.log"
+    calls = log.read_text(encoding="utf-8") if log.exists() else ""
+    assert ("--get-regexp" in calls) == reads
+
+
 @pytest.mark.parametrize(
     ("command", "expect_ask"),
     [
@@ -2013,6 +2154,8 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
             "X=cat " * 8_000 + "true; git" + " --config-env=core.pager=X" * 8_000 + " log; git push --force",
             id="config-env values",
         ),
+        pytest.param("echo " + "git config " * 50_000 + "; git push --force", id="git config words"),
+        pytest.param("for x in " + "a " * 100_000 + "; do git push --force; done", id="loop words"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
