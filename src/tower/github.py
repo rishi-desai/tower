@@ -1,5 +1,6 @@
-"""github.py: the merged PRs `tower stats` measures, read from GitHub with the gh CLI (read-only calls only), and
-try_gh() for the scans' GitHub facts.
+"""github.py: the merged PRs `tower stats` measures, read from GitHub with the gh CLI (read-only calls only),
+try_gh() for the scans' GitHub facts, and the one rule for a worktree's PR (worktree_pr), which `tower card` and
+`tower state --pr` both use.
 
 A PR's tickets are the "Closes/Fixes/Resolves #N" in its body, read here rather than from GitHub's
 closingIssuesReferences: GitHub links a closing keyword only for PRs into the default branch (tower's workers often
@@ -12,9 +13,11 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from tower.gitrepo import COMMIT_ID, git
 from tower.stats import MergedPr
 
 GH_TIMEOUT_SECONDS = 60
@@ -24,6 +27,18 @@ CLOSING_KEYWORD = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\
 
 class GhError(Exception):
     """A gh call failed: not installed, not logged in, not a GitHub repo, or timed out."""
+
+
+@dataclass(frozen=True)
+class BranchPr:
+    """A branch's PR as GitHub reports it. state is OPEN, MERGED or CLOSED; head is its head commit (for a merged PR,
+    as it was when it merged), "" when gh didn't give a full commit id; base and url are "" when gh didn't give them."""
+
+    number: int
+    state: str
+    base: str
+    head: str
+    url: str
 
 
 def from_this_repo(pr: dict[str, object]) -> bool:
@@ -122,3 +137,61 @@ def try_gh(cwd: Path, *args: str) -> tuple[str | None, str]:
     if proc.returncode != 0:
         return None, (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
     return proc.stdout, ""
+
+
+def newest_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
+    """(branch's PR, gh's error): its open PR, else its newest, never one from a fork (a stranger's patch-1 isn't this
+    work), from one `gh pr list --head` in directory. The one place "open first, else newest" is decided. gh's error is
+    "" when GitHub answered."""
+    fields = "number,state,baseRefName,headRefOid,url,isCrossRepository"
+    out, error = try_gh(directory, "pr", "list", "--head", branch, "--state", "all", "--json", fields)
+    if out is None:
+        return None, error
+    try:
+        prs = [
+            BranchPr(
+                int(p["number"]),
+                str(p["state"]),
+                str(p.get("baseRefName", "")),
+                head_commit(p.get("headRefOid")),
+                str(p.get("url", "")),
+            )
+            for p in json.loads(out)
+            if from_this_repo(p)
+        ]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None, f"gh pr list printed something unexpected: {out[:120]!r}"
+    if not prs:
+        return None, ""
+    return max(prs, key=lambda p: (p.state == "OPEN", p.number)), ""
+
+
+def head_commit(head: object) -> str:
+    """head when it's a full commit id, else "": only a commit id goes on to git, never something it could read as an
+    option."""
+    return head if isinstance(head, str) and COMMIT_ID.fullmatch(head) else ""
+
+
+def unless_earlier_work(worktree: Path, pr: BranchPr) -> tuple[BranchPr | None, str]:
+    """(pr, or None when it's earlier work on a reused branch name; a note saying which, or that it couldn't be
+    checked). A merged or closed PR whose head doesn't contain the worktree's HEAD is that earlier work. One whose head
+    isn't in this clone (a suggestion accepted on GitHub, not fetched), or that gh gave no head for, can't be checked,
+    so it's trusted."""
+    if pr.state == "OPEN":
+        return pr, ""
+    if not pr.head:
+        return pr, "GitHub didn't give its head commit, so it wasn't checked against this worktree"
+    if git(worktree, "cat-file", "-e", f"{pr.head}^{{commit}}") is None:
+        return pr, f"its head {pr.head[:7]} isn't in this clone, so it wasn't checked against this worktree"
+    if git(worktree, "merge-base", "--is-ancestor", "HEAD", pr.head) is None:
+        return None, f"PR #{pr.number} {pr.state.lower()} earlier work on this branch name"
+    return pr, ""
+
+
+def worktree_pr(worktree: Path, branch: str) -> tuple[BranchPr | None, str, str]:
+    """(the worktree's PR, a note, gh's error): newest_pr's pick for the worktree's branch, unless it's earlier work on
+    a reused branch name (unless_earlier_work). `tower card` and `tower state --pr` both decide it here."""
+    pr, error = newest_pr(worktree, branch)
+    if pr is None:
+        return None, "", error
+    return (*unless_earlier_work(worktree, pr), "")

@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tower import ledger, stacks, state
-from tower.github import from_this_repo, try_gh
+from tower.github import BranchPr, from_this_repo, try_gh, worktree_pr
 from tower.gitrepo import git, guess_ticket, is_main_checkout, list_worktrees
 
 SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
@@ -84,16 +84,6 @@ class Frontmatter:
     pr: str
     base: str
     reason: str = ""
-
-
-@dataclass(frozen=True)
-class BranchPr:
-    """This branch's PR as GitHub reports it. state is OPEN, MERGED or CLOSED; head is its head commit."""
-
-    number: int
-    state: str
-    base: str
-    head: str
 
 
 @dataclass(frozen=True)
@@ -279,36 +269,6 @@ def choose_status(
 # ---------- facts ----------
 
 
-def branch_pr(worktree: Path, branch: str) -> tuple[BranchPr | None, str, str]:
-    """(the branch's PR, a note, gh's error): its open PR, else its newest, never one from a fork (a stranger's
-    patch-1 isn't this work). A merged or closed PR whose head doesn't contain the worktree's HEAD is earlier work on a
-    reused branch name: it's dropped, and the note says so. One whose head isn't in this clone (a suggestion accepted
-    on GitHub, not fetched) can't be checked, so it's trusted and the note says that. gh's error is "" when GitHub
-    answered."""
-    fields = "number,state,baseRefName,headRefOid,isCrossRepository"
-    out, error = try_gh(worktree, "pr", "list", "--head", branch, "--state", "all", "--json", fields)
-    if out is None:
-        return None, "", error
-    try:
-        prs = [
-            BranchPr(int(p["number"]), str(p["state"]), str(p["baseRefName"]), str(p["headRefOid"]))
-            for p in json.loads(out)
-            if from_this_repo(p)
-        ]
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return None, "", f"gh pr list printed something unexpected: {out[:120]!r}"
-    if not prs:
-        return None, "", ""
-    pr = max(prs, key=lambda p: (p.state == "OPEN", p.number))
-    if pr.state == "OPEN":
-        return pr, "", ""
-    if git(worktree, "cat-file", "-e", f"{pr.head}^{{commit}}") is None:
-        return pr, f"its head {pr.head[:7]} isn't in this clone, so it wasn't checked against this worktree", ""
-    if git(worktree, "merge-base", "--is-ancestor", "HEAD", pr.head) is None:
-        return None, f"PR #{pr.number} {pr.state.lower()} earlier work on this branch name", ""
-    return pr, "", ""
-
-
 def pr_done(worktree: Path, branch: str) -> bool | None:
     """Whether GitHub has branch's PR merged or closed and none open (a stack branch that needs nothing more); None
     when gh couldn't be asked."""
@@ -399,7 +359,7 @@ def write_card(
         raise CardExists(f"{path} already exists, so nothing was written")
     branch = git(worktree, "branch", "--show-current") or ""
     warnings: list[str] = []
-    pr, note, gh_error = (None, "", "") if not branch else branch_pr(worktree, branch)
+    pr, note, gh_error = (None, "", "") if not branch else worktree_pr(worktree, branch)
     if gh_error:
         warnings.append(f"couldn't read this branch's PR ({gh_error}), so the card says pr: unknown")
     stack_open: tuple[str, ...] | None = ()
