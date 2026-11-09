@@ -470,7 +470,7 @@ never stops a session. See docs/adr/0012.
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
 script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
 `$CMD push`), git/gh aliases and git config saved outside the command (a `core.pager` in `~/.gitconfig`, hooks in
-`.git/hooks`), or deliberately disguised names. A plain push straight to `main` is judged by `push`,
+`.git/hooks` or the folder `core.hooksPath` names), or deliberately disguised names. A plain push straight to `main` is judged by `push`,
 not `merge_to_main` (GitHub branch protection refuses it, T03). The safety floor matches text too: a protected file
 reached by a path built at run time (pieces joined in a script, a glob) isn't caught, so Claude Code's own permission
 rules or sandbox are the backstop there. The full list is in `confirm-public.py`'s docstring.

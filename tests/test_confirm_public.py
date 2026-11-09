@@ -319,6 +319,7 @@ FORCE = [
     "git rebase --exec 'git push --force' main",
     "git submodule foreach 'git push --force origin HEAD'",
     "git -c alias.p='!git push' p --force origin x",
+    "git -c alias.p='!f() { git \"$@\"; }; f' p push --force origin main",  # its code hands git's words on
 ]
 READS = [
     "gh pr view 5",
@@ -441,6 +442,8 @@ READS = [
     "GIT_SSH_COMMAND='ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes' git fetch",
     "git -c protocol.file.allow=always submodule update --init",
     "git -c pager.log=false log -3",
+    # a variable naming a command, holding another variable: checked as written, like bash -c "$CMD" (Limits)
+    'GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy -o IdentitiesOnly=yes" git fetch',
 ]
 UNCHECKABLE = [
     "git push 'origin",
@@ -481,12 +484,24 @@ UNCHECKABLE = [
     'git -c "$SETTING" push origin',
     "git --config-env=alias.p=ALIAS p origin",
     'git config core.pager "$P"',
-    'GIT_SSH_COMMAND="ssh -i $KEY" git fetch',
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager git log",
     'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="$K" GIT_CONFIG_VALUE_0=less git log',
+    # git's own shell expands what the line quotes, so a single-quoted $ is only known at run time too
+    "X='gh pr merge 1' git -c 'core.pager=$X' -p log",
+    "git rebase --exec '$CMD' main",
+    "git -c alias.x='!$X' x",
+    "git -c 'core.sshCommand=$(cat f)' fetch",
+    "git submodule foreach '$CMD'",
+    "git config core.pager '$P'",
+    # --config-env reads the variable git starts with: an assignment scoped to another command doesn't set it
+    "source ./vars.sh; X=ok true; git --config-env=core.sshCommand=X fetch",
     # an ext:: URL runs the command it names once git is told to allow ext, which it refuses by default
     "git -c protocol.ext.allow=always fetch origin",
     "GIT_ALLOW_PROTOCOL=ext:https git submodule update --init",
+    # a renamed section can turn settings saved under a harmless name into aliases or a pager
+    "git config --rename-section stash1 alias",
+    "git config rename-section stash1 core",
+    "git config --ren stash1 alias",
 ]
 
 
@@ -564,7 +579,13 @@ def test_github_writes_always_ask(tmp_path: Path, command: str, push: str) -> No
 
 
 @pytest.mark.parametrize(
-    "command", ["gh auth token", "gh auth status --show-token", "gh config get -h github.com oauth_token"]
+    "command",
+    [
+        "gh auth token",
+        "gh auth status --show-token",
+        "gh config get -h github.com oauth_token",
+        "printf 'protocol=https\\nhost=github.com\\n' | gh auth git-credential get",
+    ],
 )
 def test_a_gh_command_that_prints_the_token_says_so(tmp_path: Path, command: str) -> None:
     """A command that prints the auth token asks, and its reason says so rather than that it changes GitHub."""
@@ -647,6 +668,9 @@ GIT_RUNS_GH = [
     "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!gh pr comment 5 -b hi'; git x",
     "env GIT_CONFIG_PARAMETERS=\"'core.pager'='gh pr comment 5 -b hi'\" git log",
     "git config core.pager 'gh pr comment 5 -b hi'",
+    "git config --comm x core.pager 'gh pr comment 5 -b hi'",
+    "git -c alias.c.command='!gh pr comment 5 -b hi' c",  # git 2.56's [alias "c"] command = ... form  # an abbreviated option that takes a value
+    "git config --typ=string --fil .git/config core.pager 'gh pr comment 5 -b hi'",
     "git config --global alias.x '!gh pr comment 5 -b hi'",
     "git config set --local core.sshCommand 'gh pr comment 5 -b hi'",
     "git clone -c core.sshCommand='gh pr comment 5 -b hi' git@github.com:o/r.git",
@@ -659,11 +683,17 @@ GIT_RUNS_GH = [
     "git submodule --quiet foreach --recursive 'gh pr comment 5 -b hi'",
     "git difftool -x 'gh pr comment 5 -b hi' main",
     "git filter-branch --tree-filter 'gh pr comment 5 -b hi' HEAD",
+    "git filter-branch --setup 'gh pr comment 5 -b hi' HEAD",
+    "git ls-remote --exec='gh pr comment 5 -b hi; git-upload-pack' .",
+    "git fetch-pack --exec='gh pr comment 5 -b hi; git-upload-pack' ../other",
     "git fetch --upload-pack='gh pr comment 5 -b hi; git-upload-pack' ../other",
     "git push --receive-pack='gh pr comment 5 -b hi; git-receive-pack' ../other main",
     # a -c alias read as what it stands for, its own options included, through a chain
     "git -c alias.r=rebase r --exec 'gh pr comment 5 -b hi' main",
     "git -c alias.a=b -c alias.b='-c core.pager=\"gh pr comment 5 -b hi\" log' a",
+    "git -c alias.cmd='rebase -x \"gh pr comment 5 -b hi\" HEAD~1' cmd",  # an alias named like a command key's leaf
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='rebase -x \"gh pr comment 5 -b hi\" HEAD~1' git x",
+    "env GIT_CONFIG_PARAMETERS=\"'alias.x'='rebase -x \\\"gh pr comment 5 -b hi\\\" HEAD~1'\" git x",
     # the variables naming a command git runs, wherever the line sets them
     "GIT_SSH_COMMAND='gh pr comment 5 -b hi; ssh' git fetch",
     "export GIT_EDITOR='gh pr comment 5 -b hi'; git commit",
@@ -691,6 +721,41 @@ def test_a_bang_alias_is_judged_by_what_it_runs_not_as_a_possible_push(tmp_path:
     reason = str(decision["permissionDecisionReason"])
     assert "gh repo delete may change something on GitHub" in reason
     assert "push" not in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # git passes its -c settings on to the code it runs (GIT_CONFIG_PARAMETERS), so a git there sees them
+        "git -c alias.p=push -c alias.x='!git p --force' x",
+        "git -c remote.origin.mirror=true -c alias.x='!git push' x",
+        "git -c remote.origin.mirror=true rebase --exec 'git push' main",
+    ],
+)
+def test_code_git_runs_inherits_its_settings(tmp_path: Path, command: str) -> None:
+    """A push in code git runs is judged under the settings of the git that runs it: under push=force, an alias for
+    push given a --force, or a remote that mirrors, makes it one that may force."""
+    decision = run_hook(tmp_path, bash(command), push="force", pr="none")
+    assert asks(decision)
+    assert "force push or branch delete" in str(decision)
+
+
+@pytest.mark.parametrize("push", PUSH_MODES)
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git -c credential.helper='!gh auth git-credential' fetch",  # what `gh auth setup-git` saves
+        "git -c alias.l='!git log --oneline' l",
+        "git -c alias.x='!git log' -c remote.origin.mirror=true x",  # a mirroring remote: the code only reads
+        "X=less git --config-env=core.pager=X log",
+        "export X=less; git --config-env=core.pager=X log",
+        "env X=less git --config-env=core.pager=X log",
+        "git grep -O 'gh issue close 3' -- src",  # a bare -O opens the default pager: the next word is the pattern
+    ],
+)
+def test_known_code_git_runs_passes(tmp_path: Path, command: str, push: str) -> None:
+    """Code git runs that is known and only reads passes in every push mode."""
+    assert run_hook(tmp_path, bash(command), push=push, pr="none") is None
 
 
 @pytest.mark.parametrize(
@@ -1944,6 +2009,10 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
             "GIT_CONFIG_KEY_0=core.pager " * 20_000 + "GIT_CONFIG_VALUE_0=less " * 20_000 + "git log", id="git config"
         ),
         pytest.param("git rebase " + "-x true " * 40_000 + "main; git push --force", id="rebase execs"),
+        pytest.param(
+            "X=cat " * 8_000 + "true; git" + " --config-env=core.pager=X" * 8_000 + " log; git push --force",
+            id="config-env values",
+        ),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:

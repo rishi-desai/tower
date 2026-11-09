@@ -6,9 +6,14 @@ a `git config` that saves it), a `!` alias, the command `submodule foreach`, `re
 variables such as `GIT_SSH_COMMAND` and `EDITOR`. The hook didn't look inside any of them, so a `gh repo delete` placed
 in one passed (#82). It now checks that code the way it checks `bash -c` code, through the same splitter (ADR 0003), so
 every rule applies inside it: a GitHub write is judged by its key, a push by `push`, and the safety floor holds. A
-setting or variable whose value is only known at run time (`-c core.sshCommand="$X"`, `--config-env` naming a variable
-the line doesn't set, `rebase --exec "$CMD"`) asks, because the shell parses what the variable holds as code too:
-`core.sshCommand="ssh -i $KEY"` runs whatever `KEY` adds.
+git setting whose value is only known at run time (`-c core.sshCommand="$X"`, `--config-env` naming a variable the
+line doesn't set, `rebase --exec "$CMD"`) asks, because the shell parses what the variable holds as code too:
+`core.sshCommand="ssh -i $KEY"` runs whatever `KEY` adds. That holds for a `$` the line quotes too (`-c
+'core.pager=$X'`, `--exec '$CMD'`): git hands the text to its own shell, which expands it. A `--config-env` takes the
+value the variable has when git starts: one the line sets for its later commands, or one given to that git (`X=v git`),
+not one scoped to another command (`X=v true`). A variable such as `GIT_SSH_COMMAND` is checked as written
+instead, like `bash -c` code: `GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy" git fetch` is how workers fetch with a deploy
+key, and #82 asked only for git's settings.
 
 ## Considered options
 
@@ -21,13 +26,16 @@ the line doesn't set, `rebase --exec "$CMD"`) asks, because the shell parses wha
 
 ## Consequences
 
-- `bash -c "$CMD"` and `eval "$CMD"` still pass (a documented Limit), while git's own run-time code asks. Making the
-  first ask too would be a separate change with its own cost in prompts.
+- `bash -c "$CMD"`, `eval "$CMD"` and `GIT_SSH_COMMAND="$CMD"` still pass (a documented Limit), while git's own
+  settings built at run time ask. Making the first ask too would be a separate change with its own cost in prompts.
 - Which keys run a command is a list (`GIT_PROGRAM_KEY_LEAVES`, `git_key_runs_program`) that grows with git. A key it
   misses is a gap, not a crash, so the list leans wide: `core.askPass` and `gpg.program` run a program rather than shell
   code, and are checked as code anyway.
 - Config git reads from somewhere the line doesn't show (a saved `~/.gitconfig`, an `include.path`, an inherited
   `GIT_CONFIG_PARAMETERS`) and files git runs by name (hooks, `core.hooksPath`, `GIT_EXEC_PATH`) stay Limits: the hook
   reads the command text. A `git config` that saves a command-running key is checked when it saves it.
+- Code git runs inherits its `-C` and its settings, which git passes on in `GIT_CONFIG_PARAMETERS`, so a git in that
+  code is judged with them: `git -c remote.origin.mirror=true -c alias.x='!git push' x` is a push that may force.
+- `gh auth git-credential`, the helper `gh auth setup-git` saves, is a read: it hands git the token and changes nothing.
 - Allowing git's `ext::` transport (`protocol.ext.allow`, `GIT_ALLOW_PROTOCOL=ext`) asks, since an `ext::` URL names a
   command the hook can't follow to its source.
