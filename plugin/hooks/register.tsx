@@ -165,6 +165,7 @@ function badgeOf(status: Status | 'session-waiting', isStale: boolean): { label:
     case 'waiting-ci': return { label: 'WAITING CI', color: 'inactive' }
     case 'done': return { label: 'DONE', color: 'success' }
     case 'ready-to-clean': return { label: 'CLEAN UP', color: 'success' }
+    case 'card-unknown': return { label: 'CARD ?', color: 'inactive' } // the card couldn't be checked: not "no card"
     case 'main': return { label: 'MAIN', color: 'inactive' }
     default: return { label: 'NO CARD', color: 'inactive' }
   }
@@ -488,7 +489,7 @@ export const register: Register = on => {
       return w.card !== null && w.card.status !== w.status && w.reason !== '' ? `${age}, ${w.reason}` : age
     }
     const ticket = (w: StateWorktree) => (w.card && w.card.ticket !== 'none' ? <Text>{w.card.ticket}</Text> : null)
-    const hasNoCard = (w: StateWorktree) => !w.is_main && w.card === null
+    const hasNoCard = (w: StateWorktree) => !w.is_main && w.card === null && !w.card_unknown
     const sessionsOf = (w: StateWorktree) => {
       if (w.sessions.length === 0) return 'no session'
       if (w.sessions.length === 1) return `${w.sessions[0]?.activity ?? ''} session ${w.sessions[0]?.name ?? ''}`

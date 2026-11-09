@@ -65,11 +65,12 @@ def hub_scan(repo_dir: Path, github: bool = True) -> str:
 def adopt_line(report: state.Report) -> str:
     """ADOPT: yes, with why, when the repo hasn't been brought under tower yet: most worktrees have no card (at least
     two: one is Housekeeping's "no card"), or the main checkout has uncommitted work or more than one interactive session
-    (the hub is one). Else ADOPT: no. What tower couldn't read (a card, git status, sessions when agent view is
-    unreadable) is never a reason: the hub would plan from facts it doesn't have, and the NOTE lines already say so."""
+    (the hub is one). Else ADOPT: no. What tower couldn't read (a card or the Ledger, git status, sessions when agent
+    view is unreadable) is never a reason: the hub would plan from facts it doesn't have, and the NOTE lines already
+    say so."""
     reasons: list[str] = []
     worktrees = [facts for facts, _ in report.worktrees if not facts.is_main]
-    no_card = sum(1 for facts in worktrees if facts.card is None and not facts.card_unreadable)
+    no_card = sum(1 for facts in worktrees if facts.card is None and not facts.card_unknown)
     if no_card >= 2 and no_card * 2 > len(worktrees):
         reasons.append(f"{no_card} of {len(worktrees)} worktrees have no card")
     roots = {os.path.realpath(facts.path) for facts, _ in report.worktrees}

@@ -19,6 +19,7 @@ def facts(
     dirty: bool | None = False,
     pr: Pr | None = None,
     commits_after_merge: int | None = 0,
+    card_unknown: bool = False,
 ) -> WorktreeFacts:
     """A feature worktree's facts; each test changes only what its rule is about."""
     return WorktreeFacts(
@@ -34,6 +35,7 @@ def facts(
         dirty=dirty,
         pr=pr,
         commits_after_merge=commits_after_merge,
+        card_unknown=card_unknown,
     )
 
 
@@ -70,6 +72,22 @@ def test_a_busy_worker_with_no_card_holds_a_slot() -> None:
     verdict = state.decide(facts(None, (BUSY,)))
     assert (verdict.status, verdict.holds_slot) == ("running", True)
     assert verdict.reason == "no card yet, but session feat-42-a1 is busy"
+
+
+def test_a_card_that_couldnt_be_checked_is_never_taken_as_none() -> None:
+    """No Ledger found, or the card file unreadable: the card may say running or needs-you, so a merged PR doesn't
+    settle the worktree and nothing calls it card-less. Sessions still say what they show (#131)."""
+    merged = Pr(number=7, state="MERGED", url="u", head_oid="abc")
+    verdict = state.decide(facts(None, pr=merged, card_unknown=True))
+    assert (verdict.status, verdict.holds_slot) == ("card-unknown", False)
+    assert verdict.reason == "PR #7 is merged, but the card couldn't be checked (it may say work goes on)"
+    verdict = state.decide(facts(None, card_unknown=True))
+    assert (verdict.status, verdict.reason) == ("card-unknown", "the card couldn't be checked")
+    verdict = state.decide(facts(None, (BUSY,), card_unknown=True))
+    assert (verdict.status, verdict.holds_slot) == ("running", True)
+    assert verdict.reason == "the card couldn't be checked, but session feat-42-a1 is busy"
+    verdict = state.decide(facts(None, (WAITING,), card_unknown=True))
+    assert (verdict.status, verdict.reason) == ("needs-you", "session feat-42-a1 is waiting on you (approve Bash)")
 
 
 def test_running_and_needs_you_cards_hold_a_slot_without_a_session() -> None:

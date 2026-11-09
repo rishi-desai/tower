@@ -25,6 +25,7 @@ export const SHARED: TowerState = {
       "holds_slot": false,
       "card": null,
       "stale": false,
+      "card_unknown": false,
       "sessions": [
         {
           "name": "hub-1",
@@ -48,6 +49,7 @@ export const SHARED: TowerState = {
       "holds_slot": true,
       "card": null,
       "stale": false,
+      "card_unknown": false,
       "sessions": [
         {
           "name": "w1",
@@ -76,6 +78,7 @@ export const SHARED: TowerState = {
         "pr": "none"
       },
       "stale": false,
+      "card_unknown": false,
       "sessions": [],
       "unshipped_commits": 1,
       "dirty": null,
@@ -92,6 +95,7 @@ export const SHARED: TowerState = {
       "holds_slot": false,
       "card": null,
       "stale": false,
+      "card_unknown": false,
       "sessions": [
         {
           "name": "w5",
@@ -120,6 +124,7 @@ export const SHARED: TowerState = {
         "pr": "none"
       },
       "stale": false,
+      "card_unknown": false,
       "sessions": [
         {
           "name": "w7",
@@ -148,6 +153,7 @@ export const SHARED: TowerState = {
         "pr": "none"
       },
       "stale": false,
+      "card_unknown": false,
       "sessions": [
         {
           "name": "w8",
@@ -176,6 +182,7 @@ export const SHARED: TowerState = {
         "pr": "none"
       },
       "stale": false,
+      "card_unknown": false,
       "sessions": [
         {
           "name": "w9",
