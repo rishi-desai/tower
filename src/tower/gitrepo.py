@@ -9,7 +9,6 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
@@ -28,17 +27,18 @@ class NotARepo(Exception):
 
 @dataclass(frozen=True)
 class GitWorktree:
-    """One block of `git worktree list --porcelain`. branch is None on a detached HEAD."""
+    """One block of `git worktree list --porcelain`. branch is None on a detached HEAD, and only there is short_sha
+    set: git's unique short sha, the one its card is named with when first written ("" otherwise)."""
 
     path: str
     sha: str
     branch: str | None
+    short_sha: str
 
-    @cached_property
+    @property
     def label(self) -> str:
-        """How every report names it: the branch, or "(detached <git's unique short sha>)", the sha its card is named
-        with when first written. Asked of git only when read, so listings that don't report pay nothing."""
-        return self.branch or f"(detached {short_sha(Path(self.path), self.sha)})"
+        """How every report names it: the branch, or "(detached <short sha>)"."""
+        return self.branch or f"(detached {self.short_sha})"
 
 
 def git(cwd: Path, *args: str) -> str | None:
@@ -67,7 +67,9 @@ def list_worktrees(repo_dir: Path) -> list[GitWorktree]:
         elif line.startswith("branch "):
             branch = line[len("branch ") :].replace("refs/heads/", "", 1)
         elif line == "" and path:
-            found.append(GitWorktree(path, sha, branch))
+            # Asked in the repo, not the worktree's folder, which may be gone (a prunable worktree).
+            detached_short = "" if branch or not sha else short_sha(repo_dir, sha)
+            found.append(GitWorktree(path, sha, branch, short_sha=detached_short))
             path, sha, branch = "", "", None
     return found
 

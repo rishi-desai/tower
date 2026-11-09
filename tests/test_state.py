@@ -391,6 +391,8 @@ def detach_at_colliding_commits(repo: Fixture) -> tuple[Path, Path]:
     birthday search over the message), so a label cut to 7 characters can't tell them apart."""
     env = {
         **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,  # the sha depends on every byte: no signing or encoding header from config
+        "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@example.com",
         "GIT_AUTHOR_DATE": "1700000000 +0000",
@@ -402,7 +404,7 @@ def detach_at_colliding_commits(repo: Fixture) -> tuple[Path, Path]:
     paths = []
     for n, expected in ((12623, "a17f3a5652404cf7"), (21051, "a17f3a5d346a423f")):
         sha = subprocess.run(
-            ["git", "commit-tree", empty_tree, "-m", f"collide {n}"],
+            ["git", "commit-tree", "--no-gpg-sign", empty_tree, "-m", f"collide {n}"],
             cwd=repo.main,
             env=env,
             capture_output=True,
