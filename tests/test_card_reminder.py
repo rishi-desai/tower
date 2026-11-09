@@ -28,6 +28,14 @@ def stop(cwd: Path, transcript: Path) -> str:
     return proc.stdout
 
 
+def commit_later(cwd: Path) -> None:
+    """Commit in cwd, dated a minute from now: after the session started and after any card written so far."""
+    later = str(int(time.time()) + 60)
+    env = {**os.environ, "GIT_AUTHOR_DATE": later, "GIT_COMMITTER_DATE": later}
+    git_cmd = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git_cmd, "commit", "-q", "--allow-empty", "-m", "later"], cwd=cwd, env=env, check=True)
+
+
 def test_a_change_after_the_card_names_the_card_to_update(repo: Fixture, tmp_path: Path) -> None:
     worktree = repo.add_worktree("feat-1")
     transcript = tmp_path / "transcript.jsonl"
@@ -51,3 +59,35 @@ def test_no_change_since_the_card_says_nothing(repo: Fixture, tmp_path: Path) ->
     os.utime(card, (later, later))
 
     assert stop(worktree, transcript) == ""
+
+
+def test_a_commit_pulled_into_the_main_checkout_says_nothing(repo: Fixture, tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    # tower clean's `git pull --ff-only` brings in a merge commit GitHub made after the hub's session started
+    commit_later(repo.main)
+
+    assert stop(repo.main, transcript) == ""
+
+
+def test_a_changed_file_in_the_main_checkout_says_nothing(repo: Fixture, tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    changed = repo.main / "notes.txt"
+    changed.write_text("someone's edit\n", encoding="utf-8")
+    later = time.time() + 60
+    os.utime(changed, (later, later))
+
+    assert stop(repo.main, transcript) == ""
+
+
+def test_a_worker_commit_after_its_card_names_the_card_to_update(repo: Fixture, tmp_path: Path) -> None:
+    worktree = repo.add_worktree("feat-1")
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    repo.write_card("feat-1", "running")
+    commit_later(worktree)
+
+    context = json.loads(stop(worktree, transcript))["hookSpecificOutput"]["additionalContext"]
+
+    assert f"({repo.ledger / 'feat-1.md'})" in context

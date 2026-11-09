@@ -7,12 +7,13 @@ was last written? If so, we send Claude back once with "update your card". The s
 through (Claude Code sets stop_hook_active), so this can never loop, and Claude may decide the change
 isn't worth a card.
 
-"During this session" matters: a main checkout often holds other people's uncommitted files. Only
-changes newer than the session's own start (its transcript file's creation time) count, so the hub,
-which edits nothing, is never nagged.
+"During this session" matters: a worktree can hold files and commits this session didn't make. Only
+changes newer than the session's own start (its transcript file's creation time) count. The main
+checkout is skipped outright: it's the hub's, which edits nothing and needs no card, yet `tower clean`
+pulls merge commits newer than the hub's start into it.
 
-Stays quiet (exit 0, no output) whenever it can't tell: not a git repo, tower not set up on this
-machine, no transcript. A reminder we're unsure about is worse than none.
+Stays quiet (exit 0, no output) in the main checkout, and whenever it can't tell: not a git repo,
+tower not set up on this machine, no transcript. A reminder we're unsure about is worse than none.
 """
 
 from __future__ import annotations
@@ -43,6 +44,17 @@ def session_start(transcript_path: str) -> float | None:
     except (OSError, TypeError):
         return None
     return getattr(st, "st_birthtime", None)
+
+
+def top_and_main_checkout(cwd: str) -> tuple[str, bool] | None:
+    """(top folder, whether it's the main checkout) for the worktree holding cwd, or None outside one. The main
+    checkout is the one whose git dir is the shared one, the same test as tower's ledger.record_card."""
+    paths = run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"], cwd)
+    lines = paths.rstrip("\n").split("\n") if paths else []
+    if len(lines) != 3:
+        return None
+    top, git_dir, common = lines
+    return top, os.path.realpath(git_dir) == os.path.realpath(common)
 
 
 def newest_change(top: str) -> float:
@@ -78,10 +90,12 @@ def main() -> int:
         return 0  # we already sent Claude back once; let it stop
     cwd = event.get("cwd") or os.getcwd()
     started = session_start(event.get("transcript_path", ""))
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd)
-    if started is None or top is None:
+    found = top_and_main_checkout(cwd)
+    if started is None or found is None:
         return 0
-    top = top.strip()
+    top, in_main_checkout = found
+    if in_main_checkout:
+        return 0  # the hub's checkout needs no card (see above)
     card = run([sys.executable, "-I", RUN_TOWER, "card-path", top], top)
     if card is None:
         return 0  # tower isn't set up here, or `tower card-path` failed: unsure, so quiet (see above)
