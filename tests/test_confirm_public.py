@@ -1764,6 +1764,79 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "command",
     [
+        pytest.param("python3 " * 30_000, id="interpreter words"),
+        pytest.param("echo " * 90_000, id="plain words"),
+        pytest.param("tower " * 30_000 + "policy", id="tower then policy"),
+        pytest.param("A=1 " * 10_000 + "cat " + "tower/setup.sh " * 10_000, id="setup.sh read"),
+        pytest.param("A=1 " * 10_000 + "echo " + "cd " * 10_000, id="cd"),
+        pytest.param("A=1 " * 10_000 + "echo " + "git-x " * 10_000, id="dashed git"),
+        pytest.param("A=1 " * 10_000 + "echo " + "tower " * 10_000, id="tower"),
+        pytest.param("A=1 " * 100_000 + "tower " * 1_000, id="tower after many assignments"),
+        pytest.param("python3 " + "-I " * 100_000 + "tower merge " * 900, id="tower merge after many words"),
+        pytest.param("tower" + " --x=/tower" * 20_000, id="tower paths as options"),
+        pytest.param("sudo" + " -u sudo" * 8_000 + "; git push --force", id="sudo options"),
+        pytest.param("env" + " -u env" * 4_000 + "; git push", id="env options"),
+        pytest.param("env" + " -u env" * 1_000 + " git" * 40, id="git after env options"),
+        pytest.param("sudo" + " -D sudo" * 990 + " git push", id="git in sudo's folders"),
+        pytest.param("cd a; " * 40_000, id="many cds"),
+        pytest.param("python3 " * 1_000 + "-c '" + "towerx " * 150_000 + "'", id="interpreters before long code"),
+        pytest.param("env" + " -u env" * 300 + " -" + "x" * 300_000 + " true; git push --force", id="long option"),
+        pytest.param("x" * 300_000 + " sudo" * 60_000 + "; git push --force", id="sudo after a long program"),
+        pytest.param("x" * 300_000 + " tower" * 60_000 + "; git push --force", id="tower after a long program"),
+        pytest.param("x" * 300_000 + " cd" * 60_000 + "; git push --force", id="cd after a long program"),
+        pytest.param("x" * 300_000 + " git-x" * 60_000 + "; git push --force", id="dashed git after a long program"),
+        pytest.param("{" * 300_000 + "cat" + " tower/setup.sh" * 30_000, id="setup.sh after a long program"),
+    ],
+)
+def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
+    """Checks that look at each word (does an interpreter get code, does it run tower, cd, git or a wrapper, does it
+    change the policy) either stay linear or pay for everything they read, characters included: rescanning the rest
+    of the line, or the words before it, once per word took 12-92 s on these, growing with the square of the padding
+    until the hook's timeout lets the command through. A crash, which the hook turns into a quick ask, doesn't count
+    as in time, and the personal profile asks for every force push, so a quicker check may not let one through."""
+    start = time.monotonic()
+    decision = run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')
+    assert time.monotonic() - start < 10
+    assert decision is None or "approval hook failed" not in str(decision["permissionDecisionReason"])
+    if command.endswith("git push --force"):
+        assert asks(decision)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("x" * 1_000_000 + " git" * 600 + "; git push --force", id="git after a long program"),
+        pytest.param(
+            "sudo" + " -u sudo" * 480 + " " + "x" * 1_000_000 + "; git push --force", id="long wrapped command"
+        ),
+    ],
+)
+def test_a_long_word_read_again_for_each_later_word_runs_out_of_budget(command: str) -> None:
+    """A check that reads a long word again for each later word (git's look for wrappers before it, a wrapper's read
+    of the command it runs) pays for its characters each time, so these lines run out of budget and ask. Before, they
+    rescanned the word hundreds of times for free and were judged with budget left, in 4.5-6.7 s: under the timing
+    test's 10 s bar, so only the budget shows it."""
+    hook = load_hook()
+    checker = hook.CommandChecker(hook.SessionPolicy(hook.STRICTEST_GATES, "test"), "/tmp")
+    with pytest.raises(hook.TooComplex):
+        checker.reasons(command)
+
+
+def test_a_line_of_many_cds_runs_out_of_budget_before_building_every_folder() -> None:
+    """Each cd joins onto the path the line's cds have built so far, which grows with every cd, and pays for that
+    copy, so a line of 40,000 cds stops early. Building every folder before paying for any took over a gigabyte here,
+    growing with the square of the cds; the timing test's "many cds" case passes in time either way, and a line long
+    enough to fail it would need tens of gigabytes."""
+    hook = load_hook()
+    checker = hook.CommandChecker(hook.SessionPolicy(hook.STRICTEST_GATES, "test"), "/tmp")
+    with pytest.raises(hook.TooComplex):
+        checker.reasons("cd a; " * 40_000)
+    assert len(checker.folders) < 10_000
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         pytest.param('git commit -m "' + "tower.conf " * 50_000 + '"', id="names"),
         pytest.param("git add " + "src tower.conf " * 4000, id="names and folders"),
     ],

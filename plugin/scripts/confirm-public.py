@@ -419,8 +419,8 @@ GIT_PUSH_FORCE_OPTIONS = ("force", "force-with-lease", "force-if-includes", "mir
 GIT_FORCING_CONFIG = re.compile(r"remote\..*\.(?:mirror|push)")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 MAX_NESTING = 8  # shells inside shells (bash -c "bash -c '...'") before we stop and ask
-# Characters split plus words examined per tool call: a few seconds at worst on macOS's Python 3.9, far under
-# Claude Code's hook timeout.
+# Characters split plus words examined (with their characters, where a check scans their text) per tool call: a few
+# seconds at worst on macOS's Python 3.9, far under Claude Code's hook timeout.
 WORK_BUDGET = 2_000_000
 # Work units per path the safety floor looks up on disk (a folder test, or resolving symlinks for is_tower_file): about
 # 60 microseconds on macOS's Python 3.9, so a command naming thousands of paths runs out of budget instead of time.
@@ -997,7 +997,7 @@ class CommandChecker:
         self.simple_commands += len(commands)
         for command in commands:
             self.note_folders(command.words)
-            self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words)
+            self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words, self.spend)
             self.git_may_run_program = self.git_may_run_program or git_runs_program(command.words)
         # A read of setup.sh or the policy module is let through only when it is the line's one simple command; a pipe,
         # a second command or a substitution (each adds a command) asks, so the floor fails closed (ADR 0010).
@@ -1008,12 +1008,14 @@ class CommandChecker:
             # git can't be trusted to only read: it may run a program on the files, or run under config the hook can't
             # read or in another repo
             git_unsafe = self.git_may_run_program or self.git_config_from_env or self.names_git_env
+            self.spend(len(self.folders))  # each command is judged against every folder the line cds into so far
             folders = self.folders + searched
             found = protected_reasons(
                 command, self.cwd, folders, self.spend, self.makes_links, single_command, git_unsafe
             )
+            program = program_of(command.words)
             for index in range(len(command.words)):
-                found += self.check_invocation(command, index, depth)
+                found += self.check_invocation(command, index, program, depth)
             reasons += [reason for reason in found if reason not in reasons]
         return reasons
 
@@ -1028,30 +1030,35 @@ class CommandChecker:
                 self.folders.append(target)
                 continue
             path = os.path.expanduser(target.text)
-            self.folders += [Word(os.path.join(self.cwd, path)), Word(os.path.join(self.cd_folder, path))]
-            self.cd_folder = os.path.join(self.cd_folder, path)
-        chdirs = wrapper_folders(words)
+            self.spend(len(self.cd_folder) + len(path))  # joining copies the path the line's cds have built so far
+            joined = os.path.join(self.cd_folder, path)
+            self.folders += [Word(os.path.join(self.cwd, path)), Word(joined)]
+            self.cd_folder = joined
+        chdirs = wrapper_folders(words, program_of(words), self.spend)
         if chdirs:
             parts = [os.path.expanduser(folder.text) for folder in chdirs]
+            # each join copies its base and the parts: onto the session's folder and onto the cds' path
+            self.spend(len(self.cwd) + len(self.cd_folder) + 2 * sum(len(part) for part in parts))
             dynamic = any(folder.dynamic for folder in chdirs)
             self.folders += [Word(os.path.join(base, *parts), dynamic) for base in (self.cwd, self.cd_folder)]
 
-    def check_invocation(self, command: SimpleCommand, index: int, depth: int) -> list[str]:
+    def check_invocation(self, command: SimpleCommand, index: int, program: Program, depth: int) -> list[str]:
         """Reasons to ask if word INDEX of COMMAND runs something we check (git, gh, a shell, eval, env -S,
-        source, a program given shell code, an interpreter), with the words after it.
+        source, a program given shell code, an interpreter), with the words after it. PROGRAM is the program COMMAND
+        runs (program_of).
 
         Looking at every word, not just the first, covers wrappers like env, xargs, sudo and timeout.
         """
         name = program_name(command.words[index])
         is_language = bool(LANGUAGE_RUNNER.fullmatch(name))
-        is_git_dashed = name.startswith("git-") and runs_as_program(command.words, index)  # not `man git-push`
-        if name in TOWER_PROGRAMS and runs_tower(command.words, index):
+        is_git_dashed = name.startswith("git-") and program.runs(index)  # not `man git-push`
+        if name in TOWER_PROGRAMS and runs_tower(index, program):
             # A merge is judged at the end, like gh pr merge; a clean now, by the cleanup key
             self.note_tower_merge(command.words, index, depth == 0)
-            return self.tower_clean_reasons(command.words, index)
+            return self.tower_clean_reasons(command.words, index, program)
         if name not in INVOKERS and not is_git_dashed and not is_language:
             return []
-        self.spend(len(command.words) - index)
+        self.spend(scan_cost(command.words, index, len(command.words)))
         args = command.words[index + 1 :]
         if name == "eval":
             return self.check(" ".join(arg.text for arg in args), depth + 1)
@@ -1059,10 +1066,10 @@ class CommandChecker:
             line = env_split_line(args)
             return self.check(f"env {line}", depth + 1) if line is not None else []
         if name in ("source", "."):  # only as the program: `git add .` passes a directory
-            is_sourcing = args and runs_as_program(command.words, index)
+            is_sourcing = args and program.runs(index)
             return self.check_sourced(args[0], command, depth) if is_sourcing else []
         if name in SHELLS:
-            return self.check_shell(args, command, runs_as_program(command.words, index), depth)
+            return self.check_shell(args, command, program.runs(index), depth)
         if name in CODE_STRING_RUNNERS:  # each argument with spaces or operators may be a command line
             return [r for arg in args if re.search(r"[\s;|&]", arg.text) for r in self.check(arg.text, depth + 1)]
         if is_language:  # code in another language: check the git/gh commands and tower merges written inside it
@@ -1080,8 +1087,13 @@ class CommandChecker:
             reason = self.check_gh(args, is_whole_command=depth == 0 and index == 0)
         else:  # git, or one of its dashed executables (libexec/git-core/git-push)
             # env -C DIR / sudo -D DIR before git work like git -C DIR, so a later git -C joins onto DIR
-            self.spend(index)  # the words before git, read for those options
-            moved = [part for folder in wrapper_folders(command.words[:index]) for part in (Word("-C"), folder)]
+            # the words before git, whose names are read for wrappers (their options pay as they're read)
+            self.spend(scan_cost(command.words, 0, index))
+            moved = [
+                part
+                for folder in wrapper_folders(command.words[:index], program, self.spend)
+                for part in (Word("-C"), folder)
+            ]
             git_args = [*moved, *(args if name == "git" else [Word(name[4:]), *args])]
             reason = check_git(git_args, lambda: self.push_mode(git_args), self.git_config_from_env)
         return [reason] if reason else []
@@ -1091,9 +1103,8 @@ class CommandChecker:
         from a variable may be merge), to judge at the end like gh pr merge. Its PR can be looked up only when tower
         runs as its own command (TOP_LEVEL; merge_reasons() checks nothing is chained), straight or from python with
         only python's switches, merge comes right after it, and at most a PR number follows."""
-        self.spend(len(words) - index)
-        position = next_operand(words, index + 1)
-        if position is None or not (words[position].dynamic or words[position].text == "merge"):
+        position = self.tower_subcommand_at(words, index, "merge")
+        if position is None:
             return
         launcher, after = words[:index], words[position + 1 :]
         from_python = bool(launcher) and program_name(launcher[0]).startswith("python")
@@ -1108,17 +1119,30 @@ class CommandChecker:
         selector = after[0].text if readable and after else None
         self.merges.append(PendingMerge("tower merge", self.tower_gates(), readable, selector))
 
-    def tower_clean_reasons(self, words: list[Word], index: int) -> list[str]:
+    def tower_subcommand_at(self, words: list[Word], index: int, subcommand: str) -> int | None:
+        """Index of the operand after word INDEX of WORDS (tower or run-tower.py) when it is SUBCOMMAND (merge,
+        clean) or from a variable, else None. The options skipped to reach it are paid for (a path ending in /tower
+        may be one: tower --x=/tower), and once it is found the whole command is too, characters included, since the
+        caller reads the text of what launches tower as well as what follows it."""
+        position = next_operand(words, index + 1)
+        self.spend((len(words) if position is None else position) - index)
+        if position is None or not (words[position].dynamic or words[position].text == subcommand):
+            return None
+        self.spend(scan_cost(words, 0, len(words)))  # launcher words' text is scanned, as well as what follows
+        return position
+
+    def tower_clean_reasons(self, words: list[Word], index: int, program: Program) -> list[str]:
         """The reason to ask for the `tower clean` that word INDEX of WORDS (tower or run-tower.py) runs, if it does
         (a subcommand from a variable may be clean) and cleanup asks. A dry run only checks, so it never asks: tower
         run as the command itself (bare, from python with only python's switches, or with uv run, so the words after
         it are all tower's, not another command's as in find -exec ... \\; -exec ... --dry-run), clean right after it,
         and the exact --dry-run among clean's options (before any --, which makes the words after it worktree
-        names), with no word from a variable among them (one could be --)."""
-        position = next_operand(words, index + 1)
-        if position is None or not (words[position].dynamic or words[position].text == "clean"):
+        names), with no word from a variable among them (one could be --). PROGRAM is the program the command runs
+        (program_of)."""
+        position = self.tower_subcommand_at(words, index, "clean")
+        if position is None:
             return []
-        launcher, after = words[program_position(words) : index], words[position + 1 :]
+        launcher, after = words[program.at : index], words[position + 1 :]
         direct = (
             not launcher
             or [word.text for word in launcher] == ["uv", "run"]
@@ -1168,10 +1192,10 @@ class CommandChecker:
         Each folder counts both from the session's folder and from the line's last cd, since which applies depends
         on subshells; past MAX_FOLDERS distinct folders, it's the strictest rather than run git that often."""
         folders = list(self.folders)
+        parts = [os.path.expanduser(folder.text) for folder in git_folders]
         for base in {self.cwd, self.cd_folder}:
-            joined = base
-            for folder in git_folders:
-                joined = os.path.join(joined, os.path.expanduser(folder.text))
+            # one join builds the path once; joining folder by folder copies it again each time (sudo -D x -D x ...)
+            joined = os.path.join(base, *parts)
             if git_folders:
                 folders.append(Word(joined, any(folder.dynamic for folder in git_folders)))
         folders = list({(folder.text, folder.dynamic): folder for folder in folders}.values())  # each one once
@@ -1450,14 +1474,14 @@ def gh_lookup(argv: list[str], cwd: str) -> str | None:
     return out if proc.returncode == 0 and out and "\n" not in out else None
 
 
-def runs_tower(words: list[Word], index: int) -> bool:
+def runs_tower(index: int, program: Program) -> bool:
     """Whether word INDEX (naming tower or run-tower.py) is what its command runs: the program itself (or after a
     wrapper like env or sudo), or an argument of any program but git and those that only print or read
-    (python3 run-tower.py, uv run tower), so `git -C ~/code/tower merge` and `echo tower merge` aren't tower merges."""
-    if runs_as_program(words, index):
+    (python3 run-tower.py, uv run tower), so `git -C ~/code/tower merge` and `echo tower merge` aren't tower merges.
+    PROGRAM is the program the command runs (program_of)."""
+    if program.runs(index):
         return True
-    first = program_position(words)
-    return first < index and program_name(words[first]) not in READ_ONLY_PROGRAMS | {"git"}
+    return program.at < index and program.name not in READ_ONLY_PROGRAMS | {"git"}
 
 
 def gives_code(args: list[Word]) -> bool:
@@ -1487,11 +1511,31 @@ def program_position(words: list[Word]) -> int:
     return index
 
 
-def runs_as_program(words: list[Word], index: int) -> bool:
-    """Whether word INDEX is the program its command runs, not an argument (bash in `grep bash`): the program
-    itself, or any later word when the program is a wrapper like sudo, env or timeout."""
-    first = program_position(words)
-    return index == first or (first < index and program_name(words[first]) in WRAPPERS)
+@dataclass(frozen=True)
+class Program:
+    """Where a simple command's program is and what it is called, found once per command (program_of): found again
+    for each word, they cost a scan of the assignments before the program, or of a long program word, every time."""
+
+    at: int  # index of the program word (program_position); len(words) if there is none
+    name: str  # its program_name; "" if there is none
+
+    def runs(self, index: int) -> bool:
+        """Whether word INDEX is what the command runs, not an argument (bash in `grep bash`): the program itself, or
+        any later word when the program is a wrapper like sudo, env or timeout."""
+        return index == self.at or (self.at < index and self.name in WRAPPERS)
+
+
+def program_of(words: list[Word]) -> Program:
+    """The program a simple command's WORDS run, for checks that ask about each word (see Program)."""
+    at = program_position(words)
+    return Program(at, program_name(words[at]) if at < len(words) else "")
+
+
+def scan_cost(words: list[Word], start: int, end: int) -> int:
+    """What a check pays to read WORDS[START:END]: a unit per word plus their characters, since it scans their text
+    (a few long words cost a scan far more than their count: python3 ... -c '<a megabyte of code>', a short-option
+    cluster read letter by letter, or a long command word after a wrapper's options)."""
+    return end - start + sum(len(words[i].text) for i in range(start, end))
 
 
 def is_process_substitution(word: Word) -> bool:
@@ -1600,12 +1644,12 @@ def is_unreadable_config(key: str) -> bool:
     return has_expansion(key) or bool(GIT_HIDING_CONFIG.fullmatch(key.lower()))
 
 
-def sets_git_config(words: list[Word]) -> bool:
+def sets_git_config(words: list[Word], spend: Callable[[int], None]) -> bool:
     """Whether a simple command's WORDS may set a GIT_CONFIG_VARIABLE: an assignment before its program
     (GIT_CONFIG_COUNT=1 git push, or alone), one among the words of a wrapper like env or sudo, or a name that
     export, read or declare sets. A name only known at run time may be one: env $(cat vars) git push, export "$N=1",
     or an env that xargs, parallel or find run (xargs -I{} env {} git push). Other words only name one (echo
-    GIT_CONFIG_COUNT=1, unset, a commit message)."""
+    GIT_CONFIG_COUNT=1, unset, a commit message). Each env's options read are paid for with SPEND."""
     program = program_position(words)
     if any(GIT_CONFIG_ASSIGNMENT.match(word.text) for word in words[:program]):
         return True
@@ -1617,16 +1661,19 @@ def sets_git_config(words: list[Word]) -> bool:
         names = [program_name(word) for word in words]
         supplier = next((i for i in range(program, len(words)) if names[i] in ARGUMENT_SUPPLIERS), len(words))
         return any(
-            i > supplier or env_hides_variables(words, i) for i in range(program, len(words)) if names[i] == "env"
+            i > supplier or env_hides_variables(words, i, spend)
+            for i in range(program, len(words))
+            if names[i] == "env"
         )
     return name in VARIABLE_SETTERS and any(GIT_CONFIG_NAME.match(word.text) or hides_name(word) for word in args)
 
 
-def env_hides_variables(words: list[Word], index: int) -> bool:
+def env_hides_variables(words: list[Word], index: int, spend: Callable[[int], None]) -> bool:
     """Whether the env at word INDEX of WORDS may set variables its words don't show: what it runs starts with a word
     only known at run time, which may expand to assignments (env $(cat vars) git push). (An env that xargs, parallel
-    or find run may get assignments from them: sets_git_config counts that.)"""
-    command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
+    or find run may get assignments from them: sets_git_config counts that.) The options read are paid for with
+    SPEND: this env may be another option's value (env -u env), and reading from each runs to the end of the line."""
+    command_at = read_paid_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1, spend).command_at
     return command_at < len(words) and hides_name(words[command_at])
 
 
@@ -1680,16 +1727,18 @@ WRAPPER_SYNTAX = {
 }
 
 
-def wrapper_folders(words: list[Word]) -> list[Word]:
+def wrapper_folders(words: list[Word], program: Program, spend: Callable[[int], None]) -> list[Word]:
     """The folders a simple command's WORDS tell env (-C, --chdir) or sudo (-D, --chdir) to run its command in, in
-    order (each relative to the one before). A -C inside env -S's string is found when that is checked."""
+    order (each relative to the one before). A -C inside env -S's string is found when that is checked. PROGRAM is
+    the program the whole command runs (program_of); WORDS may stop short of its end (the words before git). Each
+    wrapper's options read are paid for with SPEND: an env or sudo word may be another option's value (sudo -u sudo),
+    and reading from each runs to the end of the line."""
     found: list[Word] = []
-    first = program_position(words)  # runs_as_program's test, with the program found once rather than per word
-    wrapped = first < len(words) and program_name(words[first]) in WRAPPERS
-    for index in range(first, len(words)):
-        name = program_name(words[index])
-        if name in WRAPPER_SYNTAX and (index == first or wrapped):
-            found += read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1).chdirs
+    for index in range(program.at, len(words)):
+        name = program_name(words[index]) if program.runs(index) else ""
+        if name in WRAPPER_SYNTAX:
+            options = read_paid_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1, spend)
+            found += options.chdirs
     return found
 
 
@@ -1715,6 +1764,16 @@ def shell_text(word: Word) -> str:
     if not word.dynamic:
         return shlex.quote(word.text)
     return '"' + word.text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def read_paid_wrapper_options(
+    words: list[Word], wrapper: WrapperSyntax, start: int, spend: Callable[[int], None]
+) -> WrapperOptions:
+    """read_wrapper_options from word START of WORDS, paid for with SPEND: the words it read and the one it stopped at
+    (what the wrapper runs), characters included, for the checks that read them again from every env or sudo word."""
+    options = read_wrapper_options(words, wrapper, start)
+    spend(scan_cost(words, start, min(options.command_at + 1, len(words))))
+    return options
 
 
 def read_wrapper_options(args: list[Word], wrapper: WrapperSyntax, start: int = 0) -> WrapperOptions:
@@ -1838,8 +1897,9 @@ def push_destination(args: list[Word]) -> list[Word]:
 def changed_folders(words: list[Word]) -> list[Word]:
     """The folder a simple command's WORDS cd or pushd into, as a one-item list (none if it doesn't): the first word
     after cd that isn't an option, ~ for a bare cd, and for `cd -` (the previous folder) a word marked dynamic."""
+    program = program_of(words)
     for index in range(len(words)):
-        if program_name(words[index]) in ("cd", "pushd") and runs_as_program(words, index):
+        if program_name(words[index]) in ("cd", "pushd") and program.runs(index):
             rest = [word for word in words[index + 1 :] if not word.text.startswith("-") or word.text == "-"]
             if not rest:
                 return [Word("~")]
@@ -2253,14 +2313,13 @@ def protected_reasons(
         return [TOWER_FILE_REASON]
     if not reads_only and any(CLAUDE_FOLDER.fullmatch(text) for text in words):
         return [TOWER_FILE_REASON]
-    runs_code = any(
-        program_name(word) in PATH_BUILDERS
-        or (
-            LANGUAGE_RUNNER.fullmatch(program_name(word))
-            and (gives_code(command.words[index + 1 :]) or command.stdin_text)
-        )
-        for index, word in enumerate(command.words[program:], program)
-    )
+    names = [program_name(word) for word in command.words]
+    # The first interpreter is given every later word too, so whether one gets code is one look after it (looking
+    # after each one is quadratic, and runs before any of it is paid for)
+    interpreter_at = next((i for i in range(program, len(names)) if LANGUAGE_RUNNER.fullmatch(names[i])), len(names))
+    code_words = command.words[interpreter_at + 1 :]
+    gets_code = interpreter_at < len(names) and bool(command.stdin_text or gives_code(code_words))
+    runs_code = gets_code or any(name in PATH_BUILDERS for name in names[program:])
     judged_by_text = runs_code or by_text
     session = [Word(cwd), *folders]
     targets = [(redirect.writes, redirect.target.text) for redirect in command.redirects]
@@ -2324,6 +2383,7 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
     so a pipe, a second command, a substitution or a wrapper asks — the floor fails closed (ADR 0010)."""
     words = command.words
     texts = [word.text for word in words]
+    program = program_of(words)
     if any(redirect.writes and protected_repo_file(redirect.target.text, cwd) for redirect in command.redirects):
         return True
     reads = read_only_words(command, single_command, git_may_run_program)
@@ -2350,18 +2410,18 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
     ):
         return True
     for index, text in enumerate(texts):
-        rest = words[index + 1 :]
         if names_protected_file(text, cwd):
-            runs_setup = program_name(words[index]) == "setup.sh" and runs_as_program(words, index)
-            if runs_setup and rest and all(word.text in ("--dry-run", "-h", "--help") for word in rest):
+            runs_setup = program_name(words[index]) == "setup.sh" and program.runs(index)
+            after = range(index + 1, len(texts))  # indexes of the words after it: no copy per word
+            if runs_setup and after and all(texts[i] in ("--dry-run", "-h", "--help") for i in after):
                 continue  # ./setup.sh --dry-run / --help only checks; it doesn't rewrite tower.conf
             if index not in reads:
                 return True
-        if "tower" in text.lower() and "policy" in texts[index + 1 :]:
-            after_policy = rest[[w.text for w in rest].index("policy") + 1 :]
-            if any(word.text == "use" or word.dynamic for word in after_policy):
-                return True
-    return False
+    # The first word naming tower sees every later policy and use, so one look from it is enough (one from each such
+    # word is quadratic)
+    tower_at = next((index for index, text in enumerate(texts) if "tower" in text.lower()), len(texts))
+    policy_at = next((index for index in range(tower_at + 1, len(texts)) if texts[index] == "policy"), len(texts))
+    return policy_at < len(texts) and any(word.text == "use" or word.dynamic for word in words[policy_at + 1 :])
 
 
 def read_only_words(command: SimpleCommand, single_command: bool, git_may_run_program: bool) -> set[int]:
