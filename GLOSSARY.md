@@ -74,8 +74,9 @@ _Avoid_: partial cleanup, orphan card (an orphan card is any card without a work
 
 **Card**:
 A worker's short Markdown note in the vault saying where its worktree stands: status, ticket, PR, what's done, the
-one decision it needs, how to verify. One card per worktree. The worker writes only the prose; tower's core renders
-the status, ticket, branch and PR from facts (`tower card write`), so a card can't say done without a PR.
+one decision it needs, how to verify. One card per worktree, except the main checkout, which is the hub's and has none.
+The worker writes only the prose; tower's core renders the status, ticket, branch and PR from facts
+(`tower card write`), so a card can't say done without a PR.
 A card is named after its worktree's branch, or its commit on a detached HEAD, when it is first written; that name
 isn't the worktree's label. The card stays with its worktree when the worktree moves to another branch (a stack
 worktree's worker moves between its branches), keeping its first name.
