@@ -64,7 +64,7 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
     try:
         conf: dict[str, str] | None = ledger.read_conf(ledger.conf_path())
     except ledger.ConfUnreadable as error:
-        conf_note = ledger.conf_unused(error)
+        conf_note = ledger.unread_conf_note(error)
         notes.append(conf_note)
         conf = None
 

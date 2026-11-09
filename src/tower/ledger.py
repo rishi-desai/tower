@@ -67,9 +67,9 @@ def read_conf(path: Path) -> dict[str, str]:
     return conf
 
 
-def conf_unused(error: ConfUnreadable) -> str:
-    """The note for a tower.conf that couldn't be read, worded the same wherever it's made, so a report that gets it
-    twice (from the policy's problems, or from each repo under `tower state --all`) can tell it's one note."""
+def unread_conf_note(error: ConfUnreadable) -> str:
+    """The note for a tower.conf that couldn't be read, worded the same wherever it's made, so `tower state --all`
+    can tell each repo's copy is the one it already listed."""
     return f"{error}, so its settings weren't used"
 
 

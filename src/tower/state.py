@@ -281,23 +281,21 @@ def gather(
     worktrees = list_worktrees(repo_dir)
     main = worktrees[0]
     notes: list[str] = []
-    conf_note = ""  # why tower.conf couldn't be read: then its note is the only one that follows from it
+    conf: dict[str, str] | None = None  # None: tower.conf couldn't be read, and its note is the only one it gets
     try:
         conf = ledger.read_conf(ledger.conf_path())
     except ledger.ConfUnreadable as error:
-        conf_note = ledger.conf_unused(error)
-        notes.append(conf_note)
+        notes.append(ledger.unread_conf_note(error))
 
     name = repo_name(repo_dir)
     ledger_folder: Path | None = None
-    if not conf_note:  # an unread conf may well have a projects_dir: don't call it missing
+    if conf is not None:  # an unread conf may well have a projects_dir: don't call it missing
         ledger_folder, ledger_note = ledger.ledger_dir(name, conf)
         if ledger_note:
             notes.append(ledger_note)
     repo_policy, _ = policy.for_checkout(Path(main.path))
-    policy_problems = [p for p in repo_policy.problems if p != conf_note]  # tower.conf's, already noted
-    if policy_problems:
-        notes.append(f"the policy file has {plural(len(policy_problems), 'problem')}; `tower policy` lists them")
+    if repo_policy.problems:
+        notes.append(f"the policy file has {plural(len(repo_policy.problems), 'problem')}; `tower policy` lists them")
 
     paths = [os.path.realpath(w.path) for w in worktrees]
     listed, live_note = sessions.read_agents() if agents_read is None else agents_read

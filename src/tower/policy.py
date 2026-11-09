@@ -272,14 +272,15 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
     """
     path = policy_path() if path is None else path
     problems: list[str] = []
+    conf_error = ""  # tower.conf couldn't be read: not a problem in the policy file, so it's named by the WIP limit
     try:
         conf = ledger.read_conf(ledger.conf_path())
     except ledger.ConfUnreadable as error:
-        problems.append(ledger.conf_unused(error))
+        conf_error = str(error)
         conf = {}
     machine_wip = (ledger.wip_limit(conf), f"wip_limit in {display_path(ledger.conf_path())}")
     if not conf.get("wip_limit", "").isdigit():
-        machine_wip = (machine_wip[0], "the default")
+        machine_wip = (machine_wip[0], f"the default ({conf_error})" if conf_error else "the default")
     try:
         text: str | None = path.read_text(encoding="utf-8")
     except FileNotFoundError:
