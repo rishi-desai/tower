@@ -1781,6 +1781,11 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("cd a; " * 40_000, id="many cds"),
         pytest.param("python3 " * 1_000 + "-c '" + "towerx " * 150_000 + "'", id="interpreters before long code"),
         pytest.param("env" + " -u env" * 300 + " -" + "x" * 300_000 + " true; git push --force", id="long option"),
+        pytest.param("x" * 300_000 + " sudo" * 60_000 + "; git push --force", id="sudo after a long program"),
+        pytest.param("x" * 300_000 + " tower" * 60_000 + "; git push --force", id="tower after a long program"),
+        pytest.param("x" * 300_000 + " cd" * 60_000 + "; git push --force", id="cd after a long program"),
+        pytest.param("x" * 300_000 + " git-x" * 60_000 + "; git push --force", id="dashed git after a long program"),
+        pytest.param("{" * 300_000 + "cat" + " tower/setup.sh" * 30_000, id="setup.sh after a long program"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
