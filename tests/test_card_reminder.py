@@ -32,8 +32,8 @@ def commit_later(cwd: Path) -> None:
     """Commit in cwd, dated a minute from now: after the session started and after any card written so far."""
     later = str(int(time.time()) + 60)
     env = {**os.environ, "GIT_AUTHOR_DATE": later, "GIT_COMMITTER_DATE": later}
-    git_env = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run([*git_env, "commit", "-q", "--allow-empty", "-m", "later"], cwd=cwd, env=env, check=True)
+    git_cmd = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git_cmd, "commit", "-q", "--allow-empty", "-m", "later"], cwd=cwd, env=env, check=True)
 
 
 def test_a_change_after_the_card_names_the_card_to_update(repo: Fixture, tmp_path: Path) -> None:

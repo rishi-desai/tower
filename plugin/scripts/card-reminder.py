@@ -93,7 +93,8 @@ def main() -> int:
     if started is None or top is None:
         return 0
     top = top.strip()
-    if is_main_checkout(top) is not False:
+    in_main_checkout = is_main_checkout(top)
+    if in_main_checkout is None or in_main_checkout:
         return 0  # the hub's checkout has no card to remind about, or we can't tell (see above)
     card = run([sys.executable, "-I", RUN_TOWER, "card-path", top], top)
     if card is None:
