@@ -133,8 +133,9 @@ def test_gh_logged_in_outside_a_github_repo_passes(bin_dir: Path, tmp_path: Path
     assert doctor.check_gh(tmp_path).status == "ok"
 
 
-def fake_claude(bin_dir: Path, plugins: str = "[]", agents: str = "[]") -> None:
-    """A fake claude printing plugins for `plugin list --json` and agents for `agents --json`."""
+def fake_claude(bin_dir: Path, plugins: str = "[]", agents: str = "[]", version: str = "2.1.304 (Claude Code)") -> None:
+    """A fake claude printing plugins for `plugin list --json`, agents for `agents --json` and version for
+    `--version` (whose "$1 $2" ends in a space: there is no $2)."""
     (bin_dir / "plugins.json").write_text(plugins, encoding="utf-8")
     (bin_dir / "agents.json").write_text(agents, encoding="utf-8")
     fake_tool(
@@ -143,6 +144,7 @@ def fake_claude(bin_dir: Path, plugins: str = "[]", agents: str = "[]") -> None:
         f"""case "$1 $2" in
   "plugin list") /bin/cat "{bin_dir / "plugins.json"}" ;;
   "agents --json") /bin/cat "{bin_dir / "agents.json"}" ;;
+  "--version ") echo '{version}' ;;
   *) exit 2 ;;
 esac""",
     )
@@ -196,6 +198,60 @@ def test_claude_agents_listing_sessions_passes(bin_dir: Path, tmp_path: Path) ->
     check = doctor.check_agents()
     assert check.status == "ok"
     assert "1 session" in check.detail
+
+
+def test_claude_code_older_than_2_1_295_warns_that_the_approval_hook_fails_open(bin_dir: Path) -> None:
+    """Before 2.1.295 Claude Code ignores the approval hook's onFailure, so a hook that times out or can't start lets
+    the command through. tower still works, so it is a warning, not a problem (#127)."""
+    fake_claude(bin_dir, version="2.1.294 (Claude Code)")
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "2.1.294" in check.detail and "2.1.295" in check.detail
+    assert "claude update" in check.fix
+
+
+@pytest.mark.parametrize("version", ["2.1.295", "2.1.1000", "3.0.0"])  # 2.1.1000 comes before 2.1.295 as text
+def test_claude_code_2_1_295_or_later_passes(bin_dir: Path, version: str) -> None:
+    """From 2.1.295 on, the approval hook fails closed; versions are compared as numbers, not text."""
+    fake_claude(bin_dir, version=f"{version} (Claude Code)")
+    check = doctor.check_claude_code()
+    assert check.status == "ok"
+    assert version in check.detail
+
+
+def test_a_claude_code_version_doctor_cant_read_warns_with_what_it_printed(bin_dir: Path) -> None:
+    """Output that doesn't start with a version may be a format change: it is shown, with the fix for one."""
+    fake_claude(bin_dir, version="Claude Code (nightly)")
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "nightly" in check.detail
+    assert "claude update" in check.fix
+
+
+def test_claude_version_that_fails_warns_with_its_error_not_as_a_format_change(bin_dir: Path) -> None:
+    """A claude --version that exits non-zero is broken, so its own error is shown, not the format-change fix."""
+    fake_tool(bin_dir, "claude", "echo 'claude: config is corrupt' >&2; exit 1")
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "config is corrupt" in check.detail
+    assert check.fix == "run: claude --version"
+
+
+def test_a_claude_that_cannot_be_run_is_not_told_to_install_claude_code(bin_dir: Path) -> None:
+    """A claude on PATH that won't start (not executable, or slower than doctor's timeout) is broken, not missing."""
+    (bin_dir / "claude").write_text("#!/bin/sh\n", encoding="utf-8")  # no execute bit
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "PermissionError" in check.detail
+    assert check.fix == "run: claude --version"
+
+
+def test_no_claude_command_only_warns_in_the_version_check(bin_dir: Path) -> None:
+    """The plugin and agents checks already fail for it: this one adds no second problem."""
+    check = doctor.check_claude_code()
+    assert check.status == "warn"
+    assert "not on PATH" in check.detail
+    assert "Claude Code" in check.fix
 
 
 def test_git_spice_missing_fails_and_says_how_to_install_it(bin_dir: Path) -> None:
@@ -336,7 +392,7 @@ def test_tower_doctor_with_only_warnings_exits_0_and_lists_every_check(
     healthy_machine(bin_dir, tmp_path, monkeypatch)
     assert cli.main(["doctor"]) == 0
     out = capsys.readouterr().out
-    for name in ("orca", "gh", "vault", "plugin", "git-spice", "mise", "policy", "agents", "hooks"):
+    for name in ("orca", "gh", "vault", "plugin", "claude-code", "git-spice", "mise", "policy", "agents", "hooks"):
         assert f" {name} " in out
     assert "warn  orca" in out and "fix: open the Orca app" in out
     assert out.rstrip().endswith("tower doctor: no problems, 1 warning")

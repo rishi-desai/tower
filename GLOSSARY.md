@@ -257,8 +257,9 @@ _Avoid_: hard rule, override
 
 **Doctor check**:
 One thing tower depends on, checked by `tower doctor` and reported with the fix when it isn't right. A failing check
-is a **problem** (tower can't work as it should); one is only a **warning** when the hub has a fallback (Orca down) or
-the fact can't be known for sure (no event in the last hour, no policy file).
+is a **problem** (tower can't work as it should); one is only a **warning** when the hub has a fallback (Orca down),
+the fact can't be known for sure (no event in the last hour, no policy file), or tower works, only less safely (a
+Claude Code too old for the approval hook to fail closed).
 _Avoid_: health check, test, diagnostic
 
 **Right account**:

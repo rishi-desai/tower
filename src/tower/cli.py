@@ -33,9 +33,9 @@ tower policy               the approval profile for this repo, why it applies, a
 tower policy use PROFILE [--repo]
                            make PROFILE this machine's default, or with --repo this repo's; for you to run in your own
                            terminal (the approval hook asks before an agent runs it)
-tower doctor               check each thing tower depends on (Orca, gh, the vault, the plugin, git-spice, mise, the
-                           policy, `claude agents --json`, the hooks), naming the fix for each problem; exit 1 when a
-                           check fails, 0 when there are only warnings (see doctor.py)
+tower doctor               check each thing tower depends on (Orca, gh, the vault, the plugin, Claude Code's version,
+                           git-spice, mise, the policy, `claude agents --json`, the hooks), naming the fix for each
+                           problem; exit 1 when a check fails, 0 when there are only warnings (see doctor.py)
 """
 
 from __future__ import annotations
