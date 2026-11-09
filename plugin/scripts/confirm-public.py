@@ -419,8 +419,8 @@ GIT_PUSH_FORCE_OPTIONS = ("force", "force-with-lease", "force-if-includes", "mir
 GIT_FORCING_CONFIG = re.compile(r"remote\..*\.(?:mirror|push)")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 MAX_NESTING = 8  # shells inside shells (bash -c "bash -c '...'") before we stop and ask
-# Characters split plus words examined per tool call: a few seconds at worst on macOS's Python 3.9, far under
-# Claude Code's hook timeout.
+# Characters split plus words examined (with their characters, where a check scans their text) per tool call: a few
+# seconds at worst on macOS's Python 3.9, far under Claude Code's hook timeout.
 WORK_BUDGET = 2_000_000
 # Work units per path the safety floor looks up on disk (a folder test, or resolving symlinks for is_tower_file): about
 # 60 microseconds on macOS's Python 3.9, so a command naming thousands of paths runs out of budget instead of time.
@@ -1054,7 +1054,7 @@ class CommandChecker:
             return self.tower_clean_reasons(command.words, index, program)
         if name not in INVOKERS and not is_git_dashed and not is_language:
             return []
-        self.spend(len(command.words) - index)
+        self.spend(len(command.words) - index + text_length(command.words, index + 1, len(command.words)))
         args = command.words[index + 1 :]
         if name == "eval":
             return self.check(" ".join(arg.text for arg in args), depth + 1)
@@ -1512,6 +1512,12 @@ def runs_as_program(words: list[Word], index: int, program: int) -> bool:
     return index == program or (program < index and program_name(words[program]) in WRAPPERS)
 
 
+def text_length(words: list[Word], start: int, end: int) -> int:
+    """Characters in WORDS[START:END], which a check that scans their text pays for on top of one unit per word: a
+    few long words cost a scan far more than their count says (python3 ... -c '<a megabyte of code>')."""
+    return sum(len(words[index].text) for index in range(start, end))
+
+
 def is_process_substitution(word: Word) -> bool:
     """Whether WORD is a <( ), >( ) or zsh =( ): a file name the shell makes up for a command's output."""
     return word.dynamic and word.text.startswith(("<(", ">(", "=("))
@@ -1648,7 +1654,7 @@ def env_hides_variables(words: list[Word], index: int, spend: Callable[[int], No
     or find run may get assignments from them: sets_git_config counts that.) The options read are paid for with
     SPEND: this env may be another option's value (env -u env), and reading from each runs to the end of the line."""
     command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
-    spend(command_at - index)
+    spend(command_at - index + text_length(words, index + 1, command_at))  # a short-option cluster is read by letter
     return command_at < len(words) and hides_name(words[command_at])
 
 
@@ -1708,13 +1714,12 @@ def wrapper_folders(words: list[Word], spend: Callable[[int], None]) -> list[Wor
     wrapper's options read are paid for with SPEND: an env or sudo word may be another option's value (sudo -u sudo),
     and reading from each runs to the end of the line."""
     found: list[Word] = []
-    first = program_position(words)  # runs_as_program's test, with the program found once rather than per word
-    wrapped = first < len(words) and program_name(words[first]) in WRAPPERS
+    first = program_position(words)
     for index in range(first, len(words)):
         name = program_name(words[index])
-        if name in WRAPPER_SYNTAX and (index == first or wrapped):
+        if name in WRAPPER_SYNTAX and runs_as_program(words, index, first):
             options = read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1)
-            spend(options.command_at - index)
+            spend(options.command_at - index + text_length(words, index + 1, options.command_at))  # read by letter
             found += options.chdirs
     return found
 

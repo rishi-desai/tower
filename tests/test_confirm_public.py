@@ -1779,17 +1779,22 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("env" + " -u env" * 1_000 + " git" * 40, id="git after env options"),
         pytest.param("sudo" + " -D sudo" * 990 + " git push", id="git in sudo's folders"),
         pytest.param("cd a; " * 40_000, id="many cds"),
+        pytest.param("python3 " * 1_000 + "-c '" + "towerx " * 150_000 + "'", id="interpreters before long code"),
+        pytest.param("env" + " -u env" * 300 + " -" + "x" * 300_000 + " true; git push --force", id="long option"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
     """Checks that look at each word (does an interpreter get code, does it run tower, cd, git or a wrapper, does it
     change the policy) either stay linear or pay for every word they read: rescanning the rest of the line, or the
     words before it, once per word took 12-92 s on these, growing with the square of the padding until the hook's
-    timeout lets the command through. A crash, which the hook turns into a quick ask, doesn't count as in time."""
+    timeout lets the command through. A crash, which the hook turns into a quick ask, doesn't count as in time, and
+    the personal profile asks for every force push, so a quicker check may not let one through."""
     start = time.monotonic()
     decision = run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')
     assert time.monotonic() - start < 10
     assert decision is None or "approval hook failed" not in str(decision["permissionDecisionReason"])
+    if command.endswith("git push --force"):
+        assert asks(decision)
 
 
 @pytest.mark.parametrize(
