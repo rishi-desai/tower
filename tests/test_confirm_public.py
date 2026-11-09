@@ -127,6 +127,8 @@ ALWAYS_ASK = [
     "csh -c 'gh issue close 3'",
     "ssh host 'gh pr comment 5 -b hi'",
     "watch 'gh pr comment 5 -b hi'",
+    "parallel 'gh pr comment {} -b hi' ::: 5",
+    "npx -c 'gh issue close 3'",
     "python3 -c \"import os; os.system('gh pr comment 5 -b hi')\"",
     "osascript -e 'do shell script \"gh issue close 3\"'",
     # part of a deciding word, or a GraphQL query, from a variable or command output
@@ -1503,7 +1505,24 @@ FLOOR_COMMANDS = [
     "python3 <<'EOF'\nimport os; os.system('claude plugin disable tower@tower')\nEOF",
     "dc -e '!claude plugin disable tower'",
     "sqlite3 x.db '.shell claude plugin uninstall tower'",
+    "R -e 'system(\"claude plugin disable tower\")'",
+    "parallel 'claude plugin disable {}' ::: tower",
+    "sed 's|a;b|claude plugin disable tower|e' notes.md",
     "awk 'BEGIN{system(\"claude --bare -p x\")}'",
+    # sed forms GNU sed runs a command in that a deny-list missed; GNU sed as gsed, and m4 (#108 review)
+    "sed -l 5 '1e claude plugin disable tower' f",
+    "sed -n -e '1{1e claude plugin disable tower' -e '}' f",
+    "sed '1~2e claude plugin disable tower' f",
+    "sed '1,+2e claude plugin disable tower' f",
+    "sed '/x/Ie claude plugin disable tower' f",
+    "sed '\\,x,e claude plugin disable tower' f",
+    "sed --e='1e claude plugin disable tower' f",
+    "gsed '1e claude plugin disable tower' f",
+    "gsed 'e claude --bare -p x' f",
+    "m4 <<< 'syscmd(claude plugin disable tower)'",
+    # a sed that can't run a command doesn't hide a later runner's code
+    "find . -exec sed -n p {} \\; -exec python3 -c 'import os; os.system(\"claude plugin disable tower\")' \\;",
+    "find . -exec sed -n p {} \\; -exec python3 -c 'import os; os.system(\"claude --bare -p x\")' \\;",
 ]
 
 
@@ -1556,6 +1575,8 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
         # code that names claude and plugin without an off verb, and a sed that only prints the lines it finds (#108)
         "awk '/claude plugin/ {print}' notes.md",
         "sed -n '/claude plugin disable/p' README.md",
+        "sed -i '' 's/claude plugin remove/claude plugin uninstall/' README.md",
+        "sed -n '/claude plugin disable/,+3p' README.md",
         "vim -c 'set nu' notes.md",
         "python3 -c 'print(\"claude plugin list\")'",
         "sudo claude plugin disable some-other-plugin --scope user",
@@ -1874,6 +1895,9 @@ FLOOR_BYPASSES = [
     "python3 -c \"from pathlib import Path; (Path.home()/'.claude'/'tower'/'policy.toml').write_text('x')\"",
     "uv run python -c 'from tower import policy; policy.use(\"sandbox\")'",
     "node -e \"require('child_process').execSync('tower policy use sandbox')\"",
+    # R and Julia can build a path to tower's files like python can (#108 review)
+    'Rscript -e \'setwd(path.expand("~/.claude")); writeLines("x", "tower.conf")\'',
+    'julia -e \'cd(homedir() * "/.claude"); write("tower.conf", "x")\'',
 ]
 
 
