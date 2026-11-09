@@ -311,9 +311,9 @@ def gather(
         sessions_source = "events" if any(live.values()) else "none"
 
     prs: dict[str, Pr] = {}
-    picks: dict[str, Pr] = {}
+    branch_prs: dict[str, Pr] = {}
     if with_pr:
-        prs, picks, pr_note = pull_requests(Path(main.path), worktrees)
+        prs, branch_prs, pr_note = pull_requests(Path(main.path), worktrees)
         if pr_note:
             notes.append(pr_note)
 
@@ -323,7 +323,7 @@ def gather(
             "no base branch (no origin/HEAD, and the main checkout is detached), so unshipped work wasn't counted"
         )
     checked_out = {wt.branch: wt.path for wt in worktrees if wt.branch}
-    found_stacks, stacks_note = stacks.read_stacks(Path(main.path), checked_out, picks)
+    found_stacks, stacks_note = stacks.read_stacks(Path(main.path), checked_out, branch_prs)
     if stacks_note:
         notes.append(stacks_note)
     seen_cards: set[str] = set()
@@ -615,29 +615,32 @@ def is_dirty(worktree: Path) -> bool | None:
 
 
 def pull_requests(repo_dir: Path, worktrees: list[GitWorktree]) -> tuple[dict[str, Pr], dict[str, Pr], str]:
-    """(each worktree's PR by its branch, by github.worktree_pr's rule, the one `tower card` uses; github.newest_pr's
-    pick for every branch asked about, which the stacks weigh against git-spice's own record; a note when gh couldn't
-    be asked about some). One `gh pr list --head` per checked-out branch and per branch git-spice tracks, PR_LOOKUPS
-    at a time: each call only runs gh, so they share nothing."""
+    """(each worktree's PR by its branch, by github.worktree_pr's rule, the one `tower card` uses; each branch's PR
+    before that rule's earlier-work check, github.branch_pr's pick, which the stacks weigh against git-spice's own
+    record; a note when gh couldn't be asked about some). One `gh pr list --head` per checked-out branch and per branch
+    git-spice tracks, PR_LOOKUPS at a time: each call only runs gh, so they share nothing."""
     tracking, _ = stacks.read_tracking(repo_dir)  # read_stacks notes a tracking ref it can't read
     branches = sorted({wt.branch for wt in worktrees if wt.branch} | set(tracking.branches if tracking else ()))
     if not branches:
         return {}, {}, ""
     with ThreadPoolExecutor(max_workers=min(PR_LOOKUPS, len(branches))) as pool:
-        found = dict(zip(branches, pool.map(lambda branch: github.newest_pr(repo_dir, branch), branches)))
-    picks = {branch: as_pr(pr) for branch, (pr, _) in found.items() if pr is not None}
+        found = dict(zip(branches, pool.map(lambda branch: github.branch_pr(repo_dir, branch), branches)))
+    branch_prs = {branch: as_pr(pr) for branch, (pr, _) in found.items() if pr is not None}
     prs: dict[str, Pr] = {}
     for wt in worktrees:
-        pr = found.get(wt.branch or "", (None, ""))[0]
-        if pr is not None:
-            kept, _ = github.unless_earlier_work(Path(wt.path), pr)  # the card says why it was dropped
-            if kept is not None:
-                prs[str(wt.branch)] = as_pr(kept)
+        if wt.branch is None:
+            continue
+        pr, _ = found[wt.branch]
+        if pr is None:
+            continue
+        kept, _ = github.unless_earlier_work(Path(wt.path), pr)  # the card says why it was dropped
+        if kept is not None:
+            prs[wt.branch] = as_pr(kept)
     errors = [error for _, error in found.values() if error]
     if not errors:
-        return prs, picks, ""
+        return prs, branch_prs, ""
     whose = "" if len(errors) == len(branches) else f" of {len(errors)} of {len(branches)} branches"
-    return prs, picks, f"gh pr list failed ({errors[0]}), so the PRs{whose} weren't read"
+    return prs, branch_prs, f"gh pr list failed ({errors[0]}), so the PRs{whose} weren't read"
 
 
 def as_pr(pr: github.BranchPr) -> Pr:

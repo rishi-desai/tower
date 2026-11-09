@@ -383,7 +383,7 @@ def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """#77: a stranger's fork can push a branch with any name (patch-1): only a PR from this repo is the worktree's,
-    as in github.newest_pr, and a newer fork PR on the same branch name doesn't hide this repo's own."""
+    as in github.branch_pr, and a newer fork PR on the same branch name doesn't hide this repo's own."""
     repo.add_worktree("shared")
     repo.add_worktree("patch-1")
     git(repo.main, "branch", "parked-fork", "shared")  # parked work: no worktree, commits not on main
@@ -411,7 +411,7 @@ def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
 def test_adopt_scan_shows_a_branchs_open_pr_before_a_newer_merged_one(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    """#78: the adopt scan picks a branch's PR as the card and `tower state --pr` do (github.newest_pr): its open PR,
+    """#78: the adopt scan picks a branch's PR as the card and `tower state --pr` do (github.branch_pr): its open PR,
     else its newest, so a newer merged PR on the same branch name doesn't hide the open one."""
     repo.add_worktree("reopened")
     git(repo.main, "branch", "parked-reopened", "reopened")

@@ -20,7 +20,8 @@ import os
 from pathlib import Path
 
 from tower import ledger, policy, sessions, state
-from tower.github import newest_pr, try_gh
+from tower.github import branch_pr as github_branch_pr
+from tower.github import try_gh, worktree_pr
 from tower.gitrepo import GitWorktree, git, guess_ticket, list_worktrees, repo_name
 
 SHOWN_CHANGES = 8  # uncommitted entries listed under a worktree; the rest are counted
@@ -117,15 +118,19 @@ def worktree_rows(
             for f in worktree_folders
         ]
     if has_gh and worktree.branch and not is_main:
-        pr, error = branch_pr(repo_dir, worktree.branch, with_title=True)
+        pr, error = branch_pr(repo_dir, worktree.branch, with_title=True, worktree=path)
         rows.append(f"    PR: {pr}" if pr is not None else f"    PR: (gh failed: {error})")
     return rows
 
 
-def branch_pr(repo_dir: Path, branch: str, with_title: bool) -> tuple[str | None, str]:
-    """The branch's PR (github.newest_pr: its open PR, else its newest, never a fork's) as "#N STATE[ title]", "none"
-    when it has none, or None and gh's error."""
-    pr, error = newest_pr(repo_dir, branch)
+def branch_pr(repo_dir: Path, branch: str, with_title: bool, worktree: Path | None = None) -> tuple[str | None, str]:
+    """The branch's PR as "#N STATE[ title]", "none" when it has none, or None and gh's error: the worktree's PR
+    (github.worktree_pr) for a branch checked out in worktree, else github.branch_pr's pick (its open PR, else its
+    newest, never a fork's), since a parked branch has no HEAD of its own to check earlier work against."""
+    if worktree is None:
+        pr, error = github_branch_pr(repo_dir, branch)
+    else:
+        pr, _, error = worktree_pr(worktree, branch)
     if error:
         return None, error
     if pr is None:

@@ -275,6 +275,26 @@ def test_a_merged_pr_from_earlier_work_on_a_reused_branch_name_is_not_the_worktr
     assert github.worktree_pr(path, "reused")[0] is None
 
 
+def test_a_fresh_worktree_on_a_reused_branch_name_is_never_ready_to_clean_off_the_old_pr(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A worker just started on a branch name whose old PR merged (by merge commit, so its head is on main): no card
+    yet, no commits, nothing uncommitted. The old PR isn't this work, so it can't make the worktree ready-to-clean."""
+    git(repo.main, "checkout", "-q", "-b", "reused")
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "the old reused branch")
+    old_head = git(repo.main, "rev-parse", "HEAD").strip()
+    git(repo.main, "checkout", "-q", "main")
+    git(repo.main, "merge", "-q", "--no-ff", "--no-edit", "reused")
+    git(repo.main, "branch", "-q", "-D", "reused")
+    repo.add_worktree("reused", commits=0)
+    old_pr = {"number": 5, "state": "MERGED", "headRefName": "reused", "headRefOid": old_head, "url": "u"}
+    fake_gh_pr_list(tmp_path, [{**old_pr, "baseRefName": "main", "isCrossRepository": False}])
+
+    row = rows(tower_state(capsys, "--pr"))["reused"]
+
+    assert (row["status"], row["reason"], row["pr"]) == ("no-card", "no card yet", None)
+
+
 def test_a_worktrees_pr_older_than_the_repos_200_newest_still_shows(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:

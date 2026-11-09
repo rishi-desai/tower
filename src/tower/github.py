@@ -141,7 +141,7 @@ def try_gh(cwd: Path, *args: str) -> tuple[str | None, str]:
     return proc.stdout, ""
 
 
-def newest_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
+def branch_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
     """(branch's PR, gh's error): its open PR, else its newest, never one from a fork (a stranger's patch-1 isn't this
     work), from one `gh pr list --head` in directory. The one place "open first, else newest" is decided. gh's error is
     "" when GitHub answered."""
@@ -192,9 +192,11 @@ def unless_earlier_work(worktree: Path, pr: BranchPr) -> tuple[BranchPr | None, 
 
 
 def worktree_pr(worktree: Path, branch: str) -> tuple[BranchPr | None, str, str]:
-    """(the worktree's PR, a note, gh's error): newest_pr's pick for the worktree's branch, unless it's earlier work on
-    a reused branch name (unless_earlier_work). `tower card` and `tower state --pr` both decide it here."""
-    pr, error = newest_pr(worktree, branch)
+    """(the worktree's PR, a note, gh's error): branch_pr's pick for the worktree's branch, unless it's earlier work on
+    a reused branch name (unless_earlier_work). `tower card` and the adopt scan decide it here; `tower state --pr`
+    runs the same two steps itself, to hand the stacks the pick before the second."""
+    pr, error = branch_pr(worktree, branch)
     if pr is None:
         return None, "", error
-    return (*unless_earlier_work(worktree, pr), "")
+    kept, note = unless_earlier_work(worktree, pr)
+    return kept, note, ""
