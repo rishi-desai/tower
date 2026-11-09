@@ -48,8 +48,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tower import ledger, stacks, state
-from tower.github import BranchPr, from_this_repo, try_gh, worktree_pr
+from tower.github import BranchPr, branch_done, worktree_pr
 from tower.gitrepo import git, guess_ticket, is_main_checkout, list_worktrees
+from tower.merge import run_gh
 from tower.state import HEADING, KICKOFF, is_kickoff_heading, split_kickoff  # state reads the kickoff back too
 
 SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
@@ -248,17 +249,6 @@ def choose_status(
 # ---------- facts ----------
 
 
-def pr_done(worktree: Path, branch: str) -> bool | None:
-    """Whether GitHub has branch's PR merged or closed and none open (a stack branch that needs nothing more); None
-    when gh couldn't be asked."""
-    out, _ = try_gh(worktree, "pr", "list", "--head", branch, "--state", "all", "--json", "state,isCrossRepository")
-    try:
-        states = [str(p["state"]) for p in json.loads(out or "") if from_this_repo(p)]
-    except (ValueError, TypeError, KeyError):
-        return None
-    return bool(states) and "OPEN" not in states
-
-
 def repo_base(worktree: Path) -> str:
     """The repo's base branch without "origin/" (state.base_ref), or none."""
     main = list_worktrees(worktree)[0]
@@ -343,7 +333,8 @@ def write_card(
         warnings.append(f"couldn't read this branch's PR ({gh_error}), so the card says pr: unknown")
     stack_open: tuple[str, ...] | None = ()
     if pr is not None and pr.state == "MERGED":
-        unmerged, stack_note = stacks.open_besides(worktree, branch, lambda name: pr_done(worktree, name))
+        gh = run_gh(worktree)
+        unmerged, stack_note = stacks.open_besides(worktree, branch, lambda name: branch_done(gh, name))
         stack_open = None if unmerged is None else tuple(unmerged)
         if stack_note:
             warnings.append(f"whether this worktree's stack is finished couldn't be checked: {stack_note}")

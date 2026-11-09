@@ -3,7 +3,7 @@
 Every check is read fresh for each worktree, and all of them must pass, or tower says which failed and leaves that
 worktree exactly as it was:
 
-    its branch's PR is merged (`gh pr list --head`; an open PR on the branch means work goes on)
+    its branch's PR is merged (github.branch_prs, never a fork's; an open PR on the branch means work goes on)
     its HEAD is that PR's head commit, so the merge took every commit (a squash merge leaves none on the base)
     `git status --porcelain` is empty: nothing uncommitted or untracked
     no stash entry was made on its branch (the stash is shared by every worktree)
@@ -39,7 +39,6 @@ Runs under whatever `python3` the plugin finds (3.9 on a stock Mac), like the re
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import time
@@ -47,8 +46,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from tower import ledger, merge, sessions, stacks, state
-from tower.gitrepo import COMMIT_ID, GitWorktree, NotARepo, git, list_worktrees, repo_name
+from tower import github, ledger, merge, sessions, stacks, state
+from tower.gitrepo import GitWorktree, NotARepo, git, list_worktrees, repo_name
 from tower.merge import Gh, GhResult, Say
 
 ORCA_TIMEOUT_SECONDS = 60  # one orca call; removing a worktree is the slowest
@@ -286,7 +285,7 @@ def check(
     if stash_failure:
         failures.append(stash_failure)
     if worktree.branch:
-        unmerged, stack_note = stacks.open_besides(path, worktree.branch, lambda name: pr_done(gh, name))
+        unmerged, stack_note = stacks.open_besides(path, worktree.branch, lambda name: github.branch_done(gh, name))
         if unmerged is None:
             failures.append(f"whether its git-spice stack is finished couldn't be checked: {stack_note}")
         elif unmerged:
@@ -357,28 +356,19 @@ def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str, 
     branch), the newest counts."""
     if branch is None:
         return None, None, "it is on a detached HEAD, so it has no branch or PR", True
-    listed = gh(
-        ["pr", "list", "--head", branch, "--state", "all", "--json", "number,state,headRefOid,isCrossRepository"]
-    )
-    try:
-        found = json.loads(listed.out) if listed.code == 0 else None
-    except ValueError:
-        found = None
-    if not isinstance(found, list):
-        return None, None, f"couldn't read {branch}'s PR from GitHub ({merge.gh_reason(listed)})", False
-    pulls = [p for p in found if isinstance(p, dict) and isinstance(p.get("number"), int)]
-    pulls = [p for p in pulls if not p.get("isCrossRepository")]  # a fork's same-named branch isn't this one
-    opened = [p["number"] for p in pulls if p.get("state") == "OPEN"]
+    prs, error = github.branch_prs(gh, branch)  # this repo's only: a fork's same-named branch isn't this one
+    if prs is None:
+        return None, None, f"couldn't read {branch}'s PR from GitHub ({error})", False
+    opened = [pr.number for pr in prs if pr.state == "OPEN"]
     if opened:
         return None, None, f"PR #{opened[0]} on {branch} is open, not merged", True
-    merged = sorted((p for p in pulls if p.get("state") == "MERGED"), key=lambda p: int(p["number"]))
+    merged = [pr for pr in prs if pr.state == "MERGED"]
     if not merged:
         return None, None, f"{branch} has no merged PR", True
-    newest = merged[-1]
-    head = newest.get("headRefOid")
-    if not isinstance(head, str) or not COMMIT_ID.fullmatch(head):
-        return None, None, f"GitHub didn't give PR #{newest['number']}'s head commit", False
-    return int(newest["number"]), head, "", True
+    newest = merged[0]
+    if not newest.head:
+        return None, None, f"GitHub didn't give PR #{newest.number}'s head commit", False
+    return newest.number, newest.head, "", True
 
 
 def local_tip(main: Path, branch: str) -> str | None:
@@ -402,20 +392,6 @@ def stashed_on(path: Path, branch: str | None) -> str:
         f"{state.plural(len(stashes), 'stash entry')} {'was' if len(stashes) == 1 else 'were'} made on {branch}:"
         f" {stashes[0]}"
     )
-
-
-def pr_done(gh: Gh, branch: str) -> bool | None:
-    """Whether GitHub has branch's PR merged or closed and none open (a stack branch that needs nothing more); None
-    when GitHub couldn't be read."""
-    listed = gh(["pr", "list", "--head", branch, "--state", "all", "--json", "state,isCrossRepository"])
-    try:
-        found = json.loads(listed.out) if listed.code == 0 else None
-    except ValueError:
-        found = None
-    if not isinstance(found, list):
-        return None
-    states = [p.get("state") for p in found if isinstance(p, dict) and not p.get("isCrossRepository")]
-    return bool(states) and "OPEN" not in states
 
 
 def stash_entries(path: Path, branch: str | None) -> list[str] | None:

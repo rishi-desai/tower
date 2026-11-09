@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-from conftest import Fixture, git, interactive
+from conftest import Fixture, behind_forks, fake_github, git, interactive
 
 from tower import cli, gitrepo, scan
 
@@ -335,15 +333,8 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     messy(repo)
-    fake_gh(
-        tmp_path,
-        """  "auth status"|"repo view") exit 0 ;;
-  "pr list") case "$*" in
-    *feat/12-slash*) printf '[{"number":5,"state":"OPEN","title":"slash work","isCrossRepository":false}]' ;;
-    *parked/x*) echo "HTTP 502" >&2; exit 1 ;;
-    *) printf '[]' ;;
-  esac ;;""",
-    )
+    slash = {"number": 5, "state": "OPEN", "title": "slash work", "headRefName": "feat/12-slash"}
+    fake_github(tmp_path, [{**slash, "isCrossRepository": False}], failing={"parked/x": "HTTP 502"})
 
     code, out, _ = run(capsys, "adopt-scan")
 
@@ -356,27 +347,9 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
 
 
 def fake_gh_prs_by_head(tmp_path: Path, prs: dict[str, list[dict[str, object]]]) -> None:
-    """Put a `gh` on PATH that answers like GitHub for these PRs per head branch (newest first, as gh lists them):
-    `pr list --head B` keeps --limit's first N, prints only the --json fields asked for (of those each PR has), and
-    renders a `{{range .}}...{{.field}}...{{end}}` --template; `auth status` and `repo view` succeed. --limit and --template are
-    honoured as GitHub would, so a return to the old `--limit 1` template call goes red rather than passing on luck."""
-    program = (
-        "import json, re, sys\n"
-        "args = sys.argv[1:]\n"
-        "sys.exit(0) if args[:2] in (['auth', 'status'], ['repo', 'view']) else None\n"
-        "sys.exit(9) if args[:2] != ['pr', 'list'] else None\n"
-        "opt = lambda name, default: args[args.index(name) + 1] if name in args else default\n"
-        f"listed = {prs!r}.get(opt('--head', ''), [])[: int(opt('--limit', '30'))]\n"
-        "fields = opt('--json', '').split(',')\n"
-        "listed = [{f: pr[f] for f in fields if f in pr} for pr in listed]\n"
-        "template = opt('--template', '')\n"
-        "body = template.removeprefix('{{range .}}').removesuffix('{{end}}')\n"
-        "render = lambda pr: re.sub(r'{{\\.(\\w+)}}', lambda m: str(pr[m.group(1)]), body)\n"
-        "print(''.join(render(pr) for pr in listed) if template else json.dumps(listed), end='')\n"
-    )
-    gh = tmp_path / "bin" / "gh"
-    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(program)} "$@"\n', encoding="utf-8")
-    gh.chmod(0o755)
+    """Put a `gh` on PATH (conftest.fake_github) that lists these PRs per head branch, newest first, as gh and GitHub
+    do; `auth status` and `repo view` succeed."""
+    fake_github(tmp_path, [{"headRefName": head, **pr} for head, listed in prs.items() for pr in listed])
 
 
 def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
@@ -435,6 +408,26 @@ def test_adopt_scan_shows_a_branchs_open_pr_before_a_newer_merged_one(
     assert code == 0
     assert out.split("    PR: #30 OPEN current\n")[0].splitlines()[-1].startswith("- [worktree] reopened |")
     assert "- parked-reopened | 1 commit(s) not on main | PR: #40 OPEN | last: " in out
+
+
+def test_adopt_scan_finds_a_branchs_own_pr_behind_more_fork_prs_than_gh_lists(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """#116: more fork PRs from a branch of the same name than gh pr list shows by default (30), all newer, don't hide
+    this repo's own PR, for a worktree's branch or a parked one."""
+    repo.add_worktree("patch-1")
+    git(repo.main, "branch", "patch-2", "patch-1")
+    fake_github(
+        tmp_path,
+        behind_forks("patch-1", {"number": 5, "state": "OPEN", "title": "own fix"})
+        + behind_forks("patch-2", {"number": 6, "state": "OPEN", "title": "own fix 2"}),
+    )
+
+    code, out, _ = run(capsys, "adopt-scan")
+
+    assert code == 0
+    assert out.split("    PR: #5 OPEN own fix\n")[0].splitlines()[-1].startswith("- [worktree] patch-1 |")
+    assert "- patch-2 | 1 commit(s) not on main | PR: #6 OPEN | last: " in out
 
 
 def test_the_plugin_runs_adopt_scan(repo: Fixture) -> None:

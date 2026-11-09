@@ -1,7 +1,7 @@
 """Tests for `tower card write` (src/tower/card.py) and the card-resume.py hook: cards as a view the core renders.
 
-Each test runs on a real throwaway repo (conftest.py's `repo`) with a fake `gh` whose `pr list` prints the PRs the test
-chose. The agent sends only the narrative sections on stdin; the frontmatter comes from git, GitHub and the request.
+Each test runs on a real throwaway repo (conftest.py's `repo`) with a fake `gh` (conftest.fake_github) that lists the PRs
+the test chose. The agent sends only the narrative sections on stdin; the frontmatter comes from git, GitHub and the request.
 """
 
 from __future__ import annotations
@@ -9,14 +9,13 @@ from __future__ import annotations
 import io
 import json
 import re
-import shlex
 import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from conftest import Fixture, git
+from conftest import Fixture, behind_forks, fake_github, git, track
 
 from tower import cli
 
@@ -48,29 +47,22 @@ NARRATIVE = """## Done
 
 
 def fake_prs(tmp_path: Path, prs: list[dict[str, object]] | None) -> None:
-    """Put a `gh` on PATH whose `pr list` prints prs as JSON, each from this repo unless it says isCrossRepository
-    (gh always prints that field when asked); None makes it fail like a logged-out gh."""
+    """Put a `gh` on PATH (conftest.fake_github) that lists prs as every branch's PRs, each from this repo unless it
+    says isCrossRepository; None makes every call fail like a logged-out gh."""
+    if prs is not None:
+        fake_github(tmp_path, [{"isCrossRepository": False, **pr} for pr in prs])
+        return
     gh = tmp_path / "bin" / "gh"
-    if prs is None:
-        body = 'echo "gh: To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4'
-    else:
-        body = f"cat <<'EOF'\n{json.dumps([{'isCrossRepository': False, **pr} for pr in prs])}\nEOF"
-    gh.write_text(f'#!/bin/sh\n[ "$1 $2" = "pr list" ] || exit 9\n{body}\n', encoding="utf-8")
+    gh.write_text('#!/bin/sh\necho "gh: To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4\n')
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
 
 
 def fake_prs_by_branch(tmp_path: Path, prs: dict[str, list[dict[str, object]]]) -> None:
-    """Put a `gh` on PATH whose `pr list --head BRANCH` prints that branch's PRs, each from this repo."""
-    listed = {head: [{"isCrossRepository": False, **pr} for pr in branch_prs] for head, branch_prs in prs.items()}
-    program = (
-        "import json, sys\n"
-        "args = sys.argv[1:]\n"
-        "sys.exit(9) if args[:2] != ['pr', 'list'] else None\n"
-        f"print(json.dumps({listed!r}.get(args[args.index('--head') + 1], [])))\n"
+    """Put a `gh` on PATH (conftest.fake_github) that lists each branch's PRs, each from this repo."""
+    fake_github(
+        tmp_path,
+        [{"headRefName": head, "isCrossRepository": False, **pr} for head, listed in prs.items() for pr in listed],
     )
-    gh = tmp_path / "bin" / "gh"
-    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(program)} "$@"\n', encoding="utf-8")
-    gh.chmod(0o755)
 
 
 def write(
@@ -293,6 +285,26 @@ def test_a_merged_pr_from_an_earlier_use_of_the_branch_isnt_this_work(
     assert code == 0  # the fork's open PR #99 from a branch of the same name isn't this work either
     assert out.endswith("status: running (no PR yet; PR #12 merged earlier work on this branch name)\n")
     assert "pr: none" in frontmatter(repo.ledger / "feat-42-search.md")
+
+
+def test_the_branchs_own_pr_is_found_behind_more_fork_prs_than_gh_lists(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#116: strangers' forks open PRs from patch-1 all the time. More of them than gh pr list shows by default (30),
+    all newer, don't hide this repo's own PR on the branch, nor its stack's (github.branch_done reads it the same way)."""
+    path = repo.add_worktree("patch-1")
+    git(path, "branch", "patch-0", "HEAD~1")
+    track(repo.main, {"patch-0": ("main", None), "patch-1": ("patch-0", None)})  # a stack: patch-1 on patch-0
+    head = git(path, "rev-parse", "HEAD").strip()
+    own = {"number": 5, "state": "MERGED", "baseRefName": "patch-0", "headRefOid": head}
+    fake_github(tmp_path, behind_forks("patch-1", own) + behind_forks("patch-0", {"number": 4, "state": "OPEN"}))
+    monkeypatch.chdir(path)
+
+    code, out, _ = write(capsys, monkeypatch)
+
+    assert code == 0
+    assert out.endswith("status: running (PR #5 is merged; its stack still has unmerged branches: patch-0)\n")
+    assert 'pr: "#5"' in frontmatter(repo.ledger / "patch-1.md")
 
 
 def test_a_merged_pr_whose_head_isnt_in_this_clone_is_trusted_and_says_so(

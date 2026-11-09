@@ -26,7 +26,7 @@ class FakePull:
     merged: bool = False
     stack_base: str | None = None
     position: int = 1
-    head_repo: str = REPO
+    head_repo: str | None = REPO  # None: a deleted fork's
 
 
 @dataclass
@@ -172,7 +172,9 @@ class FakeGitHub:
             "state": pull.state,
             "merged": pull.merged,
             "base": {"ref": pull.base, "repo": {"full_name": REPO, "default_branch": "main"}},
-            "head": {"ref": pull.head, "sha": pull.sha, "repo": {"full_name": pull.head_repo}},
+            "head": {"ref": pull.head, "sha": pull.sha, "repo": pull.head_repo and {"full_name": pull.head_repo}},
+            "merged_at": "2026-11-06T10:00:00Z" if pull.merged else None,
+            "html_url": f"https://github.com/{REPO}/pull/{pull.number}",
             "stack": stack,
         }
 

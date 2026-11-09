@@ -1,6 +1,7 @@
 """github.py: the merged PRs `tower stats` measures, read from GitHub with the gh CLI (read-only calls only),
-try_gh() for the scans' GitHub facts, and the one rule for a worktree's PR (worktree_pr), which `tower card` and
-`tower state --pr` both use.
+try_gh() for the scans' GitHub facts, the one place a branch's own PRs are listed (branch_prs), which the card, the
+adopt scan, `tower state --pr` and `tower clean` all use, and the one rule for a worktree's PR (worktree_pr), which
+`tower card` and `tower state --pr` both use.
 
 A PR's tickets are the "Closes/Fixes/Resolves #N" in its body, read here rather than from GitHub's
 closingIssuesReferences: GitHub links a closing keyword only for PRs into the default branch (tower's workers often
@@ -16,12 +17,15 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from tower.gitrepo import COMMIT_ID, git
+from tower.merge import Gh, gh_reason, json_at, run_gh
 from tower.stats import MergedPr
 
 GH_TIMEOUT_SECONDS = 60
 PR_LIMIT = 1000  # gh's --limit; far more merges than one window holds
+BRANCH_PRS_PER_PAGE = 100  # REST's most; far more than one repo reuses a branch name
 CLOSING_KEYWORD = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.IGNORECASE)
 
 
@@ -46,7 +50,8 @@ class BranchPr:
 def from_this_repo(pr: dict[str, object]) -> bool:
     """Whether a `gh pr list` record is a PR from this repo rather than a fork: a stranger's patch-1 isn't the work
     of the worktree whose branch has that name. A record without isCrossRepository (gh wasn't asked for it) counts as
-    a fork, so a caller that forgot the field shows no PRs rather than strangers'."""
+    a fork, so a caller that forgot the field shows no PRs rather than strangers'. pull_from_this_repo is the same rule
+    for REST's pull objects."""
     return pr.get("isCrossRepository") is False
 
 
@@ -141,32 +146,77 @@ def try_gh(cwd: Path, *args: str) -> tuple[str | None, str]:
     return proc.stdout, ""
 
 
-def branch_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
-    """(branch's PR, gh's error): its open PR, else its newest, never one from a fork (a stranger's patch-1 isn't this
-    work), from one `gh pr list --head` in directory. The one place "open first, else newest" is decided. gh's error is
-    "" when GitHub answered."""
-    fields = "number,state,baseRefName,headRefOid,url,title,isCrossRepository"
-    out, error = try_gh(directory, "pr", "list", "--head", branch, "--state", "all", "--json", fields)
-    if out is None:
-        return None, error
+def branch_prs(gh: Gh, branch: str) -> tuple[list[BranchPr] | None, str]:
+    """(branch's PRs from this repo, newest first; or None and why GitHub couldn't be read). The one place they are
+    listed: GitHub is asked only for the PRs whose head is this repo owner's branch (`head=OWNER:BRANCH`), so however
+    many strangers' forks open PRs from a branch of the same name (patch-1), none pushes this repo's own out of the
+    answer, as they could out of gh pr list's first 30. Of what it lists, a PR whose head repo isn't this repo, or that
+    doesn't say (a deleted fork), is left out: unsure means fork. Only the BRANCH_PRS_PER_PAGE newest are read.
+
+    REST's pull objects become BranchPr: state is OPEN for "open", else MERGED when merged_at is set, else CLOSED; head
+    is head.sha, base is base.ref, url is html_url."""
+    # Percent-encoded, the colon too: gh fills :owner, :repo and :branch in an endpoint as well as {owner}, so
+    # head={owner}:repo-x would reach GitHub as head=acmewidget-x.
+    head = "{owner}" + quote(f":{branch}", safe="")
+    listed = gh(["api", f"repos/{{owner}}/{{repo}}/pulls?head={head}&state=all&per_page={BRANCH_PRS_PER_PAGE}"])
+    if listed.code != 0:
+        return None, gh_reason(listed)
+    unexpected = f"gh api printed something unexpected: {listed.out[:120]!r}"
     try:
-        prs = [
+        pulls = json.loads(listed.out)
+    except ValueError:
+        return None, unexpected
+    if not isinstance(pulls, list):
+        return None, unexpected
+    prs = []
+    for pull in pulls:
+        number, state = json_at(pull, "number"), json_at(pull, "state")
+        if not isinstance(number, int) or state not in ("open", "closed"):
+            return None, unexpected
+        # GitHub lists every PR when it can't read the head filter: one on another branch isn't this branch's
+        if json_at(pull, "head", "ref") != branch or not pull_from_this_repo(pull):
+            continue
+        prs.append(
             BranchPr(
-                int(p["number"]),
-                str(p["state"]),
-                str(p.get("baseRefName", "")),
-                head_commit(p.get("headRefOid")),
-                str(p.get("url", "")),
-                str(p.get("title", "")),
+                number,
+                "OPEN" if state == "open" else "MERGED" if json_at(pull, "merged_at") else "CLOSED",
+                text(json_at(pull, "base", "ref")),
+                head_commit(json_at(pull, "head", "sha")),
+                text(json_at(pull, "html_url")),
+                text(json_at(pull, "title")),
             )
-            for p in json.loads(out)
-            if from_this_repo(p)
-        ]
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return None, f"gh pr list printed something unexpected: {out[:120]!r}"
+        )
+    return sorted(prs, key=lambda pr: -pr.number), ""
+
+
+def pull_from_this_repo(pull: object) -> bool:
+    """Whether a REST pull object's head branch is in the repo it was opened on, rather than a fork's: from_this_repo's
+    rule, so a pull that doesn't name both repos (a deleted fork's head repo is null) counts as a fork's."""
+    head_repo, base_repo = json_at(pull, "head", "repo", "full_name"), json_at(pull, "base", "repo", "full_name")
+    return isinstance(head_repo, str) and isinstance(base_repo, str) and head_repo.lower() == base_repo.lower()
+
+
+def text(value: object) -> str:
+    """value when it's a string, else ""."""
+    return value if isinstance(value, str) else ""
+
+
+def branch_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
+    """(branch's PR, gh's error): its open PR, else its newest, of branch_prs, read with gh in directory. The one place
+    "open first, else newest" is decided. gh's error is "" when GitHub answered."""
+    prs, error = branch_prs(run_gh(directory), branch)
     if not prs:
-        return None, ""
+        return None, error
     return max(prs, key=lambda p: (p.state == "OPEN", p.number)), ""
+
+
+def branch_done(gh: Gh, branch: str) -> bool | None:
+    """Whether branch has PRs from this repo (branch_prs) and none open: merged or closed, a stack branch that needs
+    nothing more. None when GitHub couldn't be read."""
+    prs, _ = branch_prs(gh, branch)
+    if prs is None:
+        return None
+    return bool(prs) and all(pr.state != "OPEN" for pr in prs)
 
 
 def head_commit(head: object) -> str:
