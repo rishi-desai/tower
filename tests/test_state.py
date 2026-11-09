@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive, track
 
-from tower import card, cli, events, github, ledger
+from tower import card, cli, events, github, ledger, state
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN_TOWER = ROOT / "plugin" / "scripts" / "run-tower.py"
@@ -146,6 +146,20 @@ def test_every_ticket_a_stack_kickoff_lists_is_in_progress_before_its_branch_exi
         "#87": "running in rishi-desai/fix-82-hook-git-runs-commands",
         "#90": "running in fix-90-labels",
     }
+
+
+@pytest.mark.parametrize(
+    ("kickoff", "tickets"),
+    [
+        ("/implement #40 and #041 as one git-spice stack, bottom first.", ("#40", "#41")),
+        ("/implement #40, #41, and #42 as one git-spice stack.", ("#40", "#41", "#42")),
+        ("/implement #40 #41 #42 as one git-spice stack.", ("#40", "#41", "#42")),
+        ("/setup-matt-pocock-skills — Use the status-card skill whenever you stop.", ()),
+        ("Fix #12 and #13 first.", ()),  # no /skill: not the hub's kickoff, so no list to read
+    ],
+)
+def test_a_kickoff_starts_the_tickets_listed_right_after_its_skill(kickoff: str, tickets: tuple[str, ...]) -> None:
+    assert state.kickoff_tickets(kickoff) == tickets
 
 
 def test_a_stack_no_worktree_holds_puts_no_issue_in_progress(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:

@@ -56,15 +56,15 @@ PR_LOOKUPS = 8  # `gh pr list` calls run at once for --pr, one per branch, so ma
 TICKET = re.compile(r"#?([0-9]+)")  # a card's ticket: 42 or #42 (card write renders #42), or none
 KICKOFF = "Kickoff"  # the card's last section: the hub's kickoff prompt, word for word (card.set_kickoff)
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")  # a card section's heading line
-# The tickets a kickoff starts: the list right after its skill, "/implement #40, #41 and #42 as one stack" or
-# "/diagnosing-bugs #42 — title"; a ticket the title or the rest mentions isn't one.
-KICKOFF_TICKETS = re.compile(r"\S+\s+(#[0-9]+(?:(?:\s*,\s*|,?\s+and\s+)#[0-9]+)*)")
+# The tickets a kickoff starts: the list right after its /skill, "/implement #40, #41 and #42 as one stack",
+# "#40 #41 #42" or "/diagnosing-bugs #42 — title"; a ticket the title or the rest mentions isn't one.
+KICKOFF_TICKETS = re.compile(r"/\S+\s+(#[0-9]+(?:(?:\s*,\s*|,?\s+(?:and\s+)?)#[0-9]+)*)")
 
 
 @dataclass(frozen=True)
 class Card:
-    """The frontmatter fields of a worktree's status card that state uses. stale: running, untouched for over 24h.
-    kickoff_tickets: the tickets its ## Kickoff section starts (kickoff_tickets()), as "#42"."""
+    """What state uses of a worktree's status card: its frontmatter fields, and kickoff_tickets, the tickets its
+    ## Kickoff section starts (kickoff_tickets()), as "#42". stale: running, untouched for over 24h."""
 
     status: str
     ticket: str
@@ -439,7 +439,8 @@ def normalized_ticket(text: str) -> str | None:
 
 
 def read_card(path: Path, now: float) -> Card | None:
-    """The card at path, or None if there is none. Fields come from the frontmatter block when there is one.
+    """The card at path, or None if there is none. Fields come from the frontmatter block when there is one;
+    kickoff_tickets from the body's ## Kickoff section.
 
     Raises OSError when the card exists but can't be read (permissions, an unsynced vault file): that isn't "no card".
     """
@@ -472,7 +473,8 @@ def kickoff_tickets(kickoff: str) -> tuple[str, ...]:
     match = KICKOFF_TICKETS.match(kickoff)
     if match is None:
         return ()
-    return tuple(dict.fromkeys(f"#{int(number)}" for number in re.findall(r"#([0-9]+)", match.group(1))))
+    numbers = TICKET.findall(match.group(1))  # the list holds only tickets and what separates them
+    return tuple(dict.fromkeys(ticket for ticket in map(normalized_ticket, numbers) if ticket is not None))
 
 
 def split_kickoff(body: str) -> tuple[str, str | None]:
