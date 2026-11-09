@@ -23,7 +23,7 @@ from tower.merge import GhResult
 class CleanGitHub(FakeGitHub):
     """FakeGitHub that also lists a branch's PRs, as tower clean asks for a worktree's PR (or fails it with
     pr_list_error): `gh pr list --head BRANCH` as gh does (forks too, newest first, cut at --limit, 30 unless given),
-    and `gh api 'repos/{owner}/{repo}/pulls?head=...'` as GitHub does (conftest.fake_github has the rules)."""
+    and `gh api 'repos/{owner}/{repo}/pulls?head=...'` as GitHub does (tests/fake_gh.py has the rules)."""
 
     pr_list_error: str = ""
 

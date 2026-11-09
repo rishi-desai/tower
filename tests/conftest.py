@@ -16,61 +16,14 @@ from pathlib import Path
 
 import pytest
 
-# fake_github's program: argv is the PRs file (newest PR first), the branches that fail, then gh's own arguments.
-FAKE_GITHUB = r"""
-import json, re, sys
-from urllib.parse import parse_qs, urlsplit
-
-prs, failing = json.loads(open(sys.argv[1], encoding="utf-8").read()), json.loads(sys.argv[2])
-args = sys.argv[3:]
-flag = lambda name, default=None: args[args.index(name) + 1] if name in args else default
-on = lambda pr, branch: pr.get("headRefName", branch) == branch  # a PR without headRefName is on every branch
-if args[:2] in (["auth", "status"], ["repo", "view"]):
-    sys.exit(0)
-if args[:2] == ["pr", "list"]:  # gh's view: forks too, newest first, cut at --limit
-    head, fields = flag("--head"), flag("--json").split(",")
-    if head in failing:
-        sys.exit(print(failing[head], file=sys.stderr) or 1)
-    listed = [pr for pr in prs if head is None or on(pr, head)][: int(flag("--limit", "30"))]
-    sys.exit(print(json.dumps([{k: v for k, v in pr.items() if k in fields} for pr in listed])))
-if args[:1] != ["api"] or len(args) != 2:
-    sys.exit(9)
-# gh fills these in before sending: {owner} anywhere, and :owner as a word too (a branch named repo-x!)
-names = {"owner": "acme", "repo": "widget", "branch": "the-current-branch"}
-endpoint = re.sub(r":(owner|repo|branch)\b|\{(owner|repo|branch)\}", lambda m: names[m[1] or m[2]], args[1])
-url = urlsplit(endpoint)
-if url.path != "repos/acme/widget/pulls":
-    sys.exit(9)
-query = {key: values[-1] for key, values in parse_qs(url.query).items()}
-owner, colon, branch = query.get("head", "").partition(":")
-if branch in failing:
-    sys.exit(print(failing[branch], file=sys.stderr) or 1)
-head_repo = lambda pr: pr.get("headRepository", "acme/widget" if pr.get("isCrossRepository") is False else "x/widget")
-if colon:  # GitHub: the PRs from owner's branch (a deleted fork's too, to be safe: it no longer says whose it was)
-    prs = [pr for pr in prs if on(pr, branch) and (head_repo(pr) or owner + "/").split("/")[0] == owner]
-# else GitHub ignores a head without an owner: every PR, on every branch
-if query.get("state") != "all":  # GitHub's default is open PRs only
-    prs = [pr for pr in prs if pr.get("state") == "OPEN"]
-def rest(pr):
-    repo = head_repo(pr)
-    head = {"ref": pr.get("headRefName", branch), "repo": {"full_name": repo} if repo else None}
-    record = {"number": pr["number"], "state": "open" if pr.get("state") == "OPEN" else "closed", "head": head,
-              "merged_at": "2026-11-06T10:00:00Z" if pr.get("state") == "MERGED" else None,
-              "base": {"repo": {"full_name": "acme/widget"}}}
-    for field, path in (("headRefOid", ("head", "sha")), ("baseRefName", ("base", "ref")),
-                        ("url", ("html_url",)), ("title", ("title",))):
-        if field in pr:
-            (record[path[0]] if len(path) == 2 else record)[path[-1]] = pr[field]
-    return record
-print(json.dumps([rest(pr) for pr in prs[: int(query.get("per_page", "30"))]]))
-"""
+FAKE_GH = Path(__file__).with_name("fake_gh.py")  # the program fake_github puts on PATH as gh
 
 
 def fake_github(tmp_path: Path, prs: list[dict[str, object]], failing: dict[str, str] | None = None) -> None:
-    """Put a `gh` on PATH that lists a branch's PRs the way gh and GitHub do, from prs: gh pr list's records, newest
-    first, each with its headRefName (one without is on every branch) and isCrossRepository; headRepository (a full
-    name, or None for a deleted fork) overrides the head repo that implies. Asking about a branch in failing fails
-    with its message on stderr. It answers:
+    """Put a `gh` on PATH (FAKE_GH) that lists a branch's PRs the way gh and GitHub do, from prs: gh pr list's records,
+    newest first, each with its headRefName (one without is on every branch) and isCrossRepository; headRepository (a
+    full name, or None for a deleted fork) overrides the head repo that implies. Asking about a branch in failing
+    fails with its message on stderr. It answers:
     - `pr list [--head B] --json F [--limit N]` as gh does: every PR on B, forks too, cut at --limit (30 unless
       given), with only the fields asked for.
     - `api 'repos/{owner}/{repo}/pulls?head=...&state=...&per_page=N'` as GitHub does for acme/widget, once gh has
@@ -79,9 +32,7 @@ def fake_github(tmp_path: Path, prs: list[dict[str, object]], failing: dict[str,
     - `auth status` and `repo view` succeed; anything else exits 9."""
     data = tmp_path / "github.json"
     data.write_text(json.dumps(prs), encoding="utf-8")
-    program = tmp_path / "fake_github.py"
-    program.write_text(FAKE_GITHUB, encoding="utf-8")
-    command = shlex.join([sys.executable, str(program), str(data), json.dumps(failing or {})])
+    command = shlex.join([sys.executable, str(FAKE_GH), str(data), json.dumps(failing or {})])
     gh = tmp_path / "bin" / "gh"
     # sh runs it, not a #! naming this Python: a path with a space or past the #! length limit can't break it
     gh.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8")

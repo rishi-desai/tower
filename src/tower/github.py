@@ -180,10 +180,10 @@ def branch_prs(gh: Gh, branch: str) -> tuple[list[BranchPr] | None, str]:
             BranchPr(
                 number,
                 "OPEN" if state == "open" else "MERGED" if json_at(pull, "merged_at") else "CLOSED",
-                text(json_at(pull, "base", "ref")),
+                text_or_empty(json_at(pull, "base", "ref")),
                 head_commit(json_at(pull, "head", "sha")),
-                text(json_at(pull, "html_url")),
-                text(json_at(pull, "title")),
+                text_or_empty(json_at(pull, "html_url")),
+                text_or_empty(json_at(pull, "title")),
             )
         )
     return sorted(prs, key=lambda pr: -pr.number), ""
@@ -196,7 +196,7 @@ def pull_from_this_repo(pull: object) -> bool:
     return isinstance(head_repo, str) and isinstance(base_repo, str) and head_repo.lower() == base_repo.lower()
 
 
-def text(value: object) -> str:
+def text_or_empty(value: object) -> str:
     """value when it's a string, else ""."""
     return value if isinstance(value, str) else ""
 
