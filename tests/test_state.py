@@ -376,7 +376,7 @@ def test_a_branch_gh_couldnt_be_asked_about_is_noted_and_the_others_prs_still_sh
 
     notes = result["notes"]
     assert isinstance(notes, list)
-    assert "gh api failed (HTTP 502: Bad Gateway), so the PRs of 1 of 3 branches weren't read" in notes
+    assert "GitHub couldn't be asked (HTTP 502: Bad Gateway), so the PRs of 1 of 3 branches weren't read" in notes
     fine_pr = rows(result)["fine"]["pr"]
     assert isinstance(fine_pr, dict) and fine_pr["number"] == 3
     assert rows(result)["flaky"]["pr"] is None

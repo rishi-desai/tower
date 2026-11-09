@@ -1,4 +1,5 @@
-"""The `gh` that conftest.fake_github puts on PATH: lists a branch's PRs the way gh and GitHub do for acme/widget.
+"""The `gh` that conftest.fake_github puts on PATH: lists a branch's PRs the way gh and GitHub do for acme/widget,
+a repo on a GitHub Enterprise host (HOST), so a gh api call that doesn't name it goes to github.com and fails.
 
 Run as `python fake_gh.py PRS_FILE FAILING GH_ARGS...`: PRS_FILE holds gh pr list's records, newest first; FAILING is a
 JSON object mapping a branch to the message asking about it fails with. conftest.fake_github's docstring has the rules.
@@ -13,7 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 Record = dict[str, object]
-OWNER, REPO = "acme", "widget"
+HOST, OWNER, REPO = "github.example.com", "acme", "widget"
 CURRENT_BRANCH = "the-current-branch"  # what gh fills {branch} with
 PLACEHOLDER = re.compile(r":(owner|repo|branch)\b|\{(owner|repo|branch)\}")  # gh fills both forms, :repo too
 
@@ -23,12 +24,15 @@ def main(argv: list[str]) -> int:
     prs: list[Record] = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
     failing: dict[str, str] = json.loads(argv[2])
     args = argv[3:]
-    if args[:2] in (["auth", "status"], ["repo", "view"]):
+    if args[:2] == ["auth", "status"]:
+        return 0
+    if args[:2] == ["repo", "view"]:  # the repo gh pr list would ask
+        print(json.dumps({"url": f"https://{HOST}/{OWNER}/{REPO}"}) if "--json" in args else f"{OWNER}/{REPO}")
         return 0
     if args[:2] == ["pr", "list"]:
         return pr_list(prs, failing, args)
-    if args[:1] == ["api"] and len(args) == 2:
-        return api_pulls(prs, failing, args[1])
+    if args[:1] == ["api"]:
+        return api_pulls(prs, failing, args[1:])
     return 9
 
 
@@ -44,15 +48,40 @@ def pr_list(prs: list[Record], failing: dict[str, str], args: list[str]) -> int:
     return 0
 
 
-def api_pulls(prs: list[Record], failing: dict[str, str], endpoint: str) -> int:
-    """`gh api 'repos/{owner}/{repo}/pulls?...'` as GitHub answers it once gh has filled the placeholders:
-    head=acme:B gives B's PRs whose head repo is acme's, or gone (a deleted fork no longer says whose it was); a head
-    without an owner is ignored, listing every PR; state defaults to open and per_page to 30."""
+def api_pulls(prs: list[Record], failing: dict[str, str], args: list[str]) -> int:
+    """`gh api [--hostname H] [-X GET] ENDPOINT [-f k=v]... [-F k=v]...` for repos/acme/widget/pulls, as gh sends it
+    (it fills placeholders in the endpoint and in -F values, never in -f ones) and GitHub answers it: head=acme:B gives
+    B's PRs whose head repo is acme's, or gone (a deleted fork no longer says whose it was); a head without an owner is
+    ignored, listing every PR; state defaults to open and per_page to 30. Without --hostname, gh asks github.com,
+    which doesn't have this repo."""
     names = {"owner": OWNER, "repo": REPO, "branch": CURRENT_BRANCH}
-    url = urlsplit(PLACEHOLDER.sub(lambda match: names[match[1] or match[2]], endpoint))
+
+    def filled(text: str) -> str:
+        """text with gh's placeholders filled in."""
+        return PLACEHOLDER.sub(lambda match: names[match[1] or match[2]], text)
+
+    options: dict[str, str] = {}
+    fields: list[tuple[str, str]] = []  # (-f or -F, key=value), in order
+    endpoint = ""
+    remaining = iter(args)
+    for arg in remaining:
+        if arg in ("--hostname", "-X", "--method"):
+            options[arg] = next(remaining)
+        elif arg in ("-f", "-F"):
+            fields.append((arg, next(remaining)))
+        else:
+            endpoint = arg
+    if options.get("--hostname", "github.com") != HOST:
+        print('{"message":"Not Found"}')
+        print("gh: Not Found (HTTP 404)", file=sys.stderr)
+        return 1
+    url = urlsplit(filled(endpoint))
     if url.path != f"repos/{OWNER}/{REPO}/pulls":
         return 9
     query = {key: values[-1] for key, values in parse_qs(url.query).items()}
+    for option, value in fields:
+        key, _, given = value.partition("=")
+        query[key] = given if option == "-f" else filled(given)
     owner, colon, branch = query.get("head", "").partition(":")
     if branch in failing:
         print(failing[branch], file=sys.stderr)

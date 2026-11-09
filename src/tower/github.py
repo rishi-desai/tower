@@ -17,15 +17,15 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 
 from tower.gitrepo import COMMIT_ID, git
-from tower.merge import Gh, gh_reason, json_at, run_gh
+from tower.merge import Gh, GhResult, gh_reason, json_at, json_body
 from tower.stats import MergedPr
 
 GH_TIMEOUT_SECONDS = 60
 PR_LIMIT = 1000  # gh's --limit; far more merges than one window holds
 BRANCH_PRS_PER_PAGE = 100  # REST's most; far more than one repo reuses a branch name
+REPO_URL = re.compile(r"https://(?P<host>[^/\s]+)/(?P<owner>[^/\s]+)/(?P<name>[^/\s]+)")  # gh repo view's url
 CLOSING_KEYWORD = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)\b", re.IGNORECASE)
 
 
@@ -153,12 +153,34 @@ def branch_prs(gh: Gh, branch: str) -> tuple[list[BranchPr] | None, str]:
     answer, as they could out of gh pr list's first 30. Of what it lists, a PR whose head repo isn't this repo, or that
     doesn't say (a deleted fork), is left out: unsure means fork. Only the BRANCH_PRS_PER_PAGE newest are read.
 
+    The repo is the one gh pr list would ask (`gh repo view`: the remote's host, gh repo set-default, a renamed repo's
+    current owner), not gh api's {owner}/{repo}, which come from the first remote and go to github.com.
+
     REST's pull objects become BranchPr: state is OPEN for "open", else MERGED when merged_at is set, else CLOSED; head
     is head.sha, base is base.ref, url is html_url."""
-    # Percent-encoded, the colon too: gh fills :owner, :repo and :branch in an endpoint as well as {owner}, so
-    # head={owner}:repo-x would reach GitHub as head=acmewidget-x.
-    head = "{owner}" + quote(f":{branch}", safe="")
-    listed = gh(["api", f"repos/{{owner}}/{{repo}}/pulls?head={head}&state=all&per_page={BRANCH_PRS_PER_PAGE}"])
+    found = gh(["repo", "view", "--json", "url"])
+    if found.code != 0:
+        return None, gh_reason(found)
+    repo = REPO_URL.fullmatch(text_or_empty(json_body(found).get("url")))
+    if repo is None:
+        return None, f"gh repo view printed something unexpected: {found.out[:120]!r}"
+    host, owner, name = repo.group("host", "owner", "name")
+    listed = gh(
+        [
+            "api",
+            "--hostname",
+            host,
+            "-X",
+            "GET",
+            f"repos/{owner}/{name}/pulls",
+            "-f",
+            f"head={owner}:{branch}",  # -f sends it as written: gh fills {owner} and :repo only in -F and the path
+            "-f",
+            "state=all",
+            "-f",
+            f"per_page={BRANCH_PRS_PER_PAGE}",
+        ]
+    )
     if listed.code != 0:
         return None, gh_reason(listed)
     unexpected = f"gh api printed something unexpected: {listed.out[:120]!r}"
@@ -173,8 +195,9 @@ def branch_prs(gh: Gh, branch: str) -> tuple[list[BranchPr] | None, str]:
         number, state = json_at(pull, "number"), json_at(pull, "state")
         if not isinstance(number, int) or state not in ("open", "closed"):
             return None, unexpected
-        # GitHub lists every PR when it can't read the head filter: one on another branch isn't this branch's
-        if json_at(pull, "head", "ref") != branch or not pull_from_this_repo(pull):
+        if json_at(pull, "head", "ref") != branch:  # GitHub lists every PR when it can't use a head filter
+            return None, f"GitHub didn't filter its PRs by the branch {branch}, so they weren't read"
+        if not pull_from_this_repo(pull):
             continue
         prs.append(
             BranchPr(
@@ -201,10 +224,22 @@ def text_or_empty(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+def read_gh(cwd: Path) -> Gh:
+    """A Gh that runs gh in cwd the way try_gh does (its timeout, and its error: gh's last line, or "gh not
+    installed"), for the reports' reads."""
+
+    def gh(args: list[str]) -> GhResult:
+        """Run gh with args."""
+        out, error = try_gh(cwd, *args)
+        return GhResult(0, out, "") if out is not None else GhResult(1, "", error)
+
+    return gh
+
+
 def branch_pr(directory: Path, branch: str) -> tuple[BranchPr | None, str]:
     """(branch's PR, gh's error): its open PR, else its newest, of branch_prs, read with gh in directory. The one place
     "open first, else newest" is decided. gh's error is "" when GitHub answered."""
-    prs, error = branch_prs(run_gh(directory), branch)
+    prs, error = branch_prs(read_gh(directory), branch)
     if not prs:
         return None, error
     return max(prs, key=lambda p: (p.state == "OPEN", p.number)), ""

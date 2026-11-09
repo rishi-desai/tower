@@ -48,9 +48,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tower import ledger, stacks, state
-from tower.github import BranchPr, branch_done, worktree_pr
+from tower.github import BranchPr, branch_done, read_gh, worktree_pr
 from tower.gitrepo import git, guess_ticket, is_main_checkout, list_worktrees
-from tower.merge import run_gh
 from tower.state import HEADING, KICKOFF, is_kickoff_heading, split_kickoff  # state reads the kickoff back too
 
 SECTIONS = ("Done", "Why it matters", "Needs you", "Verify", "Words used", "Files touched")
@@ -333,7 +332,7 @@ def write_card(
         warnings.append(f"couldn't read this branch's PR ({gh_error}), so the card says pr: unknown")
     stack_open: tuple[str, ...] | None = ()
     if pr is not None and pr.state == "MERGED":
-        gh = run_gh(worktree)
+        gh = read_gh(worktree)
         unmerged, stack_note = stacks.open_besides(worktree, branch, lambda name: branch_done(gh, name))
         stack_open = None if unmerged is None else tuple(unmerged)
         if stack_note:

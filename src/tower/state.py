@@ -686,7 +686,7 @@ def pull_requests(repo_dir: Path, worktrees: list[GitWorktree]) -> tuple[dict[st
     if not errors:
         return prs, branch_prs, ""
     whose = "" if len(errors) == len(branches) else f" of {len(errors)} of {len(branches)} branches"
-    return prs, branch_prs, f"gh api failed ({errors[0]}), so the PRs{whose} weren't read"
+    return prs, branch_prs, f"GitHub couldn't be asked ({errors[0]}), so the PRs{whose} weren't read"
 
 
 def as_pr(pr: github.BranchPr) -> Pr:

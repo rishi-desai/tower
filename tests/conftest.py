@@ -26,10 +26,12 @@ def fake_github(tmp_path: Path, prs: list[dict[str, object]], failing: dict[str,
     fails with its message on stderr. It answers:
     - `pr list [--head B] --json F [--limit N]` as gh does: every PR on B, forks too, cut at --limit (30 unless
       given), with only the fields asked for.
-    - `api 'repos/{owner}/{repo}/pulls?head=...&state=...&per_page=N'` as GitHub does for acme/widget, once gh has
-      filled its placeholders (`:repo` too): head=acme:B gives B's PRs whose head repo is acme's (or gone); a head
-      without an owner is ignored; state defaults to open and per_page to 30. Records are REST's pull objects.
-    - `auth status` and `repo view` succeed; anything else exits 9."""
+    - `repo view [--json url]` names acme/widget on github.example.com, a GitHub Enterprise host.
+    - `api --hostname github.example.com repos/acme/widget/pulls -f head=... -f state=... -f per_page=N` as GitHub
+      does, once gh has filled its placeholders (`:repo` too, but never in -f): head=acme:B gives B's PRs whose head
+      repo is acme's (or gone); a head without an owner is ignored; state defaults to open and per_page to 30. Records
+      are REST's pull objects. Without --hostname it fails as github.com would: no such repo there.
+    - `auth status` succeeds; anything else exits 9."""
     data = tmp_path / "github.json"
     data.write_text(json.dumps(prs), encoding="utf-8")
     command = shlex.join([sys.executable, str(FAKE_GH), str(data), json.dumps(failing or {})])

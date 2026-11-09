@@ -9,7 +9,6 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from conftest import Fixture, git, interactive, track, unreadable_tracking
@@ -23,9 +22,11 @@ from tower.merge import GhResult
 class CleanGitHub(FakeGitHub):
     """FakeGitHub that also lists a branch's PRs, as tower clean asks for a worktree's PR (or fails it with
     pr_list_error): `gh pr list --head BRANCH` as gh does (forks too, newest first, cut at --limit, 30 unless given),
-    and `gh api 'repos/{owner}/{repo}/pulls?head=...'` as GitHub does (tests/fake_gh.py has the rules)."""
+    and `gh api --hostname github.com repos/acme/widget/pulls -f head=acme:BRANCH -f state=all ...` as GitHub does
+    (tests/fake_gh.py has the rules)."""
 
     pr_list_error: str = ""
+    ignores_head: bool = False  # GitHub lists every PR, as it does for a head filter it can't use
 
     def __call__(self, args: list[str]) -> GhResult:
         newest_first = sorted(self.pulls, key=lambda p: -p.number)
@@ -50,16 +51,20 @@ class CleanGitHub(FakeGitHub):
                     if p.head == head
                 ][:limit]
             )
-        if args[:1] == ["api"] and args[1].startswith("repos/{owner}/{repo}/pulls?"):
+        if args[:3] == ["repo", "view", "--json"]:
+            return ok({"url": f"https://github.com/{REPO}"})
+        fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
+        if args[:1] == ["api"] and f"repos/{REPO}/pulls" in args and fields.get("state") == "all":
             self.calls.append(args)
             if self.pr_list_error:
                 return GhResult(1, "", self.pr_list_error)
-            query = {key: values[-1] for key, values in parse_qs(urlsplit(args[1]).query).items()}
-            assert len(args) == 2 and query["state"] == "all", args
-            owner, _, head = query["head"].partition(":")
-            assert owner == "{owner}", args  # gh fills it with acme
+            assert args[1:3] == ["--hostname", "github.com"], args
+            owner, _, head = fields["head"].partition(":")
+            assert owner == "acme", args
             found = [p for p in newest_first if p.head == head and (p.head_repo or "acme/").startswith("acme/")]
-            return ok([self.pull_json(p) for p in found][: int(query["per_page"])])
+            return ok(
+                [self.pull_json(p) for p in (newest_first if self.ignores_head else found)][: int(fields["per_page"])]
+            )
         return super().__call__(args)
 
 
@@ -408,6 +413,22 @@ def test_a_fork_pr_merged_at_the_worktrees_head_is_never_the_worktrees(repo: Fix
     said = run_clean(repo, worker, "patch-1")
 
     assert said[:2] == ["patch-1: left as it is, since 1 check(s) failed:", "  - patch-1 has no merged PR"]
+    assert str(worker.path) in worktree_paths(repo)
+
+
+def test_a_listing_github_didnt_filter_by_branch_is_unreadable_not_no_pr(repo: Fixture) -> None:
+    """When GitHub ignores the head filter it lists the repo's newest PRs on every branch, so the worktree's own may
+    not be among them: that's "couldn't read", never "has no merged PR"."""
+    worker = merged_worker(repo, "patch-1")
+    worker.github.pulls += [FakePull(2, base="main", head="other", state="closed", merged=True)]
+    worker.github.ignores_head = True
+
+    said = run_clean(repo, worker, "patch-1")
+
+    assert said[1] == (
+        "  - couldn't read patch-1's PR from GitHub (GitHub didn't filter its PRs by the branch patch-1, so they"
+        " weren't read)"
+    )
     assert str(worker.path) in worktree_paths(repo)
 
 
