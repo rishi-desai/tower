@@ -58,7 +58,7 @@ KICKOFF = "Kickoff"  # the card's last section: the hub's kickoff prompt, word f
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")  # a card section's heading line
 # The tickets a kickoff starts: the list right after its /skill, "/implement #40, #41 and #42 as one stack",
 # "#40 #41 #42" or "/diagnosing-bugs #42 — title"; a ticket the title or the rest mentions isn't one.
-KICKOFF_TICKETS = re.compile(r"/\S+\s+(#[0-9]+(?:(?:\s*,\s*|,?\s+(?:and\s+)?)#[0-9]+)*)")
+KICKOFF_TICKETS = re.compile(r"/\S+\s+(#[0-9]+(?:(?:\s*,\s*|,?\s+(?:(?:and|&)\s+)?)#[0-9]+)*)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -700,8 +700,8 @@ def issues_in_progress(report: Report) -> dict[str, str]:
     one of them: a stack worktree's card names one ticket, its kickoff lists them all, from the start, before their
     branches exist), and by the ticket guess of each unmerged branch of a stack a worktree holds: "#41" -> "in the
     stack in feat-40-x" (one added after the kickoff). A worktree without a card, or ready to clean up (its work merged
-    or on the base branch), or a stack no worktree holds, is on no issue, and neither is a merged branch's ticket in a
-    stack the worktree holds. The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
+    or on the base branch), or a stack no worktree holds, is on no issue. The pane (`tower state --json`'s in_progress)
+    and the scan's issue list both read this."""
     notes: dict[str, str] = {}
     for facts, v in report.worktrees:
         if facts.card is None or v.status == "ready-to-clean":
@@ -710,9 +710,8 @@ def issues_in_progress(report: Report) -> dict[str, str]:
         tickets = [facts.card.ticket]
         if facts.card.ticket in facts.card.kickoff_tickets:  # a worker who moved the card off the kickoff released it
             tickets += facts.card.kickoff_tickets
-        merged = merged_tickets(report, facts.path)
         for ticket in dict.fromkeys(tickets):
-            if TICKET.fullmatch(ticket) is None or ticket in merged:
+            if TICKET.fullmatch(ticket) is None:
                 continue
             notes[ticket] = f"{notes[ticket]}, {note}" if ticket in notes else note
     for stack in report.stacks:
@@ -725,17 +724,6 @@ def issues_in_progress(report: Report) -> dict[str, str]:
                 continue
             notes[guess] = f"in the stack in {holder}"
     return notes
-
-
-def merged_tickets(report: Report, worktree: str) -> set[str]:
-    """The ticket guesses of the merged branches in the stacks worktree (a path) holds: work on them is finished."""
-    return {
-        guess
-        for stack in report.stacks
-        if worktree in stack.worktrees
-        for branch in stack.branches
-        if branch.merged and (guess := normalized_ticket(branch.ticket)) not in (None, "none")
-    }
 
 
 def stack_holder(report: Report, stack: stacks.Stack) -> str | None:

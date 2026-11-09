@@ -141,7 +141,7 @@ Why each step: `repo init` with its flags, because git-spice asks which branch i
 
 ### Start it through Orca
 
-1. Check the scan first (the pane's `start #N` button skips no rules). If a WORKTREES row already shows this ticket, a STACKS branch's name guesses it, a stack worktree's card names it in its `## Kickoff` (open the card of each worktree holding a stack), or `orca worktree list --json` has a worktree with `linkedIssue` N, it's already started: say where and stop. At the WIP limit, follow section 3 before starting anything.
+1. Check the scan first (the pane's `start #N` button skips no rules). If a WORKTREES row already shows this ticket, a STACKS branch's name guesses it, the scan's open issues mark it `[in progress: …]` (a card, its kickoff or a stack's branch names it), or `orca worktree list --json` has a worktree with `linkedIssue` N, it's already started: say where and stop. At the WIP limit, follow section 3 before starting anything.
    Then run `orca status --json`. Orca is reachable when it exits 0 and `result.runtime.reachable` is `true`. If not (no `orca` command, an error, or `false`), use the fallback below and say why in one line.
 2. Show the command in a fenced block, with the effort line, then ask with AskUserQuestion: "Start it (Recommended)", "Change the effort", "Don't start". Run it only on a yes.
 

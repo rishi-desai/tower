@@ -153,36 +153,12 @@ def test_every_ticket_a_stack_kickoff_lists_is_in_progress_before_its_branch_exi
     }
 
 
-def test_a_merged_branchs_ticket_in_a_stack_the_worktree_holds_is_no_longer_in_progress(
-    repo: Fixture, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The stack's bottom PR (#40) merged, by the merge commit `tower merge` makes; its issue may stay open (a stack on
-    an integration branch doesn't close it), but its work is finished, though the card and the kickoff still name it."""
-    stack = repo.add_worktree("fix-40-a")
-    repo.write_card("fix-40-a", "running", ticket="#40")
-    card.set_kickoff(stack, "/implement #40, #41 and #42 as one git-spice stack, bottom first.")
-    git(stack, "checkout", "-q", "-b", "fix-41-b")
-    git(stack, "commit", "-q", "--allow-empty", "-m", "b")
-    git(repo.main, "update-ref", "refs/remotes/origin/main", "main")
-    git(repo.main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
-    track(repo.main, {"fix-40-a": ("main", 11), "fix-41-b": ("fix-40-a", 12)})
-    git(repo.main, "merge", "-q", "--no-ff", "-m", "Merge fix-40-a", "fix-40-a")
-    git(repo.main, "update-ref", "refs/remotes/origin/main", "HEAD")
-
-    result = tower_state(capsys)
-
-    assert [(b["name"], b["merged"]) for b in result["stacks"][0]["branches"]] == [  # type: ignore[index]
-        ("fix-40-a", True),
-        ("fix-41-b", False),
-    ]
-    assert result["in_progress"] == {"#41": "running in fix-41-b", "#42": "running in fix-41-b"}
-
-
 @pytest.mark.parametrize(
     ("kickoff", "tickets"),
     [
         ("/implement #40 and #041 as one git-spice stack, bottom first.", ("#40", "#41")),
         ("/implement #40, #41, and #42 as one git-spice stack.", ("#40", "#41", "#42")),
+        ("/implement #40 And #41 & #42 as one git-spice stack.", ("#40", "#41", "#42")),
         ("/implement #40 #41 #42 as one git-spice stack.", ("#40", "#41", "#42")),
         ("  /implement #4 and #5 as one git-spice stack.", ("#4", "#5")),  # indented by a hand edit
         ("/setup-matt-pocock-skills — Use the status-card skill whenever you stop.", ()),
