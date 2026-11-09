@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive, track
 
-from tower import cli, events, github, ledger
+from tower import card, cli, events, github, ledger
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN_TOWER = ROOT / "plugin" / "scripts" / "run-tower.py"
@@ -119,6 +119,33 @@ def test_finished_work_and_a_stack_branchs_guess_name_issues_as_github_numbers_t
 
     assert rows(result)["feat-95-x"]["status"] == "ready-to-clean"
     assert result["in_progress"] == {"#41": "in the stack in feat-041-a", "#42": "in the stack in feat-041-a"}
+
+
+def test_every_ticket_a_stack_kickoff_lists_is_in_progress_before_its_branch_exists(
+    repo: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The hub starts #82, #83 and #87 as one stack: the worktree's card names #82 and only its branch exists yet, but
+    its kickoff lists all three, so none is offered to start again. A ticket the kickoff mentions after its list (a
+    title's "follow-up to #86") isn't one it starts."""
+    stack = repo.add_worktree("rishi-desai/fix-82-hook-git-runs-commands")
+    repo.write_card("rishi-desai/fix-82-hook-git-runs-commands", "running", ticket="#82")
+    card.set_kickoff(
+        stack,
+        "/implement #82, #83 and #87 as one git-spice stack, bottom first, one branch per ticket. Use the status-card"
+        " skill whenever you stop.",
+    )
+    single = repo.add_worktree("fix-90-labels")
+    repo.write_card("fix-90-labels", "running", ticket="#90")
+    card.set_kickoff(single, "/diagnosing-bugs #90 — Follow-up to #86: labels. Use the status-card skill.")
+
+    result = tower_state(capsys)
+
+    assert result["in_progress"] == {
+        "#82": "running in rishi-desai/fix-82-hook-git-runs-commands",
+        "#83": "running in rishi-desai/fix-82-hook-git-runs-commands",
+        "#87": "running in rishi-desai/fix-82-hook-git-runs-commands",
+        "#90": "running in fix-90-labels",
+    }
 
 
 def test_a_stack_no_worktree_holds_puts_no_issue_in_progress(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:

@@ -54,17 +54,24 @@ EVENTS_READ = 5000  # how many of the log's last lines to read when standing in 
 LISTED_OVERLAP_FILES = 5  # a Housekeeping row names this many shared files, then says how many more
 PR_LOOKUPS = 8  # `gh pr list` calls run at once for --pr, one per branch, so many worktrees don't wait in turn
 TICKET = re.compile(r"#?([0-9]+)")  # a card's ticket: 42 or #42 (card write renders #42), or none
+KICKOFF = "Kickoff"  # the card's last section: the hub's kickoff prompt, word for word (card.set_kickoff)
+HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")  # a card section's heading line
+# The tickets a kickoff starts: the list right after its skill, "/implement #40, #41 and #42 as one stack" or
+# "/diagnosing-bugs #42 — title"; a ticket the title or the rest mentions isn't one.
+KICKOFF_TICKETS = re.compile(r"\S+\s+(#[0-9]+(?:(?:\s*,\s*|,?\s+and\s+)#[0-9]+)*)")
 
 
 @dataclass(frozen=True)
 class Card:
-    """The frontmatter fields of a worktree's status card that state uses. stale: running, untouched for over 24h."""
+    """The frontmatter fields of a worktree's status card that state uses. stale: running, untouched for over 24h.
+    kickoff_tickets: the tickets its ## Kickoff section starts (kickoff_tickets()), as "#42"."""
 
     status: str
     ticket: str
     updated: str
     pr: str
     stale: bool
+    kickoff_tickets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -442,9 +449,10 @@ def read_card(path: Path, now: float) -> Card | None:
     except FileNotFoundError:
         return None
     lines = text.splitlines()
+    body = lines
     if lines and lines[0].strip() == "---":
         end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), len(lines))
-        lines = lines[1:end]
+        lines, body = lines[1:end], lines[end + 1 :]
     status = frontmatter_field(lines, "status")
     ticket = frontmatter_field(lines, "ticket") or "none"
     return Card(
@@ -453,7 +461,38 @@ def read_card(path: Path, now: float) -> Card | None:
         updated=frontmatter_field(lines, "updated"),
         pr=frontmatter_field(lines, "pr") or "none",
         stale=status == "running" and now - mtime > STALE_AFTER_SECONDS,
+        kickoff_tickets=kickoff_tickets(split_kickoff("\n".join(body))[1] or ""),
     )
+
+
+def kickoff_tickets(kickoff: str) -> tuple[str, ...]:
+    """The tickets a kickoff starts, in its order, as GitHub numbers them: "/implement #40, #041 and #42 as one
+    git-spice stack" -> ("#40", "#41", "#42"); "/diagnosing-bugs #90 — follow-up to #86" -> ("#90",). A kickoff with
+    no ticket list right after its skill (a wayfinder's, the setup worktree's) starts none."""
+    match = KICKOFF_TICKETS.match(kickoff)
+    if match is None:
+        return ()
+    return tuple(dict.fromkeys(f"#{int(number)}" for number in re.findall(r"#([0-9]+)", match.group(1))))
+
+
+def split_kickoff(body: str) -> tuple[str, str | None]:
+    """(the card's body without its ## Kickoff section, the kickoff's text or None when it has none). The kickoff is
+    the last "## Kickoff" line to the next "## " line or the end, code blocks or not: a worker's unclosed ``` must
+    never hide it, and neither the narrative (parse_sections) nor a kickoff (normalize_kickoff) can hold such a line."""
+    lines = body.split("\n")
+    starts = [i for i, line in enumerate(lines) if is_kickoff_heading(line)]
+    if not starts:
+        return body, None
+    start = starts[-1]
+    end = next((i for i in range(start + 1, len(lines)) if HEADING.match(lines[i])), len(lines))
+    rest = "\n".join(lines[:start] + lines[end:]).rstrip("\n") + "\n"
+    return rest, "\n".join(lines[start + 1 : end]).strip("\n")
+
+
+def is_kickoff_heading(line: str) -> bool:
+    """Whether line is the ## Kickoff heading."""
+    heading = HEADING.match(line)
+    return heading is not None and heading.group(1).lower() == KICKOFF.lower()
 
 
 def card_or_note(path: Path, now: float, notes: list[str]) -> Card | None:
@@ -655,17 +694,20 @@ def as_pr(pr: github.BranchPr) -> Pr:
 
 def issues_in_progress(report: Report) -> dict[str, str]:
     """Where each issue in progress runs, by its ticket: "#93" -> "running in feat-93-x" (each worktree whose card
-    names it, in its effective state, comma-joined), and by the ticket guess of each unmerged branch of a stack a
-    worktree holds: "#41" -> "in the stack in feat-40-x" (a stack worktree's card names only one ticket). A worktree
-    without a card, or ready to clean up (its work merged or on the base branch), or a stack no worktree holds, is on
-    no issue. The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
+    names it, or whose kickoff starts it, in its effective state, comma-joined), and by the ticket guess of each
+    unmerged branch of a stack a worktree holds: "#41" -> "in the stack in feat-40-x" (a stack worktree's card names
+    only one ticket; its kickoff lists them all, from the start, before their branches exist). A worktree without a
+    card, or ready to clean up (its work merged or on the base branch), or a stack no worktree holds, is on no issue.
+    The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
     notes: dict[str, str] = {}
     for facts, v in report.worktrees:
-        if facts.card is None or TICKET.fullmatch(facts.card.ticket) is None or v.status == "ready-to-clean":
+        if facts.card is None or v.status == "ready-to-clean":
             continue
         note = f"{v.status} in {facts.label}"
-        ticket = facts.card.ticket
-        notes[ticket] = f"{notes[ticket]}, {note}" if ticket in notes else note
+        for ticket in dict.fromkeys((facts.card.ticket, *facts.card.kickoff_tickets)):
+            if TICKET.fullmatch(ticket) is None:
+                continue
+            notes[ticket] = f"{notes[ticket]}, {note}" if ticket in notes else note
     for stack in report.stacks:
         holder = stack_holder(report, stack)
         if holder is None:  # git-spice still tracks it, but no worktree has any of its branches: nobody works it

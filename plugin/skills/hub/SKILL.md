@@ -87,7 +87,7 @@ Then return to what they were doing. Don't start work on the idea.
 
 When asked what to work on next, choose from the scan's open issues:
 
-1. Skip any marked `[in progress: …]`: a worker's card names it (or it's a branch of a stack), and the mark says where it runs. The pane shows the same issues without a start button.
+1. Skip any marked `[in progress: …]`: a worker's card or kickoff names it (or it's a branch of a stack), and the mark says where it runs. The pane shows the same issues without a start button.
 2. Prefer issues labelled `ready-for-agent` (from `/to-spec`, `/to-tickets` or `/triage`).
 3. Skip any whose `Blocked by` tickets are still open — run `gh issue view <n>` on the top candidates to check — unless they can ship together as a stack: when the blockers form a chain of `ready-for-agent` tickets none of which is started (each blocked only by the one below it), recommend starting the chain as one stack (section 6, "A stack of tickets"), bottom first.
 4. Recommend one, in a sentence, with why.

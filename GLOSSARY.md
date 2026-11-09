@@ -98,8 +98,11 @@ ticket rather than a wrong one. It can miss or be wrong, so it is a guess, never
 _Avoid_: ticket number (a branch can have digits that aren't one)
 
 **Issue in progress**:
-An open issue that a worker's card names as its ticket (a card saying `93` names #93, as one saying `#93` does), or
-whose number an unmerged branch in a stack worktree guesses (that worktree's card names only one of its tickets). It stays
+An open issue that a worker's card names as its ticket (a card saying `93` names #93, as one saying `#93` does), that
+its kickoff starts, or whose number an unmerged branch in a stack worktree guesses (that worktree's card names only one
+of its tickets). A kickoff starts the tickets it lists right after its skill (`/implement #82, #83 and #87 as one
+git-spice stack`), from the moment the worktree starts, before their branches exist; a ticket its title or the rest
+only mentions ("follow-up to #86") isn't one it starts. It stays
 open on GitHub until its PR merges, but it is no longer there to start or discuss: it isn't counted among the issues
 to start or discuss, it comes after them, and the pane and the hub both say which worktree has it and in what
 effective state. A card's ticket often starts as the branch's ticket guess, and the worker corrects it when the guess
