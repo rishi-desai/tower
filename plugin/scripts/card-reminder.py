@@ -9,11 +9,11 @@ isn't worth a card.
 
 "During this session" matters: a worktree can hold files and commits this session didn't make. Only
 changes newer than the session's own start (its transcript file's creation time) count. The main
-checkout is skipped outright: it's the hub's, which edits nothing and has no card, yet `tower clean`
+checkout is skipped outright: it's the hub's, which edits nothing and needs no card, yet `tower clean`
 pulls merge commits newer than the hub's start into it.
 
-Stays quiet (exit 0, no output) whenever it can't tell: not a git repo, tower not set up on this
-machine, no transcript. A reminder we're unsure about is worse than none.
+Stays quiet (exit 0, no output) in the main checkout, and whenever it can't tell: not a git repo,
+tower not set up on this machine, no transcript. A reminder we're unsure about is worse than none.
 """
 
 from __future__ import annotations
@@ -46,14 +46,15 @@ def session_start(transcript_path: str) -> float | None:
     return getattr(st, "st_birthtime", None)
 
 
-def is_main_checkout(top: str) -> bool | None:
-    """Whether top is the repo's main checkout (git lists it first), like tower's gitrepo.is_main_checkout; None if
-    git can't say."""
-    listing = run(["git", "worktree", "list", "--porcelain"], top)
-    first = listing.splitlines()[0] if listing else ""
-    if not first.startswith("worktree "):
+def place(cwd: str) -> tuple[str, bool] | None:
+    """(top folder, whether it's the main checkout) for the worktree holding cwd, or None outside one. The main
+    checkout is the one whose git dir is the shared one, as `git worktree list` lists it first
+    (tower's gitrepo.is_main_checkout)."""
+    paths = run(["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"], cwd)
+    if paths is None or len(paths.splitlines()) != 3:
         return None
-    return os.path.realpath(first[len("worktree ") :]) == os.path.realpath(top)
+    top, git_dir, common = paths.splitlines()
+    return top, os.path.realpath(git_dir) == os.path.realpath(common)
 
 
 def newest_change(top: str) -> float:
@@ -89,13 +90,12 @@ def main() -> int:
         return 0  # we already sent Claude back once; let it stop
     cwd = event.get("cwd") or os.getcwd()
     started = session_start(event.get("transcript_path", ""))
-    top = run(["git", "rev-parse", "--show-toplevel"], cwd)
-    if started is None or top is None:
+    found = place(cwd)
+    if started is None or found is None:
         return 0
-    top = top.strip()
-    in_main_checkout = is_main_checkout(top)
-    if in_main_checkout is None or in_main_checkout:
-        return 0  # the hub's checkout has no card to remind about, or we can't tell (see above)
+    top, in_main_checkout = found
+    if in_main_checkout:
+        return 0  # the hub's checkout needs no card (see above)
     card = run([sys.executable, "-I", RUN_TOWER, "card-path", top], top)
     if card is None:
         return 0  # tower isn't set up here, or `tower card-path` failed: unsure, so quiet (see above)

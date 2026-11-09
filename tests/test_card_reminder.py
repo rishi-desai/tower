@@ -70,6 +70,17 @@ def test_a_commit_pulled_into_the_main_checkout_says_nothing(repo: Fixture, tmp_
     assert stop(repo.main, transcript) == ""
 
 
+def test_a_changed_file_in_the_main_checkout_says_nothing(repo: Fixture, tmp_path: Path) -> None:
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    changed = repo.main / "notes.txt"
+    changed.write_text("someone's edit\n", encoding="utf-8")
+    later = time.time() + 60
+    os.utime(changed, (later, later))
+
+    assert stop(repo.main, transcript) == ""
+
+
 def test_a_worker_commit_after_its_card_names_the_card_to_update(repo: Fixture, tmp_path: Path) -> None:
     worktree = repo.add_worktree("feat-1")
     transcript = tmp_path / "transcript.jsonl"
