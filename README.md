@@ -267,6 +267,7 @@ checks run again; the worker runs `git-spice repo sync` so its local branches fo
 | `STALE` on a card | go to that session and ask it to update its card, or check whether it has quietly died |
 | "skipping live sessions" | fine; the hub falls back to cards only |
 | a worktree with `NO CARD` | ask that session to "write your status card", or ask the hub to adopt the repo |
+| a worktree with `CARD ?` | tower couldn't check its card: the hub's NOTE says why (often tower.conf's `projects_dir`, fixed by re-running setup.sh) |
 | no approval prompt before a comment or push | run `tower policy`: the profile may let it through. Otherwise check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
 | prompts for everything, `tower policy: work` | `tower policy` says why: no policy file, or a problem in it (each listed with its line) |
 | a tool call refused with `hook error: [python3 -I …/confirm-public.py]: timed out; blocking because onFailure is "block"` | the approval hook ran past its 30 s, so Claude Code refused the call rather than run it unchecked; the agent can retry or split the command. `failed` instead of `timed out`, on every call, means the hook can't run at all: check that `python3 --version` runs (3.9 or later) |

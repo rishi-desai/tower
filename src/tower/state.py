@@ -147,6 +147,7 @@ class Verdict:
 
 
 WAITING_CI_CARD = "the card says it is waiting on CI, review or a merge"
+CARD_UNKNOWN = "the card couldn't be checked"
 
 
 def decide(worktree: WorktreeFacts) -> Verdict:
@@ -169,7 +170,7 @@ def decide(worktree: WorktreeFacts) -> Verdict:
         return verdict("waiting-ci", f"{WAITING_CI_CARD}; {watching}", worktree)
     if busy:
         if worktree.card_unknown:
-            return verdict("running", f"the card couldn't be checked, but session {busy[0].name} is busy", worktree)
+            return verdict("running", f"{CARD_UNKNOWN}, but session {busy[0].name} is busy", worktree)
         if card_status is None:
             return verdict("running", f"no card yet, but session {busy[0].name} is busy", worktree)
         if card_status == "needs-you" and not worktree.sessions_known:
@@ -187,9 +188,9 @@ def decide(worktree: WorktreeFacts) -> Verdict:
     if worktree.card_unknown:
         # The card may say work goes on (running, needs-you, blocked), so a merged PR can't settle it.
         if pr and pr.state == "MERGED":
-            reason = f"PR #{pr.number} is merged, but the card couldn't be checked (it may say work goes on)"
+            reason = f"PR #{pr.number} is merged, but {CARD_UNKNOWN} (it may say work goes on)"
             return verdict("card-unknown", reason, worktree)
-        return verdict("card-unknown", "the card couldn't be checked", worktree)
+        return verdict("card-unknown", CARD_UNKNOWN, worktree)
     # A merged PR settles a card that says the work is finished (or no card), never one that says work goes on: the
     # branch name may have been reused after an old PR merged.
     if pr and pr.state == "MERGED" and card_status not in ("running", "needs-you", "blocked"):
@@ -963,7 +964,7 @@ def cleanup(report: Report) -> list[tuple[str, str]]:
         if v.status == "ready-to-clean":
             items.append((facts.label, f"ready to clean up: {v.reason}"))
         if not facts.is_main and facts.card is None:
-            items.append((facts.label, "card couldn't be checked" if facts.card_unknown else "no card"))
+            items.append((facts.label, CARD_UNKNOWN if facts.card_unknown else "no card"))
         elif facts.card and facts.card.status not in CARD_STATUSES:
             items.append((facts.label, f"unknown card status: {facts.card.status or '?'}"))
         if facts.card and facts.card.stale:

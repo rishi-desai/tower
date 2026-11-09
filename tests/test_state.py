@@ -486,7 +486,7 @@ def test_without_a_ledger_it_still_reports_sessions(
 def test_without_a_ledger_no_worktree_is_called_card_less_or_ready_to_clean(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    """Cards that were never looked for are unknown, not missing: a merged PR doesn't make the worktree ready to clean
+    """Cards that were never looked for are unknown, not absent: a merged PR doesn't make the worktree ready to clean
     up (its card may say work goes on), and a worktree nobody works isn't card-less (#131)."""
     merged = repo.add_worktree("merged")
     repo.add_worktree("quiet")
@@ -523,7 +523,7 @@ def test_an_unreadable_card_with_a_merged_pr_isnt_ready_to_clean(
     result = tower_state(capsys, "--pr")
 
     assert rows(result)["merged"]["status"] == "card-unknown"
-    assert {"label": "merged", "note": "card couldn't be checked"} in result["housekeeping"]  # type: ignore[operator]
+    assert {"label": "merged", "note": "the card couldn't be checked"} in result["housekeeping"]  # type: ignore[operator]
 
 
 def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_worktrees_are_still_reported(
