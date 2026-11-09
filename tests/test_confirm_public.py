@@ -1786,6 +1786,10 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("x" * 300_000 + " cd" * 60_000 + "; git push --force", id="cd after a long program"),
         pytest.param("x" * 300_000 + " git-x" * 60_000 + "; git push --force", id="dashed git after a long program"),
         pytest.param("{" * 300_000 + "cat" + " tower/setup.sh" * 30_000, id="setup.sh after a long program"),
+        pytest.param("x" * 1_000_000 + " git" * 600 + "; git push --force", id="git after a long program"),
+        pytest.param(
+            "sudo" + " -u sudo" * 480 + " " + "x" * 1_000_000 + "; git push --force", id="long wrapped command"
+        ),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
@@ -1805,7 +1809,8 @@ def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: st
 def test_a_line_of_many_cds_runs_out_of_budget_before_building_every_folder() -> None:
     """Each cd joins onto the path the line's cds have built so far, which grows with every cd, and pays for that
     copy, so a line of 40,000 cds stops early. Building every folder before paying for any took over a gigabyte here,
-    growing with the square of the cds, which no timing test can reach safely."""
+    growing with the square of the cds; the timing test's "many cds" case passes in time either way, and a line long
+    enough to fail it would need tens of gigabytes."""
     hook = load_hook()
     checker = hook.CommandChecker(hook.SessionPolicy(hook.STRICTEST_GATES, "test"), "/tmp")
     with pytest.raises(hook.TooComplex):

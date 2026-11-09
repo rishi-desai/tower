@@ -1031,12 +1031,15 @@ class CommandChecker:
                 continue
             path = os.path.expanduser(target.text)
             self.spend(len(self.cd_folder) + len(path))  # joining copies the path the line's cds have built so far
-            self.folders += [Word(os.path.join(self.cwd, path)), Word(os.path.join(self.cd_folder, path))]
-            self.cd_folder = os.path.join(self.cd_folder, path)
-        chdirs = wrapper_folders(words, self.spend)
+            joined = os.path.join(self.cd_folder, path)
+            self.folders += [Word(os.path.join(self.cwd, path)), Word(joined)]
+            self.cd_folder = joined
+        chdirs = wrapper_folders(words, program_of(words), self.spend)
         if chdirs:
             parts = [os.path.expanduser(folder.text) for folder in chdirs]
-            self.spend(len(self.cd_folder) + sum(len(part) for part in parts))  # the same copy, for each base
+            self.spend(
+                len(self.cd_folder) + sum(len(part) for part in parts)
+            )  # the copy onto the cds' path (the session's folder is short)
             dynamic = any(folder.dynamic for folder in chdirs)
             self.folders += [Word(os.path.join(base, *parts), dynamic) for base in (self.cwd, self.cd_folder)]
 
@@ -1087,7 +1090,9 @@ class CommandChecker:
             # env -C DIR / sudo -D DIR before git work like git -C DIR, so a later git -C joins onto DIR
             self.spend(index)  # the words before git, looked through for wrappers (their options pay as they're read)
             moved = [
-                part for folder in wrapper_folders(command.words[:index], self.spend) for part in (Word("-C"), folder)
+                part
+                for folder in wrapper_folders(command.words[:index], program, self.spend)
+                for part in (Word("-C"), folder)
             ]
             git_args = [*moved, *(args if name == "git" else [Word(name[4:]), *args])]
             reason = check_git(git_args, lambda: self.push_mode(git_args), self.git_config_from_env)
@@ -1117,13 +1122,13 @@ class CommandChecker:
     def tower_subcommand_at(self, words: list[Word], index: int, subcommand: str) -> int | None:
         """Index of the operand after word INDEX of WORDS (tower or run-tower.py) when it is SUBCOMMAND (merge,
         clean) or from a variable, else None. The options skipped to reach it are paid for (a path ending in /tower
-        may be one: tower --x=/tower), and once it is found the whole command is too, since the caller reads what
-        launches tower as well as what follows it."""
+        may be one: tower --x=/tower), and once it is found the whole command is too, characters included, since the
+        caller reads the text of what launches tower as well as what follows it."""
         position = next_operand(words, index + 1)
         self.spend((len(words) if position is None else position) - index)
         if position is None or not (words[position].dynamic or words[position].text == subcommand):
             return None
-        self.spend(len(words))
+        self.spend(scan_cost(words, 0, len(words)))  # launcher words' text is scanned, as well as what follows
         return position
 
     def tower_clean_reasons(self, words: list[Word], index: int, program: Program) -> list[str]:
@@ -1526,11 +1531,11 @@ def program_of(words: list[Word]) -> Program:
     return Program(at, program_name(words[at]) if at < len(words) else "")
 
 
-def scan_cost(words: list[Word], index: int, end: int) -> int:
-    """What a check at word INDEX pays to read WORDS up to END: a unit per word, plus the characters of the words after
-    INDEX, whose text it scans (a few long words cost a scan far more than their count: python3 ... -c '<a megabyte
-    of code>', or a short-option cluster read letter by letter)."""
-    return end - index + sum(len(words[i].text) for i in range(index + 1, end))
+def scan_cost(words: list[Word], start: int, end: int) -> int:
+    """What a check pays to read WORDS[START:END]: a unit per word plus their characters, since it scans their text
+    (a few long words cost a scan far more than their count: python3 ... -c '<a megabyte of code>', a short-option
+    cluster read letter by letter, or a long command word after a wrapper's options)."""
+    return end - start + sum(len(words[i].text) for i in range(start, end))
 
 
 def is_process_substitution(word: Word) -> bool:
@@ -1669,7 +1674,7 @@ def env_hides_variables(words: list[Word], index: int, spend: Callable[[int], No
     or find run may get assignments from them: sets_git_config counts that.) The options read are paid for with
     SPEND: this env may be another option's value (env -u env), and reading from each runs to the end of the line."""
     command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
-    spend(scan_cost(words, index, command_at))
+    spend(scan_cost(words, index, min(command_at + 1, len(words))))  # what it runs is read too
     return command_at < len(words) and hides_name(words[command_at])
 
 
@@ -1723,18 +1728,18 @@ WRAPPER_SYNTAX = {
 }
 
 
-def wrapper_folders(words: list[Word], spend: Callable[[int], None]) -> list[Word]:
+def wrapper_folders(words: list[Word], program: Program, spend: Callable[[int], None]) -> list[Word]:
     """The folders a simple command's WORDS tell env (-C, --chdir) or sudo (-D, --chdir) to run its command in, in
-    order (each relative to the one before). A -C inside env -S's string is found when that is checked. Each
+    order (each relative to the one before). A -C inside env -S's string is found when that is checked. PROGRAM is
+    the program the whole command runs (program_of); WORDS may stop short of its end (the words before git). Each
     wrapper's options read are paid for with SPEND: an env or sudo word may be another option's value (sudo -u sudo),
     and reading from each runs to the end of the line."""
     found: list[Word] = []
-    program = program_of(words)
     for index in range(program.at, len(words)):
-        name = program_name(words[index])
-        if name in WRAPPER_SYNTAX and program.runs(index):
+        name = program_name(words[index]) if program.runs(index) else ""
+        if name in WRAPPER_SYNTAX:
             options = read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1)
-            spend(scan_cost(words, index, options.command_at))
+            spend(scan_cost(words, index, min(options.command_at + 1, len(words))))  # what it runs is read too
             found += options.chdirs
     return found
 
