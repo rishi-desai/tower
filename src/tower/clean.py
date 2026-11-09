@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tower import ledger, merge, sessions, stacks, state
-from tower.gitrepo import GitWorktree, NotARepo, git, list_worktrees, repo_name
+from tower.gitrepo import COMMIT_ID, GitWorktree, NotARepo, git, list_worktrees, repo_name
 from tower.merge import Gh, GhResult, Say
 
 ORCA_TIMEOUT_SECONDS = 60  # one orca call; removing a worktree is the slowest
@@ -377,7 +377,7 @@ def merged_pr(gh: Gh, branch: str | None) -> tuple[int | None, str | None, str, 
         return None, None, f"{branch} has no merged PR", True
     newest = merged[-1]
     head = newest.get("headRefOid")
-    if not isinstance(head, str) or not state.COMMIT_ID.fullmatch(head):
+    if not isinstance(head, str) or not COMMIT_ID.fullmatch(head):
         return None, None, f"GitHub didn't give PR #{newest['number']}'s head commit", False
     return int(newest["number"]), head, "", True
 

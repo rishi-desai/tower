@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 COMMAND_TIMEOUT_SECONDS = 15
+COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # a full SHA-1 or SHA-256 commit id, as gh prints headRefOid
 # Words that name a ticket when a number follows (fix-42), even behind one user or version prefix (rishi-fix-64).
 TICKET_WORDS = {"issue", "gh", "feat", "fix", "chore", "refactor", "bug", "hotfix"}
 # Types that are everyday words too (node-build-18, flaky-test-2), so they name one only starting the name or a /-part.

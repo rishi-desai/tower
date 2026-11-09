@@ -33,16 +33,15 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tower import events, ledger, policy, sessions, stacks
-from tower.github import from_this_repo
-from tower.gitrepo import COMMAND_TIMEOUT_SECONDS, git, list_worktrees, repo_name
+from tower import events, github, ledger, policy, sessions, stacks
+from tower.gitrepo import GitWorktree, git, list_worktrees, repo_name
 from tower.overlaps import Overlap, find_overlaps
 from tower.sessions import owning_worktree
 
@@ -53,7 +52,7 @@ STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flag
 EVENTS_WINDOW = timedelta(hours=24)  # older events don't stand in for a live session: it may have crashed
 EVENTS_READ = 5000  # how many of the log's last lines to read when standing in for live sessions
 LISTED_OVERLAP_FILES = 5  # a Housekeeping row names this many shared files, then says how many more
-COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")  # a full SHA-1 or SHA-256 commit id, as gh prints headRefOid
+PR_LOOKUPS = 8  # `gh pr list` calls run at once for --pr, one per branch, so many worktrees don't wait in turn
 TICKET = re.compile(r"#?([0-9]+)")  # a card's ticket: 42 or #42 (card write renders #42), or none
 
 
@@ -312,11 +311,11 @@ def gather(
         sessions_source = "events" if any(live.values()) else "none"
 
     prs: dict[str, Pr] = {}
+    branch_prs: dict[str, Pr] = {}
     if with_pr:
-        found, pr_note = pull_requests(Path(main.path))
-        if found is None:
+        prs, branch_prs, pr_note = pull_requests(Path(main.path), worktrees)
+        if pr_note:
             notes.append(pr_note)
-        prs = found or {}
 
     base = base_ref(Path(main.path), main.branch)
     if base is None:
@@ -324,7 +323,7 @@ def gather(
             "no base branch (no origin/HEAD, and the main checkout is detached), so unshipped work wasn't counted"
         )
     checked_out = {wt.branch: wt.path for wt in worktrees if wt.branch}
-    found_stacks, stacks_note = stacks.read_stacks(Path(main.path), checked_out, prs)
+    found_stacks, stacks_note = stacks.read_stacks(Path(main.path), checked_out, branch_prs)
     if stacks_note:
         notes.append(stacks_note)
     seen_cards: set[str] = set()
@@ -615,52 +614,38 @@ def is_dirty(worktree: Path) -> bool | None:
     return None if out is None else out != ""
 
 
-def pull_requests(repo_dir: Path) -> tuple[dict[str, Pr] | None, str]:
-    """Each branch's PR from `gh pr list` (an open one if it has one, else its newest; never a fork's), or None and
-    why not."""
-    fields = "number,state,headRefName,url,headRefOid,isCrossRepository"
-    try:
-        proc = subprocess.run(
-            ["gh", "pr", "list", "--state", "all", "--limit", "200", "--json", fields],
-            cwd=repo_dir,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError:
-        return None, "gh not installed, so PRs weren't read"
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return None, f"gh pr list didn't run ({type(error).__name__}), so PRs weren't read"
-    if proc.returncode != 0:
-        why = (proc.stderr.strip().splitlines() or [f"exit {proc.returncode}"])[-1]
-        return None, f"gh pr list failed ({why}), so PRs weren't read"
-    try:
-        listed = json.loads(proc.stdout)
-    except ValueError:
-        return None, "gh pr list printed something that isn't JSON"
-    if not isinstance(listed, list):
-        return None, "gh pr list printed something unexpected (expected a list)"
-    found: dict[str, Pr] = {}
-    for entry in listed:
-        if not isinstance(entry, dict) or not isinstance(entry.get("number"), int) or not from_this_repo(entry):
+def pull_requests(repo_dir: Path, worktrees: list[GitWorktree]) -> tuple[dict[str, Pr], dict[str, Pr], str]:
+    """(each worktree's PR by its branch, by github.worktree_pr's rule, the one `tower card` uses; each branch's PR
+    before that rule's earlier-work check, github.branch_pr's pick, which the stacks weigh against git-spice's own
+    record; a note when gh couldn't be asked about some). One `gh pr list --head` per checked-out branch and per branch
+    git-spice tracks, PR_LOOKUPS at a time: each call only runs gh, so they share nothing."""
+    tracking, _ = stacks.read_tracking(repo_dir)  # read_stacks notes a tracking ref it can't read
+    branches = sorted({wt.branch for wt in worktrees if wt.branch} | set(tracking.branches if tracking else ()))
+    if not branches:
+        return {}, {}, ""
+    with ThreadPoolExecutor(max_workers=min(PR_LOOKUPS, len(branches))) as pool:
+        found = dict(zip(branches, pool.map(lambda branch: github.branch_pr(repo_dir, branch), branches)))
+    branch_prs = {branch: as_pr(pr) for branch, (pr, _) in found.items() if pr is not None}
+    prs: dict[str, Pr] = {}
+    for wt in worktrees:
+        if wt.branch is None:
             continue
-        head = entry.get("headRefOid")
-        pr = Pr(
-            number=entry["number"],
-            state=str(entry.get("state")),
-            url=str(entry.get("url")),
-            # Only a commit id goes on to git: never something it could read as an option.
-            head_oid=head if isinstance(head, str) and COMMIT_ID.fullmatch(head) else None,
-        )
-        current = found.get(str(entry.get("headRefName")))
-        if (
-            current is None
-            or (pr.state == "OPEN") > (current.state == "OPEN")
-            or ((pr.state == "OPEN") == (current.state == "OPEN") and pr.number > current.number)
-        ):
-            found[str(entry.get("headRefName"))] = pr
-    return found, ""
+        pr, _ = found[wt.branch]
+        if pr is None:
+            continue
+        kept, _ = github.unless_earlier_work(Path(wt.path), pr)  # as on the card, which tells its worker why
+        if kept is not None:
+            prs[wt.branch] = as_pr(kept)
+    errors = [error for _, error in found.values() if error]
+    if not errors:
+        return prs, branch_prs, ""
+    whose = "" if len(errors) == len(branches) else f" of {len(errors)} of {len(branches)} branches"
+    return prs, branch_prs, f"gh pr list failed ({errors[0]}), so the PRs{whose} weren't read"
+
+
+def as_pr(pr: github.BranchPr) -> Pr:
+    """The report's Pr for one of github's: its head as head_oid, None when gh gave no commit id."""
+    return Pr(number=pr.number, state=pr.state, url=pr.url, head_oid=pr.head or None)
 
 
 def issues_in_progress(report: Report) -> dict[str, str]:

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from conftest import Fixture, git, interactive, track
 
-from tower import cli, events, ledger
+from tower import cli, events, github, ledger
 
 ROOT = Path(__file__).resolve().parent.parent
 RUN_TOWER = ROOT / "plugin" / "scripts" / "run-tower.py"
@@ -39,11 +39,19 @@ def rows(result: dict[str, object]) -> dict[str, dict[str, object]]:
 
 
 def fake_gh_pr_list(tmp_path: Path, listed: list[dict[str, object]]) -> None:
-    """A fake `gh` on PATH whose `pr list --json <fields>` prints listed with only the fields asked for, as gh does."""
+    """A fake `gh` on PATH whose `pr list --json <fields>` prints listed as gh does: only the fields asked for, only
+    the PRs whose headRefName is `--head`'s branch when given, newest first, at most `--limit` of them (30 unless
+    given)."""
     program = (
         "import json, sys\n"
-        "fields = sys.argv[sys.argv.index('--json') + 1].split(',')\n"
-        f"print(json.dumps([{{k: v for k, v in pr.items() if k in fields}} for pr in {listed!r}]))\n"
+        "args = sys.argv[1:]\n"
+        "def flag(name, default=None):\n"
+        "    return args[args.index(name) + 1] if name in args else default\n"
+        "fields = flag('--json').split(',')\n"
+        "head = flag('--head')\n"
+        f"prs = sorted({listed!r}, key=lambda pr: -pr['number'])\n"
+        "prs = [pr for pr in prs if head is None or pr.get('headRefName') == head][: int(flag('--limit', '30'))]\n"
+        "print(json.dumps([{k: v for k, v in pr.items() if k in fields} for pr in prs]))\n"
     )
     gh = tmp_path / "bin" / "gh"
     # sh runs it, not a #! naming this Python: a path with a space or past the #! length limit can't break it
@@ -169,7 +177,9 @@ def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_i
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """Squash-merged branches: none of their commits are on main, so the PR's head commit (headRefOid) is what the
-    worktree's HEAD is compared with. A head this clone doesn't have can't be compared, so it isn't ready-to-clean."""
+    worktree's HEAD is compared with. A head this clone doesn't have can't be compared, so it isn't ready-to-clean. A
+    worktree with commits past the merged head can't be told from a reused branch name, so, as on its card, the PR
+    isn't its PR and it stays done (github.unless_earlier_work)."""
     heads = {}
     for branch in ("squashed", "more-work", "head-elsewhere", "pulled-main", "not-a-sha"):
         path = repo.add_worktree(branch, commits=2)
@@ -198,17 +208,19 @@ def test_a_merged_pr_is_ready_to_clean_only_when_the_worktree_has_nothing_past_i
     found = rows(tower_state(capsys, "--pr"))
 
     assert (found["squashed"]["status"], found["squashed"]["reason"]) == ("ready-to-clean", "PR #7 is merged")
-    assert (found["more-work"]["status"], found["more-work"]["reason"]) == (
+    assert (found["more-work"]["status"], found["more-work"]["reason"], found["more-work"]["pr"]) == (
         "done",
-        "the card says done; PR #8 is merged but the worktree has 1 commit the PR doesn't include",
+        "the card says done",
+        None,
     )
     assert (found["head-elsewhere"]["status"], found["head-elsewhere"]["reason"]) == (
         "done",
         "the card says done; PR #9 is merged but the worktree couldn't be checked for commits the PR doesn't include",
     )
-    assert (found["pulled-main"]["status"], found["pulled-main"]["reason"]) == (
+    assert (found["pulled-main"]["status"], found["pulled-main"]["reason"], found["pulled-main"]["pr"]) == (
         "done",
-        "the card says done; PR #10 is merged but the worktree has 2 commits the PR doesn't include",
+        "the card says done",
+        None,
     )
     assert found["not-a-sha"]["reason"] == (
         "the card says done; PR #11 is merged but the worktree couldn't be checked for commits the PR doesn't include"
@@ -221,7 +233,7 @@ def test_a_fork_pr_with_the_worktrees_branch_name_is_not_its_pr(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """A stranger's fork can push a branch with any name (patch-1, fix-typo): only a PR from this repo is the
-    worktree's, as in card.branch_pr. A newer open fork PR on the same branch name doesn't hide the worktree's own."""
+    worktree's, as in github.worktree_pr. A newer open fork PR on the same branch name doesn't hide the worktree's own."""
     for branch in ("patch-1", "own-work", "shared"):
         repo.add_worktree(branch, commits=1)
         repo.write_card(branch, "running")
@@ -243,6 +255,88 @@ def test_a_fork_pr_with_the_worktrees_branch_name_is_not_its_pr(
     own_pr, shared_pr = found["own-work"]["pr"], found["shared"]["pr"]
     assert isinstance(own_pr, dict) and own_pr["number"] == 21
     assert isinstance(shared_pr, dict) and shared_pr["number"] == 22
+
+
+def test_a_merged_pr_from_earlier_work_on_a_reused_branch_name_is_not_the_worktrees_pr(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The branch name was used before: its old PR merged at a commit that doesn't contain this worktree's HEAD. It
+    isn't this work, so `tower state --pr` shows no PR, the same as the card (github.worktree_pr)."""
+    path = repo.add_worktree("reused", commits=1)
+    repo.write_card("reused", "running")
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "the old reused branch, squash-merged")
+    old_head = git(repo.main, "rev-parse", "HEAD").strip()
+    old_pr = {"number": 5, "state": "MERGED", "headRefName": "reused", "headRefOid": old_head, "url": "u"}
+    fake_gh_pr_list(tmp_path, [{**old_pr, "baseRefName": "main", "isCrossRepository": False}])
+
+    row = rows(tower_state(capsys, "--pr"))["reused"]
+
+    assert (row["status"], row["pr"]) == ("running", None)
+    assert github.worktree_pr(path, "reused")[0] is None
+
+
+def test_a_fresh_worktree_on_a_reused_branch_name_is_never_ready_to_clean_off_the_old_pr(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A worker just started on a branch name whose old PR merged (by merge commit, so its head is on main): no card
+    yet, no commits, nothing uncommitted. The old PR isn't this work, so it can't make the worktree ready-to-clean."""
+    git(repo.main, "checkout", "-q", "-b", "reused")
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "the old reused branch")
+    old_head = git(repo.main, "rev-parse", "HEAD").strip()
+    git(repo.main, "checkout", "-q", "main")
+    git(repo.main, "merge", "-q", "--no-ff", "--no-edit", "reused")
+    git(repo.main, "branch", "-q", "-D", "reused")
+    repo.add_worktree("reused", commits=0)
+    old_pr = {"number": 5, "state": "MERGED", "headRefName": "reused", "headRefOid": old_head, "url": "u"}
+    fake_gh_pr_list(tmp_path, [{**old_pr, "baseRefName": "main", "isCrossRepository": False}])
+
+    row = rows(tower_state(capsys, "--pr"))["reused"]
+
+    assert (row["status"], row["reason"], row["pr"]) == ("no-card", "no card yet", None)
+
+
+def test_a_worktrees_pr_older_than_the_repos_200_newest_still_shows(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A busy repo: 200 newer PRs on other branches. The worktree's PR is still found, since it is asked for by its
+    branch rather than picked out of the repo's newest."""
+    repo.add_worktree("slow-burn", commits=1)
+    repo.write_card("slow-burn", "running")
+    listed: list[dict[str, object]] = [
+        {"number": n, "state": "MERGED", "headRefName": f"other-{n}", "url": "u", "isCrossRepository": False}
+        for n in range(2, 202)
+    ]
+    listed.append({"number": 1, "state": "OPEN", "headRefName": "slow-burn", "url": "u", "isCrossRepository": False})
+    fake_gh_pr_list(tmp_path, [{**pr, "baseRefName": "main", "headRefOid": "0" * 40} for pr in listed])
+
+    pr = rows(tower_state(capsys, "--pr"))["slow-burn"]["pr"]
+
+    assert isinstance(pr, dict) and (pr["number"], pr["state"]) == (1, "OPEN")
+
+
+def test_a_branch_gh_couldnt_be_asked_about_is_noted_and_the_others_prs_still_show(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Each branch is its own gh call, so one that fails costs only that branch's PR, and the note says how many."""
+    for branch in ("fine", "flaky"):
+        repo.add_worktree(branch, commits=1)
+    gh = tmp_path / "bin" / "gh"
+    listed = [{"number": 3, "state": "OPEN", "baseRefName": "main", "headRefOid": "0" * 40, "url": "u"}]
+    gh.write_text(
+        '#!/bin/sh\ncase "$*" in *"--head flaky"*) echo "HTTP 502: Bad Gateway" >&2; exit 1;; esac\n'
+        f"echo '{json.dumps([{**listed[0], 'isCrossRepository': False}])}'\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+
+    result = tower_state(capsys, "--pr")
+
+    notes = result["notes"]
+    assert isinstance(notes, list)
+    assert "gh pr list failed (HTTP 502: Bad Gateway), so the PRs of 1 of 3 branches weren't read" in notes
+    fine_pr = rows(result)["fine"]["pr"]
+    assert isinstance(fine_pr, dict) and fine_pr["number"] == 3
+    assert rows(result)["flaky"]["pr"] is None
 
 
 def test_cards_without_a_worktree_are_orphans(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:

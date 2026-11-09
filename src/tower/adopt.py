@@ -16,12 +16,11 @@ those worktrees still count.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 from tower import ledger, policy, sessions, state
-from tower.github import from_this_repo, try_gh
+from tower.github import BranchPr, branch_pr, try_gh, worktree_pr
 from tower.gitrepo import GitWorktree, git, guess_ticket, list_worktrees, repo_name
 
 SHOWN_CHANGES = 8  # uncommitted entries listed under a worktree; the rest are counted
@@ -118,27 +117,16 @@ def worktree_rows(
             for f in worktree_folders
         ]
     if has_gh and worktree.branch and not is_main:
-        pr, error = branch_pr(repo_dir, worktree.branch, with_title=True)
-        rows.append(f"    PR: {pr}" if pr is not None else f"    PR: (gh failed: {error})")
+        pr, _, error = worktree_pr(path, worktree.branch)
+        rows.append(f"    PR: (gh failed: {error})" if error else f"    PR: {describe_pr(pr, with_title=True)}")
     return rows
 
 
-def branch_pr(repo_dir: Path, branch: str, with_title: bool) -> tuple[str | None, str]:
-    """The branch's newest PR as "#N STATE[ title]", "none" when it has none, or None and gh's error. A fork's PR is
-    never it (a stranger's patch-1 isn't this work), so forks are dropped before the newest is chosen (#77). Newest,
-    not open first as card.branch_pr chooses: #78 unifies that."""
-    out, error = try_gh(repo_dir, "pr", "list", "--head", branch, "--state", "all",
-                        "--json", "number,state,title,isCrossRepository")  # fmt: skip
-    if out is None:
-        return None, error
-    try:
-        prs = [(int(p["number"]), str(p["state"]), str(p["title"])) for p in json.loads(out) if from_this_repo(p)]
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return None, f"gh pr list printed something unexpected: {out[:120]!r}"
-    if not prs:
-        return "none", ""
-    number, pr_state, title = max(prs)
-    return f"#{number} {pr_state}" + (f" {title}" if with_title else ""), ""
+def describe_pr(pr: BranchPr | None, with_title: bool) -> str:
+    """A PR as the scan shows it: "#N STATE[ title]", or "none"."""
+    if pr is None:
+        return "none"
+    return f"#{pr.number} {pr.state}" + (f" {pr.title}" if with_title else "")
 
 
 def uncommitted(worktree: Path, roots: set[str]) -> tuple[list[str] | None, list[str]]:
@@ -244,8 +232,9 @@ def parked_branches(repo_dir: Path, skip: set[str], base: str, has_gh: bool) -> 
             continue
         pr = ""
         if has_gh:
-            found, error = branch_pr(repo_dir, branch, with_title=False)
-            pr = f" | PR: {found}" if found is not None else f" | PR: gh failed: {error}"
+            # A parked branch has no worktree HEAD to check earlier work against: the pick alone.
+            picked, error = branch_pr(repo_dir, branch)
+            pr = f" | PR: gh failed: {error}" if error else f" | PR: {describe_pr(picked, with_title=False)}"
         last = (git(repo_dir, "log", "-1", "--format=%cr: %s", branch) or "")[:LAST_COMMIT_CHARS]
         rows.append(f"- {branch} | {count} commit(s) not on {base}{pr} | last: {last}")
     return rows

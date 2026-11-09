@@ -357,8 +357,8 @@ def test_adopt_scan_shows_each_branchs_pr_and_gh_failures(
 
 def fake_gh_prs_by_head(tmp_path: Path, prs: dict[str, list[dict[str, object]]]) -> None:
     """Put a `gh` on PATH that answers like GitHub for these PRs per head branch (newest first, as gh lists them):
-    `pr list --head B` keeps --limit's first N, prints only the --json fields asked for, and renders a
-    `{{range .}}...{{.field}}...{{end}}` --template; `auth status` and `repo view` succeed. --limit and --template are
+    `pr list --head B` keeps --limit's first N, prints only the --json fields asked for (of those each PR has), and
+    renders a `{{range .}}...{{.field}}...{{end}}` --template; `auth status` and `repo view` succeed. --limit and --template are
     honoured as GitHub would, so a return to the old `--limit 1` template call goes red rather than passing on luck."""
     program = (
         "import json, re, sys\n"
@@ -368,7 +368,7 @@ def fake_gh_prs_by_head(tmp_path: Path, prs: dict[str, list[dict[str, object]]])
         "opt = lambda name, default: args[args.index(name) + 1] if name in args else default\n"
         f"listed = {prs!r}.get(opt('--head', ''), [])[: int(opt('--limit', '30'))]\n"
         "fields = opt('--json', '').split(',')\n"
-        "listed = [{f: pr[f] for f in fields} for pr in listed]\n"
+        "listed = [{f: pr[f] for f in fields if f in pr} for pr in listed]\n"
         "template = opt('--template', '')\n"
         "body = template.removeprefix('{{range .}}').removesuffix('{{end}}')\n"
         "render = lambda pr: re.sub(r'{{\\.(\\w+)}}', lambda m: str(pr[m.group(1)]), body)\n"
@@ -383,7 +383,7 @@ def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """#77: a stranger's fork can push a branch with any name (patch-1): only a PR from this repo is the worktree's,
-    as in card.branch_pr, and a newer fork PR on the same branch name doesn't hide this repo's own."""
+    as in github.branch_pr, and a newer fork PR on the same branch name doesn't hide this repo's own."""
     repo.add_worktree("shared")
     repo.add_worktree("patch-1")
     git(repo.main, "branch", "parked-fork", "shared")  # parked work: no worktree, commits not on main
@@ -406,6 +406,35 @@ def test_adopt_scan_never_shows_a_fork_pr_as_a_branchs_pr(
     assert out.split("    PR: none\n")[0].splitlines()[-1].startswith("- [worktree] patch-1 |")
     assert "#23" not in out and "#20" not in out
     assert "- parked-fork | 1 commit(s) not on main | PR: none | last: " in out
+
+
+def test_adopt_scan_shows_a_branchs_open_pr_before_a_newer_merged_one(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """#78: the adopt scan picks a branch's PR as the card and `tower state --pr` do (github.branch_pr): its open PR,
+    else its newest, so a newer merged PR on the same branch name doesn't hide the open one."""
+    repo.add_worktree("reopened")
+    git(repo.main, "branch", "parked-reopened", "reopened")
+    own = {"isCrossRepository": False}
+    fake_gh_prs_by_head(
+        tmp_path,
+        {
+            "reopened": [
+                {"number": 31, "state": "MERGED", "title": "earlier", **own},
+                {"number": 30, "state": "OPEN", "title": "current", **own},
+            ],
+            "parked-reopened": [
+                {"number": 41, "state": "CLOSED", "title": "y", **own},
+                {"number": 40, "state": "OPEN", "title": "x", **own},
+            ],
+        },
+    )
+
+    code, out, _ = run(capsys, "adopt-scan")
+
+    assert code == 0
+    assert out.split("    PR: #30 OPEN current\n")[0].splitlines()[-1].startswith("- [worktree] reopened |")
+    assert "- parked-reopened | 1 commit(s) not on main | PR: #40 OPEN | last: " in out
 
 
 def test_the_plugin_runs_adopt_scan(repo: Fixture) -> None:

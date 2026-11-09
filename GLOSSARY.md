@@ -107,9 +107,10 @@ is wrong; a worktree without a card is on no issue, whatever its branch name say
 _Avoid_: started issue, claimed issue, assigned (GitHub's own word for a person on an issue)
 
 **Worktree's PR**:
-A PR from this repo whose head branch has the worktree's branch name. A fork's PR is never it, even with the same
-branch name (a stranger's patch-1 isn't this work). A parked branch's PR, for a branch with no worktree, follows the
-same rule.
+The open PR from this repo whose head branch has the worktree's branch name, else the newest such PR. A fork's PR is
+never it, even with the same branch name (a stranger's patch-1 isn't this work), and neither is a merged or closed
+PR whose head doesn't contain the worktree's HEAD (earlier work on a reused branch name). A parked branch's PR, for a
+branch with no worktree, is its open PR from this repo, else its newest.
 _Avoid_: PR by branch name (a fork's PR can have the same branch name)
 
 **Kickoff**:

@@ -415,6 +415,32 @@ def test_an_old_merged_pr_on_a_reused_branch_name_isnt_the_stacked_branchs_pr(
     ]
 
 
+def test_a_merged_pr_git_spice_recorded_is_the_stacked_branchs_even_when_github_rebased_it(
+    repo: Fixture, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub rebased feat-a's PR and merged it, so the local feat-a isn't in its head: earlier work, by the worktree's
+    PR rule alone. git-spice recorded that PR for feat-a, so the stack still counts it merged."""
+    stack_worktree(repo, "feat-a", "feat-b")
+    track(repo.main, {"feat-a": ("main", 11), "feat-b": ("feat-a", 12)})
+    git(repo.main, "commit", "-q", "--allow-empty", "-m", "feat-a, rebased by GitHub")
+    rebased = git(repo.main, "rev-parse", "main").strip()
+    pr = {"url": "u", "isCrossRepository": False}
+    fake_gh_pr_list(
+        tmp_path,
+        [
+            {"number": 11, "state": "MERGED", "headRefName": "feat-a", "headRefOid": rebased, **pr},
+            {"number": 12, "state": "OPEN", "headRefName": "feat-b", **pr},
+        ],
+    )
+
+    (stack,) = stacks(capsys, "--pr")
+
+    assert [(b["name"], b["pr"], b["merged"], b["next"]) for b in branch_rows(stack)] == [
+        ("feat-a", 11, True, False),
+        ("feat-b", 12, False, True),
+    ]
+
+
 def test_a_branch_in_no_stack_is_never_held_open_by_another_stack(repo: Fixture) -> None:
     from tower import stacks as stacks_module
 

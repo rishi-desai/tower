@@ -324,7 +324,7 @@ class StackFacts:
         """GitHub's PR for branch name, when it's this branch's: the one git-spice submitted (same number) or, before
         git-spice recorded one, an open PR or one whose head contains the branch. A merged PR from earlier work on a
         reused branch name isn't it; one whose head isn't in this clone can't be checked, so it's trusted, as
-        card.branch_pr does."""
+        github.unless_earlier_work does."""
         pr = self.prs.get(name)
         recorded = self.tracked[name].pr
         if pr is None or (recorded is not None and pr.number != recorded):
