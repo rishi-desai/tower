@@ -252,7 +252,9 @@ def test_an_unreadable_config_is_noted_once(
 
     result = state_all(capsys)
 
-    assert every_note(result) == [f"can't read {folder_as_conf} (Is a directory), so its settings weren't used"]
+    assert every_note(result) == [
+        f"can't read {folder_as_conf} (Is a directory), so its settings weren't used and Ledger folders weren't looked for"
+    ]
     assert len(listed(result, "repos")) == repos
 
 
@@ -267,7 +269,9 @@ def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_every_repo_still_listed(
 
     result = state_all(capsys)
 
-    assert every_note(result) == [f"{conf} isn't UTF-8 text (line 1), so its settings weren't used"]
+    assert every_note(result) == [
+        f"{conf} isn't UTF-8 text (line 1), so its settings weren't used and Ledger folders weren't looked for"
+    ]
     assert {report["repo"] for report in listed(result, "repos")} == {"repo", "other"}
 
 

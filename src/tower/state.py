@@ -270,22 +270,25 @@ def gather(
     with_pr: bool = False,
     now: float | None = None,
     agents_read: tuple[list[object] | None, str] | None = None,
+    conf_read: tuple[dict[str, str] | None, str] | None = None,
 ) -> Report:
     """Gather every fact about repo_dir's worktrees and decide each one's effective state.
 
     Raises NotARepo when repo_dir isn't inside a git repo. with_pr asks GitHub (`gh`) for each branch's PR. agents_read
     is sessions.read_agents()'s result (the list, or None and why) when the caller already has it (`tower state --all` reads it once for every repo);
-    None reads it here.
+    None reads it here. conf_read is ledger.conf_or_why()'s result when the caller already has it (`tower state --all`
+    reads tower.conf once and notes a broken one itself); None reads it here and notes a broken one.
     """
     now = time.time() if now is None else now
     worktrees = list_worktrees(repo_dir)
     main = worktrees[0]
     notes: list[str] = []
-    conf: dict[str, str] | None = None  # None: tower.conf couldn't be read, and its note is the only one it gets
-    try:
-        conf = ledger.read_conf(ledger.conf_path())
-    except ledger.ConfUnreadable as error:
-        notes.append(ledger.unread_conf_note(error))
+    if conf_read is None:
+        conf, conf_why = ledger.conf_or_why()
+        if conf_why:
+            notes.append(f"{conf_why}, so its settings weren't used")
+    else:
+        conf = conf_read[0]
 
     name = repo_name(repo_dir)
     ledger_folder: Path | None = None

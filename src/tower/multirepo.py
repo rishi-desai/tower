@@ -60,13 +60,9 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
     caller's working folder), ignored outside a git repo. Never raises for one bad repo: a folder that's gone or isn't
     a git repo any more is skipped and noted."""
     notes: list[str] = []
-    conf_note = ""  # why tower.conf couldn't be read; each repo's report notes it too, and it's listed once
-    try:
-        conf: dict[str, str] | None = ledger.read_conf(ledger.conf_path())
-    except ledger.ConfUnreadable as error:
-        conf_note = ledger.unread_conf_note(error)
-        notes.append(conf_note)
-        conf = None
+    conf, conf_why = ledger.conf_or_why()  # read once and noted here, not once per repo
+    if conf_why:
+        notes.append(f"{conf_why}, so its settings weren't used and Ledger folders weren't looked for")
 
     agents = sessions.read_agents()  # one `claude agents --json` for every repo, not one per repo
     reports: list[state.Report] = []
@@ -77,12 +73,11 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
             gone.append(path)
             continue
         try:
-            report = state.gather(Path(path), with_pr=with_pr, now=now, agents_read=agents)
+            report = state.gather(Path(path), with_pr=with_pr, now=now, agents_read=agents, conf_read=(conf, conf_why))
         except NotARepo:
             # list_worktrees can't tell "not a repo" from git failing or timing out, so the note doesn't guess.
             notes.append(f"skipped {path}: git couldn't list its worktrees (no longer a repo, or git failed)")
             continue
-        report.notes[:] = [note for note in report.notes if note != conf_note]
         # Events name the main checkout, but one naming a worktree would lead to the same repo: list it once.
         if os.path.realpath(report.main_checkout) not in gathered:
             gathered.add(os.path.realpath(report.main_checkout))

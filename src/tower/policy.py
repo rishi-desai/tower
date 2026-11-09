@@ -578,7 +578,7 @@ def migration_profile() -> str | None:
     try:
         modes = legacy_modes(ledger.read_conf(ledger.conf_path()))
     except ledger.LedgerError:
-        return None  # load() reports an unreadable tower.conf; setup.sh's own read of it fails first
+        return None  # load() names an unreadable tower.conf on the WIP limit; setup.sh's own read of it fails first
     if modes is None:
         return None
     return STRICTEST if modes == ("every", "every") else "migrated"

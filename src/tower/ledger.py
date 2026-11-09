@@ -67,10 +67,14 @@ def read_conf(path: Path) -> dict[str, str]:
     return conf
 
 
-def unread_conf_note(error: ConfUnreadable) -> str:
-    """The note for a tower.conf that couldn't be read, worded the same wherever it's made, so `tower state --all`
-    can tell each repo's copy is the one it already listed."""
-    return f"{error}, so its settings weren't used"
+def conf_or_why() -> tuple[dict[str, str] | None, str]:
+    """tower.conf (conf_path()) read, or None and why it couldn't be (ConfUnreadable), for reports that go on without
+    its settings. None, not an empty config: a broken file may well set projects_dir, so nothing that only follows
+    from a missing setting (run setup.sh) applies."""
+    try:
+        return read_conf(conf_path()), ""
+    except ConfUnreadable as error:
+        return None, str(error)
 
 
 def conf_get(conf: dict[str, str], key: str, default: str = "") -> str:
