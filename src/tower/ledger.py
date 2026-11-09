@@ -20,7 +20,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tower.gitrepo import NotARepo, git, repo_name
+from tower.gitrepo import NotARepo, git, repo_name, short_sha
 
 ARCHIVE = "_archive"
 CARD_POINTER = "tower-card"  # in a worktree's own git folder: the name of the card that follows it
@@ -106,7 +106,7 @@ def card_name(branch: str | None, sha: str, repo_dir: Path) -> str:
     """A worktree's card file name. "/" becomes "__" (a "/" would make a subfolder: feat/42-x -> feat__42-x.md); a
     detached HEAD (no branch) becomes detached-<short sha>.md, so its card still has a unique name."""
     if not branch:
-        branch = "detached-" + (git(repo_dir, "rev-parse", "--short", sha) or sha[:7])
+        branch = "detached-" + short_sha(repo_dir, sha)
     return branch.replace("/", "__") + ".md"
 
 

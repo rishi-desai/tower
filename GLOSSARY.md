@@ -81,6 +81,12 @@ isn't the worktree's label. The card stays with its worktree when the worktree m
 worktree's worker moves between its branches), keeping its first name.
 _Avoid_: status file, report
 
+**Label**:
+How every report and the pane name a worktree: its branch, or on a detached HEAD `(detached <commit>)`, the commit
+written short, but long enough that no other commit in the repo starts the same way.
+A detached worktree's card, when first written, is named with the same prefix.
+_Avoid_: name (alone: the card's name can differ), short sha (alone: seven characters can be ambiguous)
+
 **Ticket guess**:
 The ticket tower reads from a branch name (`feat-42-x` → #42), the same guess wherever tower shows it. A number names
 the ticket when it starts the name or a part after a `/` (`42-x`, `rishi/42-x`), or when an issue word or a type comes
