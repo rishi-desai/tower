@@ -1030,11 +1030,13 @@ class CommandChecker:
                 self.folders.append(target)
                 continue
             path = os.path.expanduser(target.text)
+            self.spend(len(self.cd_folder) + len(path))  # joining copies the path the line's cds have built so far
             self.folders += [Word(os.path.join(self.cwd, path)), Word(os.path.join(self.cd_folder, path))]
             self.cd_folder = os.path.join(self.cd_folder, path)
         chdirs = wrapper_folders(words, self.spend)
         if chdirs:
             parts = [os.path.expanduser(folder.text) for folder in chdirs]
+            self.spend(len(self.cd_folder) + sum(len(part) for part in parts))  # the same copy, for each base
             dynamic = any(folder.dynamic for folder in chdirs)
             self.folders += [Word(os.path.join(base, *parts), dynamic) for base in (self.cwd, self.cd_folder)]
 
@@ -1054,7 +1056,7 @@ class CommandChecker:
             return self.tower_clean_reasons(command.words, index, program)
         if name not in INVOKERS and not is_git_dashed and not is_language:
             return []
-        self.spend(len(command.words) - index + text_length(command.words, index + 1, len(command.words)))
+        self.spend(scan_cost(command.words, index, len(command.words)))
         args = command.words[index + 1 :]
         if name == "eval":
             return self.check(" ".join(arg.text for arg in args), depth + 1)
@@ -1512,10 +1514,11 @@ def runs_as_program(words: list[Word], index: int, program: int) -> bool:
     return index == program or (program < index and program_name(words[program]) in WRAPPERS)
 
 
-def text_length(words: list[Word], start: int, end: int) -> int:
-    """Characters in WORDS[START:END], which a check that scans their text pays for on top of one unit per word: a
-    few long words cost a scan far more than their count says (python3 ... -c '<a megabyte of code>')."""
-    return sum(len(words[index].text) for index in range(start, end))
+def scan_cost(words: list[Word], index: int, end: int) -> int:
+    """What a check at word INDEX pays to read WORDS up to END: a unit per word, plus the characters of the words after
+    INDEX, whose text it scans (a few long words cost a scan far more than their count: python3 ... -c '<a megabyte
+    of code>', or a short-option cluster read letter by letter)."""
+    return end - index + sum(len(words[i].text) for i in range(index + 1, end))
 
 
 def is_process_substitution(word: Word) -> bool:
@@ -1654,7 +1657,7 @@ def env_hides_variables(words: list[Word], index: int, spend: Callable[[int], No
     or find run may get assignments from them: sets_git_config counts that.) The options read are paid for with
     SPEND: this env may be another option's value (env -u env), and reading from each runs to the end of the line."""
     command_at = read_wrapper_options(words, WRAPPER_SYNTAX["env"], index + 1).command_at
-    spend(command_at - index + text_length(words, index + 1, command_at))  # a short-option cluster is read by letter
+    spend(scan_cost(words, index, command_at))
     return command_at < len(words) and hides_name(words[command_at])
 
 
@@ -1719,7 +1722,7 @@ def wrapper_folders(words: list[Word], spend: Callable[[int], None]) -> list[Wor
         name = program_name(words[index])
         if name in WRAPPER_SYNTAX and runs_as_program(words, index, first):
             options = read_wrapper_options(words, WRAPPER_SYNTAX[name], index + 1)
-            spend(options.command_at - index + text_length(words, index + 1, options.command_at))  # read by letter
+            spend(scan_cost(words, index, options.command_at))
             found += options.chdirs
     return found
 
