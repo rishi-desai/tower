@@ -20,17 +20,24 @@ from tower.merge import GhResult
 
 @dataclass
 class CleanGitHub(FakeGitHub):
-    """FakeGitHub that also answers `gh pr list --head BRANCH`, as tower clean asks for a worktree's PR (or fails it
-    with pr_list_error)."""
+    """FakeGitHub that also lists a branch's PRs, as tower clean asks for a worktree's PR (or fails it with
+    pr_list_error): `gh pr list --head BRANCH` as gh does (forks too, newest first, cut at --limit, 30 unless given),
+    and `gh api --hostname github.com repos/acme/widget/pulls -f head=acme:BRANCH -f state=all ...` as GitHub does
+    (tests/fake_gh.py has the rules)."""
 
     pr_list_error: str = ""
+    ignores_head: bool = False  # GitHub lists every PR, as it does for a head filter it can't use
 
     def __call__(self, args: list[str]) -> GhResult:
+        newest_first = sorted(self.pulls, key=lambda p: -p.number)
         if args[:2] == ["pr", "list"]:
             self.calls.append(args)
             if self.pr_list_error:
                 return GhResult(1, "", self.pr_list_error)
-            head = args[args.index("--head") + 1]
+            head, limit = (
+                args[args.index("--head") + 1],
+                int(args[args.index("--limit") + 1]) if "--limit" in args else 30,
+            )
             return ok(
                 [
                     {
@@ -40,9 +47,23 @@ class CleanGitHub(FakeGitHub):
                         "url": f"https://github.com/{REPO}/pull/{p.number}",
                         "isCrossRepository": p.head_repo != REPO,
                     }
-                    for p in self.pulls
+                    for p in newest_first
                     if p.head == head
-                ]
+                ][:limit]
+            )
+        if args[:3] == ["repo", "view", "--json"]:
+            return ok({"url": f"https://github.com/{REPO}"})
+        fields = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-f")
+        if args[:1] == ["api"] and f"repos/{REPO}/pulls" in args and fields.get("state") == "all":
+            self.calls.append(args)
+            if self.pr_list_error:
+                return GhResult(1, "", self.pr_list_error)
+            assert args[1:3] == ["--hostname", "github.com"], args
+            owner, _, head = fields["head"].partition(":")
+            assert owner == "acme", args
+            found = [p for p in newest_first if p.head == head and (p.head_repo or "acme/").startswith("acme/")]
+            return ok(
+                [self.pull_json(p) for p in (newest_first if self.ignores_head else found)][: int(fields["per_page"])]
             )
         return super().__call__(args)
 
@@ -352,6 +373,86 @@ def test_dry_run_says_what_would_go_and_touches_nothing(repo: Fixture) -> None:
         "result: True",
     ]
     assert_untouched(repo, worker, card_before)
+
+
+def strangers_prs(branch: str, sha: str = "forksha0") -> list[FakePull]:
+    """31 PRs merged from strangers' forks' branch of that name (more than gh pr list shows unless told), all newer
+    than this repo's."""
+    return [
+        FakePull(1000 - n, base="main", head=branch, sha=sha, state="closed", merged=True, head_repo=f"x{n}/widget")
+        for n in range(31)
+    ]
+
+
+def test_a_merged_pr_and_its_stack_are_found_behind_more_fork_prs_than_gh_lists(repo: Fixture) -> None:
+    """#116: strangers' forks open PRs from patch-1 all the time. More of them than gh pr list shows by default (30),
+    all newer, don't hide this repo's merged PR, nor the merged one of the branch below it in its stack."""
+    worker = merged_worker(repo, "patch-1")
+    git(worker.path, "branch", "patch-0", "HEAD~1")
+    track(repo.main, {"patch-0": ("main", 2), "patch-1": ("patch-0", 1)})
+    worker.github.pulls += [FakePull(2, base="main", head="patch-0", state="closed", merged=True)]
+    worker.github.pulls += strangers_prs("patch-1") + strangers_prs("patch-0")
+
+    said = run_clean(repo, worker, "patch-1", dry_run=True)
+
+    assert said[0] == f"patch-1: every check passed (PR #1 merged at {worker.sha[:7]})"
+    assert said[-1] == "result: True"
+
+
+def test_a_fork_pr_merged_at_the_worktrees_head_is_never_the_worktrees(repo: Fixture) -> None:
+    """#116: only a PR whose head is this repo's branch is the worktree's, even merged at its very HEAD. One GitHub
+    lists under this owner from another repo of its, or from a deleted fork (it no longer says whose), counts as a
+    fork's: unsure means fork."""
+    worker = merged_worker(repo, "patch-1")
+    worker.github.pulls = strangers_prs("patch-1", worker.sha)
+    worker.github.pulls += [
+        FakePull(n, base="main", head="patch-1", sha=worker.sha, state="closed", merged=True, head_repo=head_repo)
+        for n, head_repo in ((1, "acme/widget-copy"), (2, None))
+    ]
+
+    said = run_clean(repo, worker, "patch-1")
+
+    assert said[:2] == ["patch-1: left as it is, since 1 check(s) failed:", "  - patch-1 has no merged PR"]
+    assert str(worker.path) in worktree_paths(repo)
+
+
+def test_a_listing_github_didnt_filter_by_branch_is_unreadable_not_no_pr(repo: Fixture) -> None:
+    """When GitHub ignores the head filter it lists the repo's newest PRs on every branch, so the worktree's own may
+    not be among them: that's "couldn't read", never "has no merged PR"."""
+    worker = merged_worker(repo, "patch-1")
+    worker.github.pulls += [FakePull(2, base="main", head="other", state="closed", merged=True)]
+    worker.github.ignores_head = True
+
+    said = run_clean(repo, worker, "patch-1")
+
+    assert said[1] == (
+        "  - couldn't read patch-1's PR from GitHub (GitHub didn't filter its PRs by the branch patch-1, so they"
+        " weren't read)"
+    )
+    assert str(worker.path) in worktree_paths(repo)
+
+
+def test_a_strangers_odd_record_doesnt_stop_the_worktrees_pr_being_read(repo: Fixture) -> None:
+    """Only this repo's records are checked: a deleted fork's pull GitHub lists in an unexpected state is skipped as
+    a fork's, and the worktree's merged PR still counts."""
+    worker = merged_worker(repo, "patch-1")
+    worker.github.pulls += [FakePull(2, base="main", head="patch-1", state="queued", head_repo=None)]
+
+    assert run_clean(repo, worker, "patch-1", dry_run=True)[-1] == "result: True"
+
+
+def test_a_full_page_of_a_branchs_prs_is_unreadable_not_complete(repo: Fixture) -> None:
+    """GitHub gives at most 100 PRs a page: with a full page, an older open PR on the branch may be missing, so tower
+    clean can't tell whether work goes on there."""
+    worker = merged_worker(repo, "feat-1")
+    worker.github.pulls += [FakePull(n, base="main", head="feat-1", state="closed") for n in range(2, 101)]
+
+    said = run_clean(repo, worker, "feat-1")
+
+    assert said[1] == (
+        "  - couldn't read feat-1's PR from GitHub (GitHub listed 100 PRs from feat-1, its most at once, so older ones"
+        " may be missing)"
+    )
 
 
 def test_all_cleans_every_merged_worker_that_passes_and_says_why_the_others_stay(repo: Fixture) -> None:

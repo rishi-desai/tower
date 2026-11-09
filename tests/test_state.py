@@ -8,14 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
-from conftest import Fixture, git, interactive, track
+from conftest import Fixture, fake_github, git, interactive, track
 
 from tower import card, cli, events, github, ledger, state
 
@@ -39,24 +37,8 @@ def rows(result: dict[str, object]) -> dict[str, dict[str, object]]:
 
 
 def fake_gh_pr_list(tmp_path: Path, listed: list[dict[str, object]]) -> None:
-    """A fake `gh` on PATH whose `pr list --json <fields>` prints listed as gh does: only the fields asked for, only
-    the PRs whose headRefName is `--head`'s branch when given, newest first, at most `--limit` of them (30 unless
-    given)."""
-    program = (
-        "import json, sys\n"
-        "args = sys.argv[1:]\n"
-        "def flag(name, default=None):\n"
-        "    return args[args.index(name) + 1] if name in args else default\n"
-        "fields = flag('--json').split(',')\n"
-        "head = flag('--head')\n"
-        f"prs = sorted({listed!r}, key=lambda pr: -pr['number'])\n"
-        "prs = [pr for pr in prs if head is None or pr.get('headRefName') == head][: int(flag('--limit', '30'))]\n"
-        "print(json.dumps([{k: v for k, v in pr.items() if k in fields} for pr in prs]))\n"
-    )
-    gh = tmp_path / "bin" / "gh"
-    # sh runs it, not a #! naming this Python: a path with a space or past the #! length limit can't break it
-    gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -c {shlex.quote(program)} "$@"\n', encoding="utf-8")
-    gh.chmod(0o755)
+    """A fake `gh` on PATH (conftest.fake_github) that lists these PRs, newest first, as gh and GitHub do."""
+    fake_github(tmp_path, sorted(listed, key=lambda pr: -int(str(pr["number"]))))
 
 
 def test_three_busy_workers_with_no_cards_hold_three_slots(repo: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
@@ -363,26 +345,38 @@ def test_a_worktrees_pr_older_than_the_repos_200_newest_still_shows(
     assert isinstance(pr, dict) and (pr["number"], pr["state"]) == (1, "OPEN")
 
 
+def test_a_branch_named_like_a_gh_placeholder_is_asked_for_by_its_own_name(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """#116: gh fills :repo in an endpoint as it fills {repo}, so a branch named repo-docs must still reach GitHub as
+    itself. Its PR is older than the repo's 100 newest, so a lookup GitHub couldn't filter by head would miss it."""
+    repo.add_worktree("repo-docs", commits=1)
+    repo.write_card("repo-docs", "running")
+    listed: list[dict[str, object]] = [
+        {"number": n, "state": "MERGED", "headRefName": f"other-{n}", "isCrossRepository": False} for n in range(2, 202)
+    ]
+    listed.append({"number": 1, "state": "OPEN", "headRefName": "repo-docs", "isCrossRepository": False})
+    fake_gh_pr_list(tmp_path, [{**pr, "url": "u", "headRefOid": "0" * 40} for pr in listed])
+
+    pr = rows(tower_state(capsys, "--pr"))["repo-docs"]["pr"]
+
+    assert isinstance(pr, dict) and (pr["number"], pr["state"]) == (1, "OPEN")
+
+
 def test_a_branch_gh_couldnt_be_asked_about_is_noted_and_the_others_prs_still_show(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """Each branch is its own gh call, so one that fails costs only that branch's PR, and the note says how many."""
     for branch in ("fine", "flaky"):
         repo.add_worktree(branch, commits=1)
-    gh = tmp_path / "bin" / "gh"
     listed = [{"number": 3, "state": "OPEN", "baseRefName": "main", "headRefOid": "0" * 40, "url": "u"}]
-    gh.write_text(
-        '#!/bin/sh\ncase "$*" in *"--head flaky"*) echo "HTTP 502: Bad Gateway" >&2; exit 1;; esac\n'
-        f"echo '{json.dumps([{**listed[0], 'isCrossRepository': False}])}'\n",
-        encoding="utf-8",
-    )
-    gh.chmod(0o755)
+    fake_github(tmp_path, [{**listed[0], "isCrossRepository": False}], failing={"flaky": "HTTP 502: Bad Gateway"})
 
     result = tower_state(capsys, "--pr")
 
     notes = result["notes"]
     assert isinstance(notes, list)
-    assert "gh pr list failed (HTTP 502: Bad Gateway), so the PRs of 1 of 3 branches weren't read" in notes
+    assert "GitHub couldn't be asked (HTTP 502: Bad Gateway), so the PRs of 1 of 3 branches weren't read" in notes
     fine_pr = rows(result)["fine"]["pr"]
     assert isinstance(fine_pr, dict) and fine_pr["number"] == 3
     assert rows(result)["flaky"]["pr"] is None

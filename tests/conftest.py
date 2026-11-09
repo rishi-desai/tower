@@ -5,14 +5,50 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+FAKE_GH = Path(__file__).with_name("fake_gh.py")  # the program fake_github puts on PATH as gh
+
+
+def fake_github(tmp_path: Path, prs: list[dict[str, object]], failing: dict[str, str] | None = None) -> None:
+    """Put a `gh` on PATH (FAKE_GH) that lists a branch's PRs the way gh and GitHub do, from prs: gh pr list's records,
+    newest first, each with its headRefName (one without is on every branch) and isCrossRepository; headRepository (a
+    full name, or None for a deleted fork) overrides the head repo that implies. Asking about a branch in failing
+    fails with its message on stderr. It answers:
+    - `pr list [--head B] --json F [--limit N]` as gh does: every PR on B, forks too, cut at --limit (30 unless
+      given), with only the fields asked for.
+    - `repo view [--json url]` names acme/widget on github.example.com, a GitHub Enterprise host.
+    - `api --hostname github.example.com repos/acme/widget/pulls -f head=... -f state=... -f per_page=N` as GitHub
+      does, once gh has filled its placeholders (`:repo` too, but never in -f): head=acme:B gives B's PRs whose head
+      repo is acme's (or gone); a head without an owner is ignored; state defaults to open and per_page to 30. Records
+      are REST's pull objects. Without --hostname it fails as github.com would: no such repo there.
+    - `auth status` succeeds; anything else exits 9."""
+    data = tmp_path / "github.json"
+    data.write_text(json.dumps(prs), encoding="utf-8")
+    command = shlex.join([sys.executable, str(FAKE_GH), str(data), json.dumps(failing or {})])
+    gh = tmp_path / "bin" / "gh"
+    # sh runs it, not a #! naming this Python: a path with a space or past the #! length limit can't break it
+    gh.write_text(f'#!/bin/sh\nexec {command} "$@"\n', encoding="utf-8")
+    gh.chmod(0o755)
+
+
+def behind_forks(branch: str, *own: dict[str, object], forks: int = 31) -> list[dict[str, object]]:
+    """fake_github's PRs on branch, newest first: forks strangers' merged PRs from their own forks' branch of that
+    name (31: more than gh pr list shows unless told), then own, this repo's (older numbers)."""
+    strangers = [
+        {"number": 1000 - n, "state": "MERGED", "title": "typo", "headRefName": branch, "isCrossRepository": True}
+        for n in range(forks)
+    ]
+    return strangers + [{"headRefName": branch, "isCrossRepository": False, **pr} for pr in own]
 
 
 def git(cwd: Path, *args: str) -> str:

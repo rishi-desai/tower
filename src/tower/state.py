@@ -52,7 +52,7 @@ STALE_AFTER_SECONDS = 24 * 60 * 60  # a running card untouched this long is flag
 EVENTS_WINDOW = timedelta(hours=24)  # older events don't stand in for a live session: it may have crashed
 EVENTS_READ = 5000  # how many of the log's last lines to read when standing in for live sessions
 LISTED_OVERLAP_FILES = 5  # a Housekeeping row names this many shared files, then says how many more
-PR_LOOKUPS = 8  # `gh pr list` calls run at once for --pr, one per branch, so many worktrees don't wait in turn
+PR_LOOKUPS = 8  # github.branch_pr calls run at once for --pr, one per branch, so many worktrees don't wait in turn
 TICKET = re.compile(r"#?([0-9]+)")  # a card's ticket: 42 or #42 (card write renders #42), or none
 KICKOFF = "Kickoff"  # the card's last section: the hub's kickoff prompt, word for word (card.set_kickoff)
 HEADING = re.compile(r"^##\s+(.*?)\s*#*\s*$")  # a card section's heading line
@@ -663,7 +663,7 @@ def is_dirty(worktree: Path) -> bool | None:
 def pull_requests(repo_dir: Path, worktrees: list[GitWorktree]) -> tuple[dict[str, Pr], dict[str, Pr], str]:
     """(each worktree's PR by its branch, by github.worktree_pr's rule, the one `tower card` uses; each branch's PR
     before that rule's earlier-work check, github.branch_pr's pick, which the stacks weigh against git-spice's own
-    record; a note when gh couldn't be asked about some). One `gh pr list --head` per checked-out branch and per branch
+    record; a note when gh couldn't be asked about some). One github.branch_pr per checked-out branch and per branch
     git-spice tracks, PR_LOOKUPS at a time: each call only runs gh, so they share nothing."""
     tracking, _ = stacks.read_tracking(repo_dir)  # read_stacks notes a tracking ref it can't read
     branches = sorted({wt.branch for wt in worktrees if wt.branch} | set(tracking.branches if tracking else ()))
@@ -686,7 +686,7 @@ def pull_requests(repo_dir: Path, worktrees: list[GitWorktree]) -> tuple[dict[st
     if not errors:
         return prs, branch_prs, ""
     whose = "" if len(errors) == len(branches) else f" of {len(errors)} of {len(branches)} branches"
-    return prs, branch_prs, f"gh pr list failed ({errors[0]}), so the PRs{whose} weren't read"
+    return prs, branch_prs, f"GitHub couldn't be asked ({errors[0]}), so the PRs{whose} weren't read"
 
 
 def as_pr(pr: github.BranchPr) -> Pr:
