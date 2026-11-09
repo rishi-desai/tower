@@ -1489,6 +1489,21 @@ FLOOR_COMMANDS = [
     "X=bare; claude --$X -p hi",
     "X==s.json; claude --settings$X -p hi",
     'N=HOME; printf -v "$N" %s /tmp/e; claude -p hi',
+    # code that awk, sed, vim, ex, ed, emacs and the like run, which can run a shell command: claude, plugin and an
+    # off verb in that order, whether or not it names tower, which code can build (#108)
+    "awk 'BEGIN{system(\"claude plugin disable tower@tower\")}'",
+    "vim -c '!claude plugin uninstall tower@tower'",
+    "sed 's/.*/claude plugin disable tower/e' README.md",
+    "ex -sc '!claude plugin remove tower' -c q",
+    "ed -s notes.txt <<< '!claude plugin disable tower'",
+    "emacs --batch --eval '(shell-command \"claude plugin disable tower\")'",
+    "gawk 'BEGIN{system(\"claude plugin marketplace remove tower\")}'",
+    'awk \'BEGIN{n="tow" "er"; system("claude plugin disable " n)}\'',
+    "awk -f - <<'EOF'\nBEGIN{system(\"claude plugin disable tower\")}\nEOF",
+    "python3 <<'EOF'\nimport os; os.system('claude plugin disable tower@tower')\nEOF",
+    "dc -e '!claude plugin disable tower'",
+    "sqlite3 x.db '.shell claude plugin uninstall tower'",
+    "awk 'BEGIN{system(\"claude --bare -p x\")}'",
 ]
 
 
@@ -1538,6 +1553,11 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
         "git ls-files | xargs grep -ln claude",  # claude is what grep looks for, not a program xargs runs
         "find src -name '*.ts' -exec grep -l claude {} +",
         'cd "$HOME" && claude -p "$PROMPT"',
+        # code that names claude and plugin without an off verb, and a sed that only prints the lines it finds (#108)
+        "awk '/claude plugin/ {print}' notes.md",
+        "sed -n '/claude plugin disable/p' README.md",
+        "vim -c 'set nu' notes.md",
+        "python3 -c 'print(\"claude plugin list\")'",
         "sudo claude plugin disable some-other-plugin --scope user",
         "echo claude plugin disable tower",
         "jq -r .model ~/.claude/settings.json",
@@ -2330,6 +2350,8 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("git -c git" * 16_000 + " config a b; git push --force", id="git options that say git"),
         pytest.param("GIT_DIR=. " * 8_000 + "true; " + "git push; " * 8_000 + "git push --force", id="GIT_DIR values"),
         pytest.param("for x in " + "a " * 100_000 + "; do git push --force; done", id="loop words"),
+        pytest.param("awk " * 30_000 + "'claude plugin' " * 30_000 + "; git push --force", id="awk code words"),
+        pytest.param("sed " * 30_000 + "-n p notes.md; git push --force", id="sed words"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:
