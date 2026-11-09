@@ -470,7 +470,7 @@ def kickoff_tickets(kickoff: str) -> tuple[str, ...]:
     """The tickets a kickoff starts, in its order, as GitHub numbers them: "/implement #40, #041 and #42 as one
     git-spice stack" -> ("#40", "#41", "#42"); "/diagnosing-bugs #90 — follow-up to #86" -> ("#90",). A kickoff with
     no ticket list right after its skill (a wayfinder's, the setup worktree's) starts none."""
-    match = KICKOFF_TICKETS.match(kickoff)
+    match = KICKOFF_TICKETS.match(kickoff.strip())  # a hand-edited card may indent it
     if match is None:
         return ()
     numbers = TICKET.findall(match.group(1))  # the list holds only tickets and what separates them
@@ -696,18 +696,23 @@ def as_pr(pr: github.BranchPr) -> Pr:
 
 def issues_in_progress(report: Report) -> dict[str, str]:
     """Where each issue in progress runs, by its ticket: "#93" -> "running in feat-93-x" (each worktree whose card
-    names it, or whose kickoff starts it, in its effective state, comma-joined), and by the ticket guess of each
-    unmerged branch of a stack a worktree holds: "#41" -> "in the stack in feat-40-x" (a stack worktree's card names
-    only one ticket; its kickoff lists them all, from the start, before their branches exist). A worktree without a
-    card, or ready to clean up (its work merged or on the base branch), or a stack no worktree holds, is on no issue.
-    The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
+    names it, in its effective state, comma-joined, and the other tickets its kickoff starts while the card still names
+    one of them: a stack worktree's card names one ticket, its kickoff lists them all, from the start, before their
+    branches exist), and by the ticket guess of each unmerged branch of a stack a worktree holds: "#41" -> "in the
+    stack in feat-40-x" (one added after the kickoff). A worktree without a card, or ready to clean up (its work merged
+    or on the base branch), or a stack no worktree holds, is on no issue, and neither is a merged branch's ticket in a
+    stack the worktree holds. The pane (`tower state --json`'s in_progress) and the scan's issue list both read this."""
     notes: dict[str, str] = {}
     for facts, v in report.worktrees:
         if facts.card is None or v.status == "ready-to-clean":
             continue
         note = f"{v.status} in {facts.label}"
-        for ticket in dict.fromkeys((facts.card.ticket, *facts.card.kickoff_tickets)):
-            if TICKET.fullmatch(ticket) is None:
+        tickets = [facts.card.ticket]
+        if facts.card.ticket in facts.card.kickoff_tickets:  # a worker who moved the card off the kickoff released it
+            tickets += facts.card.kickoff_tickets
+        merged = merged_tickets(report, facts.path)
+        for ticket in dict.fromkeys(tickets):
+            if TICKET.fullmatch(ticket) is None or ticket in merged:
                 continue
             notes[ticket] = f"{notes[ticket]}, {note}" if ticket in notes else note
     for stack in report.stacks:
@@ -720,6 +725,17 @@ def issues_in_progress(report: Report) -> dict[str, str]:
                 continue
             notes[guess] = f"in the stack in {holder}"
     return notes
+
+
+def merged_tickets(report: Report, worktree: str) -> set[str]:
+    """The ticket guesses of the merged branches in the stacks worktree (a path) holds: work on them is finished."""
+    return {
+        guess
+        for stack in report.stacks
+        if worktree in stack.worktrees
+        for branch in stack.branches
+        if branch.merged and (guess := normalized_ticket(branch.ticket)) not in (None, "none")
+    }
 
 
 def stack_holder(report: Report, stack: stacks.Stack) -> str | None:
