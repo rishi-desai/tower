@@ -1773,6 +1773,7 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("A=1 " * 10_000 + "echo " + "tower " * 10_000, id="tower"),
         pytest.param("A=1 " * 100_000 + "tower " * 1_000, id="tower after many assignments"),
         pytest.param("python3 " + "-I " * 100_000 + "tower merge " * 900, id="tower merge after many words"),
+        pytest.param("tower" + " --x=/tower" * 20_000, id="tower paths as options"),
         pytest.param("sudo" + " -u sudo" * 8_000 + "; git push --force", id="sudo options"),
         pytest.param("env" + " -u env" * 4_000 + "; git push", id="env options"),
         pytest.param("env" + " -u env" * 1_000 + " git" * 40, id="git after env options"),

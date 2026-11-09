@@ -1082,7 +1082,7 @@ class CommandChecker:
             reason = self.check_gh(args, is_whole_command=depth == 0 and index == 0)
         else:  # git, or one of its dashed executables (libexec/git-core/git-push)
             # env -C DIR / sudo -D DIR before git work like git -C DIR, so a later git -C joins onto DIR
-            self.spend(index)  # the words before git, read for those options
+            self.spend(index)  # the words before git, looked through for wrappers (their options pay as they're read)
             moved = [
                 part for folder in wrapper_folders(command.words[:index], self.spend) for part in (Word("-C"), folder)
             ]
@@ -1095,10 +1095,9 @@ class CommandChecker:
         from a variable may be merge), to judge at the end like gh pr merge. Its PR can be looked up only when tower
         runs as its own command (TOP_LEVEL; merge_reasons() checks nothing is chained), straight or from python with
         only python's switches, merge comes right after it, and at most a PR number follows."""
-        position = next_operand(words, index + 1)
-        if position is None or not (words[position].dynamic or words[position].text == "merge"):
+        position = self.tower_subcommand_at(words, index, "merge")
+        if position is None:
             return
-        self.spend(len(words))  # what launches tower is read as well as what follows it
         launcher, after = words[:index], words[position + 1 :]
         from_python = bool(launcher) and program_name(launcher[0]).startswith("python")
         readable = (
@@ -1112,6 +1111,18 @@ class CommandChecker:
         selector = after[0].text if readable and after else None
         self.merges.append(PendingMerge("tower merge", self.tower_gates(), readable, selector))
 
+    def tower_subcommand_at(self, words: list[Word], index: int, subcommand: str) -> int | None:
+        """Index of the operand after word INDEX of WORDS (tower or run-tower.py) when it is SUBCOMMAND (merge,
+        clean) or from a variable, else None. The options skipped to reach it are paid for (a path ending in /tower
+        may be one: tower --x=/tower), and once it is found the whole command is too, since the caller reads what
+        launches tower as well as what follows it."""
+        position = next_operand(words, index + 1)
+        self.spend((len(words) if position is None else position) - index)
+        if position is None or not (words[position].dynamic or words[position].text == subcommand):
+            return None
+        self.spend(len(words))
+        return position
+
     def tower_clean_reasons(self, words: list[Word], index: int, program: int) -> list[str]:
         """The reason to ask for the `tower clean` that word INDEX of WORDS (tower or run-tower.py) runs, if it does
         (a subcommand from a variable may be clean) and cleanup asks. A dry run only checks, so it never asks: tower
@@ -1120,10 +1131,9 @@ class CommandChecker:
         and the exact --dry-run among clean's options (before any --, which makes the words after it worktree
         names), with no word from a variable among them (one could be --). PROGRAM is the command's program
         position (program_position)."""
-        position = next_operand(words, index + 1)
-        if position is None or not (words[position].dynamic or words[position].text == "clean"):
+        position = self.tower_subcommand_at(words, index, "clean")
+        if position is None:
             return []
-        self.spend(len(words))  # what launches tower is read as well as what follows it
         launcher, after = words[program:index], words[position + 1 :]
         direct = (
             not launcher
@@ -2368,8 +2378,8 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
     for index, text in enumerate(texts):
         if names_protected_file(text, cwd):
             runs_setup = program_name(words[index]) == "setup.sh" and runs_as_program(words, index, program)
-            arguments = range(index + 1, len(texts))  # the words after it, by index: no copy per word
-            if runs_setup and arguments and all(texts[i] in ("--dry-run", "-h", "--help") for i in arguments):
+            after = range(index + 1, len(texts))  # indexes of the words after it: no copy per word
+            if runs_setup and after and all(texts[i] in ("--dry-run", "-h", "--help") for i in after):
                 continue  # ./setup.sh --dry-run / --help only checks; it doesn't rewrite tower.conf
             if index not in reads:
                 return True
