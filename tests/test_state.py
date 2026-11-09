@@ -523,7 +523,25 @@ def test_an_unreadable_card_with_a_merged_pr_isnt_ready_to_clean(
     result = tower_state(capsys, "--pr")
 
     assert rows(result)["merged"]["status"] == "card-unknown"
+    assert rows(result)["merged"]["card_unknown"] is True
     assert {"label": "merged", "note": "the card couldn't be checked"} in result["housekeeping"]  # type: ignore[operator]
+
+
+def test_a_card_record_that_cant_be_read_leaves_a_card_less_branch_unknown(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """The worktree's card may have kept its first branch's name, so finding none under this branch's says nothing:
+    a merged PR doesn't make it ready to clean up (#131)."""
+    path = repo.add_worktree("moved-on")
+    git_dir = Path(git(path, "rev-parse", "--absolute-git-dir").strip())
+    (git_dir / ledger.CARD_POINTER).mkdir()  # reading a folder fails like an unreadable record
+    head = git(path, "rev-parse", "HEAD").strip()
+    pr = {"number": 7, "state": "MERGED", "headRefName": "moved-on", "headRefOid": head, "url": "u"}
+    fake_gh_pr_list(tmp_path, [{**pr, "isCrossRepository": False}])
+
+    row = rows(tower_state(capsys, "--pr"))["moved-on"]
+
+    assert (row["status"], row["card_unknown"]) == ("card-unknown", True)
 
 
 def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_worktrees_are_still_reported(

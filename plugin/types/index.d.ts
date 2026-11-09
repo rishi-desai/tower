@@ -19,6 +19,8 @@ export type StateWorktree = {
   card: { status: string; ticket: string; updated: string; pr: string } | null
   /** A running card untouched for over 24h. */
   stale: boolean
+  /** The card couldn't be checked (no Ledger found, or its file unreadable): card is null, but not because there's none. */
+  card_unknown: boolean
   sessions: StateSession[]
   unshipped_commits: number | null
   dirty: boolean | null

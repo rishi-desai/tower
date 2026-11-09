@@ -367,20 +367,23 @@ def gather(
         card = None
         card_unknown = not is_main  # until the Ledger is found and the card read (or found missing)
         pr = prs.get(wt.branch) if wt.branch else None
+        record_unread = False
         try:
             card_file = ledger.card_file(Path(wt.path), wt.branch, wt.sha)
         except ledger.LedgerError as error:
             notes.append(f"{error}, so {wt.label}'s card was looked for by its branch and orphans weren't checked")
             card_file = ledger.card_name(wt.branch, wt.sha, Path(main.path))
-            records_unread = True
+            record_unread = records_unread = True
         if ledger_folder is not None:
             seen_cards.add(card_file)  # the main checkout claims its name too, so a stray main.md isn't an orphan
             notes_before = len(notes)
             card = None if is_main else card_or_note(ledger_folder / card_file, now, notes)
-            card_unknown = len(notes) > notes_before  # card_or_note notes only a card it couldn't read
+            # card_or_note notes only a card it couldn't read. With the record unread, no card under the branch's
+            # name says nothing: the worktree's card may have another name (it kept its first branch's).
+            card_unknown = len(notes) > notes_before or (record_unread and card is None and not is_main)
         # Only the ready-to-clean rules read dirty, and `git status` is the slow call here: skip it otherwise. Commits
         # past a merged PR's head only matter once nothing is uncommitted.
-        dirty = is_dirty(Path(wt.path)) if not is_main and finished(card, pr) else None
+        dirty = is_dirty(Path(wt.path)) if not is_main and not card_unknown and finished(card, pr) else None
         facts = WorktreeFacts(
             label=wt.label,
             branch=wt.branch,
@@ -774,6 +777,7 @@ def to_json(report: Report) -> dict[str, object]:
                 "holds_slot": v.holds_slot,
                 "card": None if card is None else {k: getattr(card, k) for k in ("status", "ticket", "updated", "pr")},
                 "stale": bool(card and card.stale),
+                "card_unknown": facts.card_unknown,
                 "sessions": [asdict(s) for s in facts.sessions],
                 "unshipped_commits": facts.unshipped_commits,
                 "dirty": facts.dirty,
@@ -857,7 +861,7 @@ def worktrees_section(report: Report) -> list[str]:
         fields = [
             f"- {cell(facts.label)}",
             f"status: {v.status}",
-            f"card: {cell(card.status) if card else 'none'}",
+            f"card: {cell(card.status) if card else 'unknown' if facts.card_unknown else 'none'}",
             f"ticket: {cell(card.ticket) if card else 'none'}",
             f"updated: {cell(card.updated if card else '') or '?'}",
         ]
