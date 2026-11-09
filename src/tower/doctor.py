@@ -2,8 +2,9 @@
 
 Read-only: it runs tools' status commands and reads files, never writes (so the policy check doesn't migrate
 tower.conf's old approvals the way `tower policy` does). A check fails when tower can't work as it should; it only
-warns when the hub has a fallback (Orca) or the fact can't be known for sure (no hook event in the last hour, which is
-also true of an hour with no Claude session; no policy file, which leaves every repo on the strictest profile).
+warns when the hub has a fallback (Orca), the fact can't be known for sure (no hook event in the last hour, which is
+also true of an hour with no Claude session; no policy file, which leaves every repo on the strictest profile), or
+tower works, only less safely (a Claude Code too old for the approval hook to fail closed).
 setup.sh runs it last, and the hub runs it when a scan fails.
 
 Like the rest of src/tower, it runs under the plugin's `python3` (3.9 on a stock Mac): standard library only.
@@ -12,6 +13,7 @@ Like the rest of src/tower, it runs under the plugin's `python3` (3.9 on a stock
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections import deque
 from dataclasses import dataclass
@@ -36,6 +38,9 @@ HOOKS_FIX = (
     " event, run /hooks in that session to check that tower's hooks are listed"
 )
 CAN_PUSH = ("WRITE", "MAINTAIN", "ADMIN")  # gh repo view's viewerPermission values that allow a push
+# The first Claude Code that honors hooks.json's onFailure: "block", which makes the approval hook fail closed (#127).
+FAILS_CLOSED_SINCE = (2, 1, 295)
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")  # the start of `claude --version`'s line: "2.1.304 (Claude Code)"
 
 
 @dataclass(frozen=True)
@@ -157,6 +162,27 @@ def check_agents() -> Check:
     return Check("agents", OK, f"claude agents --json lists {len(listed)} session(s)")
 
 
+def check_claude_code() -> Check:
+    """Claude Code is 2.1.295 or later, which honors the approval hook's onFailure: a hook run that times out or can't
+    start blocks the command instead of letting it through. Only ever a warning: tower works on an older one, only
+    less safely, and the plugin and agents checks already fail when claude is missing."""
+    since = ".".join(str(part) for part in FAILS_CLOSED_SINCE)
+    proc, why = run_tool("claude", "--version")
+    if proc is None:
+        return Check("claude-code", WARN, why, INSTALL_CLAUDE)
+    found = VERSION.match(proc.stdout.strip()) if proc.returncode == 0 else None
+    if found is None:
+        return Check("claude-code", WARN, f"can't read Claude Code's version ({last_line(proc)})", FORMAT_FIX)
+    version = found.group(0)
+    if tuple(int(part) for part in found.groups()) < FAILS_CLOSED_SINCE:
+        detail = (
+            f"Claude Code {version} is older than {since}, so an approval hook that times out or can't start lets"
+            " the command through"
+        )
+        return Check("claude-code", WARN, detail, f"run: claude update (to {since} or later)")
+    return Check("claude-code", OK, f"Claude Code {version} blocks a command when the approval hook times out")
+
+
 def check_installed(name: str, commands: tuple[str, ...], install: str, version_must_mention: str = "") -> Check:
     """name's tool runs: the first of commands on PATH answers `--version`, with output that says
     version_must_mention (for a command name another program also uses, as Ghostscript does gs)."""
@@ -276,6 +302,7 @@ def run_all(folder: Path, now: datetime) -> list[Check]:
         check_gh(folder),
         check_vault(),
         check_plugin(),
+        check_claude_code(),
         check_git_spice(),
         check_mise(),
         check_policy(),

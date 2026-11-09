@@ -939,7 +939,8 @@ class CommandChecker:
     """Checks one Bash command line under the policy for the session's repo.
 
     It carries a work budget (characters split plus words examined), because a hook that runs past its
-    timeout lets the command through unchecked; a huge or crafted command raises TooComplex instead.
+    timeout never asks you: Claude Code blocks the command (before 2.1.295, runs it unchecked); a huge or crafted
+    command raises TooComplex instead.
     Merges are collected while checking and judged at the end (merge_reasons()), since whether gh can be asked
     for a merge's base depends on the whole command line.
     """
@@ -2689,7 +2690,7 @@ def main() -> int:
         return 0  # not a tool call we understand; let Claude Code's normal rules decide
     try:
         decision = decide(call)
-    except Exception as err:  # noqa: BLE001 - a crash would let the command run unchecked, so ask instead
+    except Exception as err:  # noqa: BLE001 - a crash would block the call without a prompt, so ask instead
         decision = ([f"the approval hook failed ({type(err).__name__}: {err})"], "Approve? ")
     if decision:
         ask(*decision)

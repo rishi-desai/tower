@@ -38,6 +38,7 @@ from typing import Any
 import pytest
 
 HOOK = Path(__file__).resolve().parent.parent / "plugin" / "scripts" / "confirm-public.py"
+HOOKS_JSON = HOOK.parent.parent / "hooks" / "hooks.json"
 PUSH_MODES = ["every", "force", "none"]
 
 ALWAYS_ASK = [
@@ -722,7 +723,7 @@ def test_write_tool_on_tower_conf_asks(tmp_path: Path) -> None:
     ],
 )
 def test_unexpected_input_asks(tmp_path: Path, call: object) -> None:
-    """Input the hook can't read ends in a prompt, not a crash that lets the command through."""
+    """Input the hook can't read ends in a prompt, not a crash, which would block the call without one."""
     assert asks(run_hook(tmp_path, call))
 
 
@@ -758,9 +759,32 @@ def test_a_policy_file_that_cant_be_read_gives_the_strictest_profile(tmp_path: P
 
 
 def test_command_too_big_to_check_asks_in_time(tmp_path: Path) -> None:
-    """A command too big to check within the hook's work budget asks quickly, instead of running past Claude
-    Code's hook timeout, which would let it through unchecked."""
+    """A command too big to check within the hook's work budget asks quickly: within the timing tests' 10 s, a third
+    of the hook's 30 s timeout, past which Claude Code blocks the call without asking you."""
+    start = time.monotonic()
     assert asks(run_hook(tmp_path, bash("echo " + "gh api " * 50000)))
+    assert time.monotonic() - start < 10
+
+
+def test_the_approval_hook_blocks_the_call_when_it_times_out_or_cant_run() -> None:
+    """Claude Code gives the hook 30 s and blocks the tool call when it times out, can't start or exits unexpectedly
+    (onFailure, Claude Code 2.1.295+), instead of running the call unchecked. `claude plugin validate --strict`
+    rejects a wrong value but not a misspelled key, which Claude Code then ignores, so only this test sees one."""
+    hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
+    (entry,) = hooks["PreToolUse"]
+    (approval,) = entry["hooks"]
+    assert approval["command"] == 'python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/confirm-public.py"'
+    assert (approval["timeout"], approval["onFailure"]) == (30, "block")
+
+
+def test_only_the_approval_hook_blocks_when_it_fails() -> None:
+    """The other hooks (the card reminder, the event log, worker memory, ...) are bookkeeping: one that fails or times
+    out mustn't stop the session, so they keep Claude Code's default, which carries on without them."""
+    hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
+    blocking = [
+        h["command"] for entries in hooks.values() for entry in entries for h in entry["hooks"] if "onFailure" in h
+    ]
+    assert blocking == ['python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/confirm-public.py"']
 
 
 # Runs in a child process, so a hang fails the test on its timeout instead of stalling the whole run.
@@ -784,7 +808,7 @@ for _ in range(3000):
 
 def test_random_commands_never_crash_or_hang() -> None:
     """Checking never crashes or hangs on random shell syntax (3,000 seeded strings). A crash would only make
-    the hook ask, but a hang runs past Claude Code's hook timeout, which lets the command through."""
+    the hook ask, but a hang runs past Claude Code's hook timeout, which blocks the command without asking."""
     subprocess.run([sys.executable, "-I", "-c", FUZZ_SCRIPT, str(HOOK)], check=True, timeout=60)
 
 
@@ -1719,7 +1743,7 @@ def test_running_setup_sh_or_using_the_policy_module_asks(tmp_path: Path, profil
 )
 def test_the_setup_sh_check_stays_linear_on_crafted_lines(tmp_path: Path, command: str) -> None:
     """The git-config-key and sed-print-script checks run on the whole line before the work budget is charged, so a
-    backtracking one (the first drafts had both) would run past the hook timeout and let the line through unchecked.
+    backtracking one (the first drafts had both) would run past the hook timeout and block the line without asking.
     The sed case is one command so read_only_words reaches sed_only_prints, which the scanner is in."""
     start = time.monotonic()
     assert asks(tower_checkout_decision(tmp_path, command, "sandbox"))
@@ -1792,7 +1816,7 @@ def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: st
     """Checks that look at each word (does an interpreter get code, does it run tower, cd, git or a wrapper, does it
     change the policy) either stay linear or pay for everything they read, characters included: rescanning the rest
     of the line, or the words before it, once per word took 12-92 s on these, growing with the square of the padding
-    until the hook's timeout lets the command through. A crash, which the hook turns into a quick ask, doesn't count
+    until the hook's timeout blocks the command without asking. A crash, which the hook turns into a quick ask, doesn't count
     as in time, and the personal profile asks for every force push, so a quicker check may not let one through."""
     start = time.monotonic()
     decision = run_hook(tmp_path, bash(command), policy='default_profile = "personal"\n')

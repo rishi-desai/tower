@@ -269,16 +269,18 @@ checks run again; the worker runs `git-spice repo sync` so its local branches fo
 | a worktree with `NO CARD` | ask that session to "write your status card", or ask the hub to adopt the repo |
 | no approval prompt before a comment or push | run `tower policy`: the profile may let it through. Otherwise check that the plugin is enabled (`claude plugin list`) and tell Claude; don't rely on it until fixed |
 | prompts for everything, `tower policy: work` | `tower policy` says why: no policy file, or a problem in it (each listed with its line) |
+| a tool call refused with `hook error: [python3 -I …/confirm-public.py]: timed out; blocking because onFailure is "block"` | the approval hook ran past its 30 s, so Claude Code refused the call rather than run it unchecked; the agent can retry or split the command. `failed` instead of `timed out`, on every call, means the hook can't run at all: check that `python3 --version` runs (3.9 or later) |
 
 When something isn't working and the cause isn't clear, run `tower doctor` (`uv run tower doctor` from this checkout,
 or `python3 -I <plugin>/scripts/run-tower.py doctor`). It checks each thing tower depends on and, under each problem,
 prints a `fix:` line saying what to run or change: Orca is reachable; `gh` is logged in, inside a repo to an account
-that can push to it; the vault folder (`projects_dir`) exists; the tower plugin is enabled; git-spice and mise run;
-the policy file reads with no problems; `claude agents --json` still parses (its format is undocumented, so a Claude
-Code update that changes it shows here first); and the hooks are firing (an event in the last hour). It changes
-nothing. Orca down, no policy file and no event in the last hour are warnings (the hub has a fallback, or the fact
-can't be known for sure); the rest are problems, and any problem makes it exit 1. `setup.sh` runs it last, and the hub
-runs it when a scan fails.
+that can push to it; the vault folder (`projects_dir`) exists; the tower plugin is enabled; Claude Code is 2.1.295 or
+later (so the approval hook fails closed); git-spice and mise run; the policy file reads with no problems;
+`claude agents --json` still parses (its format is undocumented, so a Claude Code update that changes it shows here
+first); and the hooks are firing (an event in the last hour). It changes nothing. Orca down, an older Claude Code, no
+policy file and no event in the last hour are warnings (the hub has a fallback, tower works only less safely, or the
+fact can't be known for sure); the rest are problems, and any problem makes it exit 1. `setup.sh` runs it last, and
+the hub runs it when a scan fails.
 
 ## Daily loop
 
@@ -366,7 +368,8 @@ description, or you type `/tower:<name>`.
 ### Always on (not skills)
 
 - **The CLAUDE.md block** (between `<!-- BEGIN tower -->` and `<!-- END tower -->` in `~/.claude/CLAUDE.md`): how agents report back (What happened / Done / Why it matters / Needs you / Verify, every name and term explained on first use), the four Karpathy working principles, the parallel-work rules, the approval rule, keeping personal rules out of repos, and no AI attribution (no co-author trailers, "Generated with" lines, "on behalf of" notes or 🤖 in commits, PRs, comments, issues or branch names).
-- **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. See below.
+- **The approval hook** (`plugin/hooks/hooks.json` → `confirm-public.py`), active while the plugin is enabled. It
+  fails closed: a run that times out or can't start blocks the call. See below.
 - **The policy line** (`policy-context.py`, a SessionStart hook): one line added to each session's context saying
   which profile applies to its repo, what it may do without asking, and what asks you first, so a worker doesn't
   stop to ask about what the policy allows. It comes back after `/clear`, `/resume` and compaction.
@@ -450,6 +453,15 @@ The hook reads a command the way the shell would: quotes, `&&`/`;`/`|`/newlines,
 (`git -C <path>`, `gh pr -R owner/repo`), attached flags (`gh api -XPOST`), and wrappers (`bash -c`, `env`,
 `xargs`, `eval`, `sudo`, `ssh`, `watch`, ...). Text that only mentions a command (`git commit -m "fix git push"`) doesn't ask.
 Why it has its own parser instead of `shlex`: `docs/adr/0003-approval-hook-splits-commands-itself.md`.
+
+**It fails closed.** A command too big to check within the hook's work budget asks, in a second or two. Past that,
+`hooks.json` gives the hook 30 seconds and `"onFailure": "block"`: a run that times out, a `python3` that can't start
+or an unexpected exit makes Claude Code refuse the call instead of running it unchecked. A refusal isn't a prompt: the
+agent sees it and can retry or split the command. The hook also runs before Edit and Write, so a broken `python3`
+blocks every action until it's fixed, loudly on purpose. This needs Claude Code 2.1.295 or later; an older one
+ignores `onFailure` and lets the call through when the hook times out (after 30 seconds, not its default 10 minutes),
+and `tower doctor` warns about it. The other hooks are bookkeeping and keep Claude Code's default: one that fails
+never stops a session. See docs/adr/0012.
 
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
 script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
