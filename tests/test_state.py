@@ -440,18 +440,41 @@ def test_without_a_ledger_it_still_reports_sessions(
     assert (result["slots"], result["wip_limit"]) == (1, 4)
 
 
-def test_a_tower_conf_that_isnt_utf8_is_noted_and_worktrees_are_still_reported(
+def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_worktrees_are_still_reported(
     repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
+    """Only the real cause: the file has a projects_dir that couldn't be read (setup.sh wouldn't help), and the
+    problem is in tower.conf, not the policy file (#86)."""
     path = repo.add_worktree("feat-1")
     repo.sessions(interactive("w1", path, "busy"))
     (tmp_path / "tower.conf").write_bytes(b"wip_limit=3\nprojects_dir=/Users/caf\xe9/vault\n")  # a Latin-1 path
 
     result = tower_state(capsys)
 
-    note = f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used"
-    assert note in result["notes"]  # type: ignore[operator]
+    assert result["notes"] == [f"{tmp_path / 'tower.conf'} isn't UTF-8 text (line 2), so its settings weren't used"]
     assert rows(result)["feat-1"]["status"] == "running"
+
+
+def test_a_tower_conf_that_cant_be_read_is_noted_once(
+    repo: Fixture, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    conf = tmp_path / "tower.conf"
+    conf.unlink(missing_ok=True)
+    conf.mkdir()  # a folder: reading it fails, as an unreadable file's would
+
+    result = tower_state(capsys)
+
+    assert result["notes"] == [f"can't read {conf} (Is a directory), so its settings weren't used"]
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_a_bad_byte_is_reported_on_the_line_the_parser_reads_it_on(tmp_path: Path, newline: bytes) -> None:
+    """read_conf splits lines as str.splitlines() does, so a file with old Mac (\\r-only) endings counts them too."""
+    conf = tmp_path / "bad.conf"
+    conf.write_bytes(newline.join([b"wip_limit=3", b"", b"projects_dir=/Users/caf\xe9/vault", b""]))
+
+    with pytest.raises(ledger.ConfUnreadable, match=r"\(line 3\)$"):
+        ledger.read_conf(conf)
 
 
 def test_outside_a_repo_it_says_so_and_exits_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

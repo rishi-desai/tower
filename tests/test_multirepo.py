@@ -234,19 +234,29 @@ def test_a_needs_you_card_with_no_checkout_ranks_above_a_calm_repo_and_empty_led
     assert text.index("== CARDS ONLY: work-proj") < text.index("== REPO: repo")
 
 
+def every_note(result: dict[str, object]) -> list[str]:
+    """The report's own notes, then each repo's."""
+    return listed(result, "notes") + [note for report in listed(result, "repos") for note in report["notes"]]
+
+
+@pytest.mark.parametrize("repos", [1, 2])
 def test_an_unreadable_config_is_noted_once(
-    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], repos: int
 ) -> None:
+    """Once in all: not again by each repo's report, nor as a missing projects_dir or a policy file problem (#86)."""
     folder_as_conf = repo.agents_json.parent / "conf-dir"
     folder_as_conf.mkdir()
     monkeypatch.setenv("TOWER_CONF", str(folder_as_conf))
+    if repos == 2:
+        log_event(repo, second_repo(repo))
 
-    notes = listed(state_all(capsys), "notes")
+    result = state_all(capsys)
 
-    assert sum("Ledger folders weren't looked for" in note for note in notes) == 1
+    assert every_note(result) == [f"can't read {folder_as_conf} (Is a directory), so its settings weren't used"]
+    assert len(listed(result, "repos")) == repos
 
 
-def test_a_tower_conf_that_isnt_utf8_is_noted_and_every_repo_still_listed(
+def test_a_tower_conf_that_isnt_utf8_is_noted_once_and_every_repo_still_listed(
     repo: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     conf = repo.agents_json.parent / "latin1.conf"
@@ -257,7 +267,7 @@ def test_a_tower_conf_that_isnt_utf8_is_noted_and_every_repo_still_listed(
 
     result = state_all(capsys)
 
-    assert f"{conf} isn't UTF-8 text (line 1), so Ledger folders weren't looked for" in listed(result, "notes")
+    assert every_note(result) == [f"{conf} isn't UTF-8 text (line 1), so its settings weren't used"]
     assert {report["repo"] for report in listed(result, "repos")} == {"repo", "other"}
 
 

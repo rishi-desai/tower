@@ -353,16 +353,30 @@ def test_tower_doctor_with_a_failure_exits_1_and_names_its_fix(
     assert out.rstrip().endswith("tower doctor: 1 problem, 1 warning")
 
 
-def test_a_tower_conf_that_is_not_utf8_fails_the_vault_check_instead_of_crashing(
+def test_a_tower_conf_that_is_not_utf8_fails_the_vault_check_and_says_to_fix_the_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The file may well set projects_dir: it just couldn't be read, so setting it again wouldn't help (#86)."""
     conf = tmp_path / "tower.conf"
     conf.write_bytes(b"projects_dir=\xff\n")
     monkeypatch.setenv("TOWER_CONF", str(conf))
     check = doctor.check_vault()
     assert check.status == "fail"
     assert "UTF-8" in check.detail
-    assert "projects_dir" in check.fix
+    assert check.fix == f"fix or remove {conf}, then run setup.sh again"
+
+
+def test_a_tower_conf_that_is_not_utf8_doesnt_fail_the_policy_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vault check already fails for it: the policy file itself has no problem (#86)."""
+    conf = tmp_path / "tower.conf"
+    conf.write_bytes(b"projects_dir=\xff\n")
+    monkeypatch.setenv("TOWER_CONF", str(conf))
+    write_policy('default_profile = "personal"\n')
+    check = doctor.check_policy()
+    assert check.status == "ok"
+    assert "personal" in check.detail
 
 
 def test_a_tower_conf_without_projects_dir_fails_the_vault_check(

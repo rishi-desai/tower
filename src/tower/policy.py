@@ -274,8 +274,8 @@ def load(path: Path | None = None, migrate_conf: bool = True) -> Policy:
     problems: list[str] = []
     try:
         conf = ledger.read_conf(ledger.conf_path())
-    except ledger.LedgerError as error:
-        problems.append(f"{error}, so its settings weren't used")
+    except ledger.ConfUnreadable as error:
+        problems.append(ledger.conf_unused(error))
         conf = {}
     machine_wip = (ledger.wip_limit(conf), f"wip_limit in {display_path(ledger.conf_path())}")
     if not conf.get("wip_limit", "").isdigit():

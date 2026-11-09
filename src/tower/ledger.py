@@ -56,7 +56,8 @@ def read_conf(path: Path) -> dict[str, str]:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as error:
-        line_number = data.count(b"\n", 0, error.start) + 1
+        # The bad byte's line as the loop below splits them (\r alone ends one too); "x" stands in for that byte.
+        line_number = len((data[: error.start].decode("utf-8") + "x").splitlines())
         raise ConfUnreadable(f"{path} isn't UTF-8 text (line {line_number})") from error
     conf: dict[str, str] = {}
     for line in text.splitlines():
@@ -64,6 +65,12 @@ def read_conf(path: Path) -> dict[str, str]:
         if sep and key and not key.startswith("#"):
             conf[key] = value
     return conf
+
+
+def conf_unused(error: ConfUnreadable) -> str:
+    """The note for a tower.conf that couldn't be read, worded the same wherever it's made, so a report that gets it
+    twice (from the policy's problems, or from each repo under `tower state --all`) can tell it's one note."""
+    return f"{error}, so its settings weren't used"
 
 
 def conf_get(conf: dict[str, str], key: str, default: str = "") -> str:

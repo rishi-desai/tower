@@ -60,10 +60,12 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
     caller's working folder), ignored outside a git repo. Never raises for one bad repo: a folder that's gone or isn't
     a git repo any more is skipped and noted."""
     notes: list[str] = []
+    conf_note = ""  # why tower.conf couldn't be read; each repo's report notes it too, and it's listed once
     try:
         conf: dict[str, str] | None = ledger.read_conf(ledger.conf_path())
-    except ledger.LedgerError as error:
-        notes.append(f"{error}, so Ledger folders weren't looked for")
+    except ledger.ConfUnreadable as error:
+        conf_note = ledger.conf_unused(error)
+        notes.append(conf_note)
         conf = None
 
     agents = sessions.read_agents()  # one `claude agents --json` for every repo, not one per repo
@@ -80,6 +82,7 @@ def gather_all(here: Path | None = None, with_pr: bool = False, now: float | Non
             # list_worktrees can't tell "not a repo" from git failing or timing out, so the note doesn't guess.
             notes.append(f"skipped {path}: git couldn't list its worktrees (no longer a repo, or git failed)")
             continue
+        report.notes[:] = [note for note in report.notes if note != conf_note]
         # Events name the main checkout, but one naming a worktree would lead to the same repo: list it once.
         if os.path.realpath(report.main_checkout) not in gathered:
             gathered.add(os.path.realpath(report.main_checkout))

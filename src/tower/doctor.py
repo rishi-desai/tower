@@ -204,9 +204,10 @@ def check_policy() -> Check:
     tower.conf's old approvals, so doctor writes nothing."""
     loaded = policy.load(migrate_conf=False)
     path = policy.display_path(loaded.path)
-    if loaded.problems:
+    problems = [p for p in loaded.problems if p != unread_conf_note()]  # tower.conf's: the vault check fails for it
+    if problems:
         fix = f"edit {path} as each problem says (tower policy lists them with their lines)"
-        return Check("policy", FAIL, "; ".join(loaded.problems), fix)
+        return Check("policy", FAIL, "; ".join(problems), fix)
     if not loaded.exists:
         migrated = policy.migration_profile()
         if migrated:
@@ -260,10 +261,23 @@ def check_vault() -> Check:
     conf_path = ledger.conf_path()
     fix = f"set projects_dir in {conf_path} to your vault's projects folder, or re-run setup.sh"
     try:
-        root = ledger.projects_root(ledger.read_conf(conf_path))
-    except ledger.LedgerError as error:  # unset, missing, or a tower.conf that can't be read
+        conf = ledger.read_conf(conf_path)
+    except ledger.ConfUnreadable as error:  # it may well set projects_dir: it just couldn't be read
+        return Check("vault", FAIL, str(error), f"fix or remove {conf_path}, then run setup.sh again")
+    try:
+        root = ledger.projects_root(conf)
+    except ledger.LedgerError as error:  # unset or missing
         return Check("vault", FAIL, str(error), fix)
     return Check("vault", OK, f"projects_dir is {root}")
+
+
+def unread_conf_note() -> str:
+    """The problem policy.load adds for a tower.conf that can't be read (ledger.conf_unused), or "" when it reads."""
+    try:
+        ledger.read_conf(ledger.conf_path())
+    except ledger.ConfUnreadable as error:
+        return ledger.conf_unused(error)
+    return ""
 
 
 def run_all(folder: Path, now: datetime) -> list[Check]:
