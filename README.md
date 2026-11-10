@@ -440,12 +440,15 @@ profile wins), so re-pointing or adding a remote can only tighten it. A command 
 stricter of that repo's policy and this one's, key by key: a `gh` command naming one (`-R owner/repo`, a PR or issue
 URL, a `gh api repos/OWNER/REPO/...` endpoint), a `git push` to a URL, `git -C`, a `cd` into another checkout, or a
 command run there with `env -C` (inside `env -S` too) or `sudo -D`. A repo or folder from a variable, and git config
-the hook can't read (`GIT_CONFIG_*`, `HOME` or `XDG_CONFIG_HOME` set on the line, an `include.path`), get `work`, for
-`gh` and `tower merge` too; under `push = "force"`, such config, any `--config-env`, `-c remote.<name>.mirror` or
-`.push`, `-c help.autocorrect`, or a `-c alias.*` that sets git's options, makes a push count as a force push (a
-`!` alias's shell code is checked like any other command). Reads never ask: the `gh` commands the hook knows only read or work locally (`view`, `list`,
-`status`, `diff`, `checks`, `gh repo clone`, `gh pr checkout`, ...; the list is `GH_READS` in `confirm-public.py`),
-`gh api` GETs and GraphQL queries.
+the hook can't read (`GIT_CONFIG_*`, `HOME` or `XDG_CONFIG_HOME` set on the line, by a loop, `read` or `eval` too, an
+`include.path`, a `git config` or `git remote` write of a push setting or a remote's URL in the same line), get `work`, for `gh` and
+`tower merge` too. Under `push = "force"`, a push reads the settings saved in its repo as it runs (one `git config
+--get-regexp`), and a remote that mirrors, a `+` or `:<ref>` push refspec, an alias for a forcing push, or a read that
+fails makes it count as a force push; so do such config, any `--config-env`, `-c remote.<name>.mirror` or `.push`,
+`-c help.autocorrect`, and a `-c alias.*` that sets git's options (a `!` alias's shell code is checked like any other
+command). Reads never ask: the `gh` commands the hook knows only read or work locally (`view`, `list`, `status`,
+`diff`, `checks`, `gh repo clone`, `gh pr checkout`, ...; the list is `GH_READS` in `confirm-public.py`), `gh api`
+GETs and GraphQL queries.
 
 The hub can't approve for you: the prompt appears in the worker's session. The worker puts its draft in its card
 first, and the hub lists it under **Needs you** with the session's name.
@@ -469,9 +472,10 @@ never stops a session. See docs/adr/0012.
 
 **Limits:** the hook sees the command an agent runs, not what happens inside a script the agent wrote. A Python
 script calling the GitHub API directly isn't caught, and neither are commands built at run time (`eval "$(...)"`,
-`$CMD push`), git/gh aliases and git config saved outside the command (a `core.pager` in `~/.gitconfig`, hooks in
-`.git/hooks` or the folder `core.hooksPath` names), or deliberately disguised names. A plain push straight to `main` is judged by `push`,
-not `merge_to_main` (GitHub branch protection refuses it, T03). The safety floor matches text too: a protected file
+`$CMD push`), shell aliases and functions, git config saved outside the command that runs a program (a `core.pager` in
+`~/.gitconfig`, hooks in `.git/hooks` or the folder `core.hooksPath` names), or deliberately disguised names. A plain
+push straight to `main` is judged by `push`, not `merge_to_main` (GitHub branch protection refuses it, T03). The
+safety floor matches text too: a protected file
 reached by a path built at run time (pieces joined in a script, a glob) isn't caught, so Claude Code's own permission
 rules or sandbox are the backstop there. The full list is in `confirm-public.py`'s docstring.
 `pr-wait` itself only reads.
