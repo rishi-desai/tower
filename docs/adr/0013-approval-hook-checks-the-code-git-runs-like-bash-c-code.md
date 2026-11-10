@@ -31,9 +31,11 @@ key, and #82 asked only for git's settings.
 - Which keys run a command is a list (`GIT_PROGRAM_KEY_LEAVES`, `git_key_runs_program`) that grows with git. A key it
   misses is a gap, not a crash, so the list leans wide: `core.askPass` and `gpg.program` run a program rather than shell
   code, and are checked as code anyway.
-- Config git reads from somewhere the line doesn't show (a saved `~/.gitconfig`, an `include.path`, an inherited
-  `GIT_CONFIG_PARAMETERS`) and files git runs by name (hooks, `core.hooksPath`, `GIT_EXEC_PATH`) stay Limits: the hook
-  reads the command text. A `git config` that saves a command-running key is checked when it saves it.
+- An inherited `GIT_CONFIG_PARAMETERS` and files git runs by name (hooks, `core.hooksPath`, `GIT_EXEC_PATH`) stay
+  Limits: the hook reads the command text. A `git config` that saves a command-running key is checked when it saves
+  it. Saved config (`~/.gitconfig`, the repo's, what they `include`) was a Limit here too; since #139 it is read for
+  every git command and its command-running keys are checked, and a config file the line includes counts as code
+  the hook can't see (ADR 0015).
 - Code git runs inherits its `-C` and its settings, which git passes on in `GIT_CONFIG_PARAMETERS`, so a git in that
   code is judged with them: `git -c remote.origin.mirror=true -c alias.x='!git push' x` is a push that may force.
 - `gh auth git-credential`, the helper `gh auth setup-git` saves, is a read: it hands git the token and changes nothing.

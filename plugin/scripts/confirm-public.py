@@ -147,11 +147,16 @@ Limits: this sees only the command text. These are not caught:
   - under push=force, a variable holding a force refspec (`git push origin "$REF"`, REF=+main), and push settings
     changed in the line by anything but git config, git remote or a clone: an edit of the config file itself (`echo
     '[remote "origin"] mirror' >> .git/config`), a script, a program, a file sourced from disk;
-  - commands git runs from config the line doesn't show: a command-running key or `!` alias saved in a config file
-    (the repo's, the user's, an include.path, GIT_CONFIG_GLOBAL or a HOME the line moves) or inherited in
-    GIT_CONFIG_PARAMETERS, and an ext:: URL in a saved remote or .gitmodules while ext is allowed outside the line;
+  - commands git runs from config the hook doesn't read: a command-running key or `!` alias saved in a repo reached
+    through a folder from a variable (`cd "$D" && git log`; the saved settings of the known folders are read, ADR
+    0015), saved by a process outside Claude Code between the check and the run, written into a config file in the
+    same line by anything but git config (`echo '[core] pager = ...' >> .git/config`), read from the HOME or
+    XDG_CONFIG_HOME the line sets, run by a program that runs git itself (gh pr checkout, gh repo clone), or inherited
+    in GIT_CONFIG_PARAMETERS, a submodule's own saved settings for the git commands submodule foreach runs there, and
+    an ext:: URL in a saved remote or .gitmodules while ext is allowed outside the line;
   - files git runs by name rather than a command written out: hooks installed under .git/hooks, the folder
-    core.hooksPath names, helpers in GIT_EXEC_PATH, and a merge strategy or remote helper found on PATH;
+    core.hooksPath names (saved or given, the hook doesn't read the scripts there), helpers in GIT_EXEC_PATH, and a
+    merge strategy or remote helper found on PATH;
   - a plain push straight to the default branch (`git push origin HEAD:main`) is judged by push, not
     merge_to_main: refusing direct pushes to main is GitHub branch protection's job (T03, #20);
   - which repo a command acts on, beyond what its words show (see "Which repo's policy"): a GraphQL
@@ -181,6 +186,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -519,11 +525,18 @@ GIT_CONFIG_PAIR = re.compile(r"GIT_CONFIG_(KEY|VALUE)_(\d+)")
 POSITIONAL_PARAMETER = re.compile(r"\$\{?[@*1-9]")
 # git settings that let an ext:: URL run the command it names (git refuses it by default), unless set to never.
 GIT_EXT_PROTOCOL_KEYS = {"protocol.ext.allow", "protocol.allow"}
-# The saved settings that can make a plain push force, mirror or delete, or make a subcommand a push, read at hook time
-# for a push (or a subcommand that may be an alias) under push=force (ADR 0014): `git config --get-regexp` takes it.
-# Push URLs (remote.*.pushurl, url.*.pushInsteadOf) need no read here: `git remote -v` already shows them.
-SAVED_PUSH_CONFIG = r"^(remote\..*\.(mirror|push)|alias\..*)$"
+# The saved settings that can make a plain push force, mirror or delete, or make a subcommand a push (ADR 0014), and
+# the push URLs need no read: `git remote -v` already shows remote.*.pushurl and url.*.pushInsteadOf. The saved
+# settings that name a command git runs are read with them (saved_config_pattern, ADR 0015).
+SAVED_PUSH_CONFIG = r"remote\..*\.(mirror|push)|alias\..*"
 GIT_CONFIG_TIMEOUT = 3  # seconds for that read, as for the policy's `git remote -v`
+# Seconds all of a hook run's saved-config reads may take together: past it a folder isn't read and counts as one that
+# failed, so a stalled disk makes the command ask well inside the hook's 30 s timeout rather than be refused (ADR 0012).
+GIT_CONFIG_TOTAL_SECONDS = 10
+SAVED_CONFIG_REASON = (
+    "git's saved settings couldn't be read (git failed or timed out, or the line names more than 16 folders), so a "
+    "command they make it run (a pager, a helper, a ! alias) can't be checked"
+)
 # What a `git config`, `git remote` or clone in the line saves that a later push reads, though the hook, reading the
 # saved config before the line runs, can't (writes_push_config): FORCING_WRITE, a setting that can make a push force
 # or name another command (remote.<name>.mirror/push, alias.*, and include.* and includeIf.*, which read more config
@@ -1097,6 +1110,13 @@ class CommandChecker:
         # git's global options (-C, -c, --config-env, ...) that the code being checked inherits from the git running it
         self.git_context: list[Word] = []
         self.saved_configs: dict[str, SavedConfig | None] = {}  # each folder's saved push config, read once
+        self.saved_merged: dict[tuple[str, ...], SavedConfig | None] = {}  # several folders' together, by their paths
+        self.saved_read_seconds = 0.0  # the time those reads took, against GIT_CONFIG_TOTAL_SECONDS
+        # the saved command settings already checked in this line: each once, so one that runs git (git-lfs's filters,
+        # a credential manager) isn't checked again inside its own check
+        self.saved_checked: set[tuple[str, str]] = set()
+        # the aliases being followed into the code checked now (alias_expansions), so a loop of them ends
+        self.alias_chain: frozenset[str] = frozenset()
         # a git, gh or tower command was judged before the line was known to set config it can't read, or a remote
         self.judged_before_config = False
         self.judged_before_remotes = False
@@ -1157,6 +1177,8 @@ class CommandChecker:
         self.folders = []
         self.cd_folder = self.cwd
         self.reached = set()
+        self.saved_checked = set()
+        self.alias_chain = frozenset()
 
     def check(self, command_line: str, depth: int = 0) -> list[str]:
         """Reasons to ask for COMMAND_LINE, one per distinct problem; empty if it doesn't need approval."""
@@ -1299,7 +1321,10 @@ class CommandChecker:
             self.spend(len(self.git_context))
             judged = [*self.git_context, *git_args]
             self.note_git_judged()
-            reason = check_git(judged, self.push_mode, self.git_config_unknown, self.saved_config)
+            # a dashed program that isn't one of git's own (git-lfs, git-credential-manager) is a program of its own:
+            # git looks up no alias for it, so it is never a push however the line sets config
+            separate = name != "git" and name[len("git-") :] not in {*GIT_OWN_COMMANDS, "push"}
+            reason = None if separate else check_git(judged, self.push_mode, self.git_config_unknown, self.saved_config)
             found = [reason] if reason else []
             # --config-env reads the variable git is started with: a value the line gives it for later commands, or
             # one given to this command (X=v git, env X=v git); any other assignment (X=v true) leaves it unknown
@@ -1308,9 +1333,30 @@ class CommandChecker:
             for variable, value in variables_set(command.words[: index + 1]):
                 config_env[variable] = [*config_env.get(variable, []), value]
             codes = git_run_code(git_args, self.assigned, self.spend, config_env)
-            outer, self.git_context = self.git_context, judged[: git_subcommand_at(judged)]
+            # any git command may run a command its saved settings name (a pager, a helper, the ! alias it is), so the
+            # settings of the repo it runs in are read for every one, and a read that fails can't be checked (#139)
+            saved = self.saved_config(judged, known_only=True)
+            if saved is None:
+                found += [reason for reason in self.unchecked(SAVED_CONFIG_REASON) if reason not in found]
+            else:
+                self.spend(len(saved.commands))
+                commands = [command for command in saved.commands if command not in self.saved_checked]
+                self.saved_checked.update(commands)
+                codes += saved_code(saved, commands, judged)
+            at = git_subcommand_at(judged)
+            following = judged[at].text.lower() if at < len(judged) else ""
+            expanding = not separate and following not in self.alias_chain
+            expansions = alias_expansions(judged, config_env, saved, self.spend) if expanding else []
+            outer, self.git_context = self.git_context, judged[:at]
             try:
-                return found + [reason for reason in self.code_reasons(codes, depth + 1) if reason not in found]
+                found += [reason for reason in self.code_reasons(codes, depth + 1) if reason not in found]
+                chain, self.alias_chain = self.alias_chain, self.alias_chain | {following}
+                try:
+                    return found + [
+                        reason for reason in self.code_reasons(expansions, depth + 1) if reason not in found
+                    ]
+                finally:
+                    self.alias_chain = chain
             finally:
                 self.git_context = outer
         return [reason] if reason else []
@@ -1423,7 +1469,8 @@ class CommandChecker:
         each folder the push may start in (the session's, the line's cds), moved by git -C, the repo there, or the one
         --git-dir names, and each with a GIT_DIR or GIT_COMMON_DIR the line gives. --work-tree names only the files:
         git still finds its repo, and that repo's config, as without it. None, so a push counts as one that may force,
-        when one of them is only known at run time, there are more than MAX_FOLDERS, or a read fails. KNOWN_ONLY, for
+        when one of them is only known at run time (from a variable, or a {} that xargs, parallel or find fills in),
+        there are more than MAX_FOLDERS, or a read fails or would start after GIT_CONFIG_TOTAL_SECONDS. KNOWN_ONLY, for
         a subcommand that may only be a saved alias rather than a push (git lfs, git diff-tree), reads the folders that
         are known and leaves out the rest: asking for every such command run in a folder from a variable would stop
         workers, and an alias saved only in that repo is a Limit. Each folder is read once, for FOLDER_COST of the work
@@ -1432,12 +1479,17 @@ class CommandChecker:
         git_folders = git_config_folders(git_args)
         git_dirs = [value for name in GIT_DIR_VARIABLES for value in self.assigned.get(name, [])]
         self.spend(len(git_dirs))  # read again for each push, as the folders are
+
+        def at_run_time(folder: Word) -> bool:
+            """Whether FOLDER is only known at run time: from a variable, or a {} xargs, parallel or find fills in."""
+            return folder.dynamic or "{}" in folder.text
+
         folders = self.folders
         if known_only:
-            folders = [folder for folder in self.folders if not folder.dynamic]
-            git_folders = [] if any(folder.dynamic for folder in git_folders) else git_folders
-            git_dirs = [git_dir for git_dir in git_dirs if not git_dir.dynamic]
-        if any(folder.dynamic for folder in [*folders, *git_folders, *git_dirs]):
+            folders = [folder for folder in self.folders if not at_run_time(folder)]
+            git_folders = [] if any(map(at_run_time, git_folders)) else git_folders
+            git_dirs = [git_dir for git_dir in git_dirs if not at_run_time(git_dir)]
+        if any(map(at_run_time, [*folders, *git_folders, *git_dirs])):
             return None
         parts = [os.path.expanduser(folder.text) for folder in git_folders]
         bases = {self.cwd, self.cd_folder, *(folder.text for folder in folders)}
@@ -1446,18 +1498,26 @@ class CommandChecker:
             return None
         paths = {os.path.normpath(os.path.join(base, *parts)) for base in bases}
         paths |= {os.path.normpath(os.path.join(path, git_dir)) for path in paths for git_dir in dirs}
-        combined = SavedConfig()
-        for path in sorted(paths):
-            if path not in self.saved_configs:
-                self.spend(FOLDER_COST)
-                self.saved_configs[path] = read_saved_config(path)
-            found = self.saved_configs[path]
-            if found is None:
-                return None
-            names = {*combined.aliases, *found.aliases}
-            merged = {name: (*combined.aliases.get(name, ()), *found.aliases.get(name, ())) for name in names}
-            combined = SavedConfig(combined.forces or found.forces, merged)
-        return combined
+        key = tuple(sorted(paths))
+        if key not in self.saved_merged:  # merged once per set of folders: a line's git commands share them
+            combined: SavedConfig | None = SavedConfig()
+            for path in key:
+                if path not in self.saved_configs:
+                    self.spend(FOLDER_COST)
+                    started = time.monotonic()
+                    over = self.saved_read_seconds >= GIT_CONFIG_TOTAL_SECONDS
+                    self.saved_configs[path] = None if over else read_saved_config(path)
+                    self.saved_read_seconds += time.monotonic() - started
+                found = self.saved_configs[path]
+                if found is None or combined is None:
+                    combined = None
+                    break
+                self.spend(len(combined.aliases) + len(found.aliases) + len(found.commands))
+                names = {*combined.aliases, *found.aliases}
+                merged = {name: (*combined.aliases.get(name, ()), *found.aliases.get(name, ())) for name in names}
+                combined = SavedConfig(combined.forces or found.forces, merged, (*combined.commands, *found.commands))
+            self.saved_merged[key] = combined
+        return self.saved_merged[key]
 
     def push_mode(self, git_args: list[Word]) -> str:
         """The push key for git run with GIT_ARGS: the stricter of the session's and that of every repo the push
@@ -1872,25 +1932,36 @@ def parse_shell_args(args: list[Word]) -> ShellArgs:
 
 @dataclass(frozen=True)
 class SavedConfig:
-    """The push settings saved in a repo's effective config (SAVED_PUSH_CONFIG), as a push reads them."""
+    """The settings saved in a repo's effective config that the hook reads (saved_config_pattern): the push settings,
+    as a push reads them, and the ones that name a command git runs."""
 
     forces: bool = False  # a remote mirrors, or pushes a + (force) or : (delete) refspec, whatever the push says
     # each alias's values, by its name in lower case: one per repo that gives it, since which repo a push acts on
     # can't always be told (cd in a subshell)
     aliases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # each setting that names a command git runs (git_key_runs_program), as (key, value), from every repo read
+    commands: tuple[tuple[str, str], ...] = ()
+
+
+def saved_config_pattern() -> str:
+    """The `git config --get-regexp` pattern for the saved settings the hook reads: SAVED_PUSH_CONFIG, and every key
+    git_key_runs_program names (pager.*, submodule.<name>.update, a key ending in one of GIT_PROGRAM_KEY_LEAVES). git
+    gives keys with their section and name in lower case, as the leaves are."""
+    leaves = "|".join(sorted(GIT_PROGRAM_KEY_LEAVES))
+    return rf"^({SAVED_PUSH_CONFIG}|pager\..*|submodule\..*\.update|.*\.({leaves}))$"
 
 
 def read_saved_config(folder: str) -> SavedConfig | None:
-    """The push settings git would use in FOLDER: its effective config (system, global, the repo's, and what they
-    include), read with one `git config --get-regexp`; None when git can't be run, fails or takes longer than
-    GIT_CONFIG_TIMEOUT. A folder that doesn't exist yet (one the line makes) is read from the nearest folder above it
-    that does, where the system and global config still apply; whatever the line writes into it is judged by
+    """The settings git would use in FOLDER that the hook reads (SavedConfig): its effective config (system, global, the
+    repo's, and what they include), read with one `git config --get-regexp`; None when git can't be run, fails or takes
+    longer than GIT_CONFIG_TIMEOUT. A folder that doesn't exist yet (one the line makes) is read from the nearest folder
+    above it that does, where the system and global config still apply; whatever the line writes into it is judged by
     writes_push_config."""
     while not os.path.isdir(folder) and os.path.dirname(folder) != folder:
         folder = os.path.dirname(folder)
     try:
         proc = subprocess.run(
-            ["git", "config", "--null", "--get-regexp", SAVED_PUSH_CONFIG],
+            ["git", "config", "--null", "--get-regexp", saved_config_pattern()],
             cwd=folder,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -1907,17 +1978,20 @@ def read_saved_config(folder: str) -> SavedConfig | None:
         return None
     forces = False
     aliases: dict[str, tuple[str, ...]] = {}
+    commands: list[tuple[str, str]] = []
     for entry in proc.stdout.split("\0"):
         key, has_value, value = entry.partition("\n")  # a bare `mirror` line in the file has no value: it is true
         alias = git_alias_name(key)
         if alias is not None:
             aliases[alias] = (value,)  # git keeps the last of several
+        elif git_key_runs_program(key):
+            commands.append((key, value))  # every value: a helper can be given several times, and each one runs
         elif key.endswith(".mirror"):
             forces = forces or not has_value or value.strip().lower() not in GIT_FALSE
         elif key.endswith(".push"):  # a bare ":" pushes the matching branches, deleting nothing
             refspec = value.strip()
             forces = forces or refspec.startswith("+") or (refspec.startswith(":") and refspec != ":")
-    return SavedConfig(forces, aliases)
+    return SavedConfig(forces, aliases, tuple(commands))
 
 
 def check_git(
@@ -1928,8 +2002,9 @@ def check_git(
     expanded: frozenset[str] = frozenset(),
 ) -> str | None:
     """Reason to ask for git run with ARGS: a push, judged by the policy's push mode (MODE, given ARGS, is called only
-    for a push, since finding it may run git), found past git's global options. CONFIG_UNKNOWN: the line sets git config the hook
-    can't read (GIT_CONFIG_VARIABLE however it is set, or a `git config` or `git remote` write of a push setting).
+    for a push, since finding it may run git), found past git's global options. CONFIG_UNKNOWN: the line sets git
+    config the hook can't read (GIT_CONFIG_VARIABLE however it is set, or a `git config` or `git remote` write of a push
+    setting).
 
     A subcommand from a variable, command output or a `-c alias.*` set in the same command could be push. Config the
     hook can't read (from those variables, an include.path, a -c or --config-env key from a variable) could define
@@ -1941,9 +2016,9 @@ def check_git(
     runs git): a remote that mirrors or a + or :<ref> push refspec makes it one that may force, and so does a read that
     fails. Under push=every or force, a subcommand that isn't one of git's own may be a saved alias (read from the known
     folders only: see saved_config): one for push is judged as that push, with git's options before it and its own
-    (-c, -C, --git-dir) both applying (EXPANDED holds the aliases already followed, so a loop of them ends), and a `!`
-    one, which runs shell code from the config, counts as a push that may force. Each repo's alias is judged when the
-    repos differ.
+    (-c, -C, --git-dir) both applying (EXPANDED holds the aliases already followed, so a loop of them ends); a `!` one's
+    code is checked as code (saved_code), and counts as a push that may force only when it hands git's words on ("$@").
+    Each repo's alias is judged when the repos differ.
     """
     index = 0
     aliases: set[str] = set()
@@ -1999,8 +2074,10 @@ def check_git(
     if config is not None and name not in config.aliases:
         return None  # not an alias: a command of git's own that agents rarely run, or another program (git lfs)
     for alias in config.aliases[name] if config is not None else (None,):  # each repo's, when they differ
+        if alias is not None and is_shell_alias(alias) and not POSITIONAL_PARAMETER.search(alias):
+            continue  # its code is checked as code (saved_code), unless it hands git's words on ("$@", $1)
         parts = alias_words(alias) if alias is not None and not is_shell_alias(alias) else None
-        if parts is None:  # saved config it couldn't read, an alias running shell code, or one git can't split
+        if parts is None:  # saved config it couldn't read, an alias handing on git's words, or one git can't split
             action = f"git {subcommand.text}, maybe an alias for a push (in config it couldn't read, or running code),"
             reason = check_push(rest, mode(args), action, True)
         else:  # git's options before the alias still apply: git -c remote.origin.mirror=true p
@@ -2009,6 +2086,54 @@ def check_git(
         if reason is not None:
             return reason
     return None
+
+
+def saved_code(config: SavedConfig, commands: list[tuple[str, str]], args: list[Word]) -> list[Word]:
+    """The shell code git, run with ARGS, may run from the settings saved in its repo (CONFIG): each of COMMANDS, the
+    saved settings that name a command not yet checked in the line, whatever the subcommand (almost any can run the
+    pager or a helper), and the saved alias its subcommand is:
+    a `!` one's code with the words after it, and what a non-! one stands for (git_run_code: rebase --exec, ...). A
+    saved value is checked as written, like GIT_SSH_COMMAND: it was fixed when it was saved, so a $ in it (a helper's
+    "password=$TOKEN") is not a value the line builds at run time (ADR 0015)."""
+    codes = [code for key, value in commands if (code := setting_code(key, Word(value), [])) is not None]
+    at = git_subcommand_at(args)
+    if at < len(args) and not args[at].dynamic:
+        name, rest = args[at].text.lower(), args[at + 1 :]
+        for alias in config.aliases.get(name, ()):
+            code = setting_code(f"alias.{name}", Word(alias), rest) if is_shell_alias(alias) else None
+            parts = None if is_shell_alias(alias) else alias_words(alias)
+            codes += [code] if code is not None else []
+            codes += subcommand_code(parts[0], [*map(Word, parts[1:]), *rest]) if parts else []
+    return [Word(code.text) for code in codes]
+
+
+def alias_expansions(
+    args: list[Word], config_env: dict[str, list[Word]], saved: SavedConfig | None, spend: Callable[[int], None]
+) -> list[Word]:
+    """The git command lines that git run with ARGS becomes when its subcommand is a non-! alias starting with git's own
+    options or naming a subcommand that isn't one of git's own (so may be another alias): `git` with the alias's words
+    and the words after it, to be checked as nested code, where ARGS' options still apply (CommandChecker.git_context).
+    A chain of aliases is so followed one link at a time, through -c, --config-env (CONFIG_ENV) and SAVED aliases
+    alike, into a `!` one's code, a -c inside it or a push. An alias for one of git's own commands needs none: check_git
+    judges a push and git_run_code reads the rest. Each option and value read is paid for with SPEND."""
+    at = git_subcommand_at(args)
+    if at >= len(args) or args[at].dynamic:
+        return []
+    name, rest = args[at].text.lower(), args[at + 1 :]
+    values: list[str] = []
+    index = 0
+    while index < at:
+        settings = git_settings(args, index, config_env)
+        values += [value.text for key, value in settings if git_alias_name(key) == name and not value.dynamic]
+        index += 2 if args[index].text in GIT_OPTIONS_WITH_VALUE else 1
+    values += saved.aliases.get(name, ()) if saved is not None else ()
+    spend(at + len(values))
+    lines: list[Word] = []
+    for value in values:
+        parts = None if is_shell_alias(value) else alias_words(value)
+        if parts and (parts[0].startswith("-") or parts[0].lower() not in {*GIT_OWN_COMMANDS, "push"}):
+            lines.append(Word(" ".join(["git", *map(shlex.quote, parts), *map(shell_text, rest)])))
+    return lines
 
 
 def git_alias_name(key: str) -> str | None:
@@ -2301,10 +2426,11 @@ def split_setting(setting: Word) -> tuple[str, Word]:
 
 
 def git_key_kind(key: str) -> str:
-    """What a git setting's KEY makes of its value, for setting_code: "open" (the key is only known at run time),
-    "protocol" (it may let ext:: URLs run the command they name), "command" (git_key_runs_program), "alias", or ""."""
+    """What a git setting's KEY makes of its value, for setting_code: "open" (the key is only known at run time, or it
+    includes a file of settings the hook can't read, which may name commands), "protocol" (it may let ext:: URLs run
+    the command they name), "command" (git_key_runs_program), "alias", or ""."""
     lowered = key.lower()
-    if has_expansion(key):
+    if has_expansion(key) or re.fullmatch(r"include(?:if\..*)?\.path", lowered):
         return "open"
     if lowered in GIT_EXT_PROTOCOL_KEYS:
         return "protocol"
@@ -2518,7 +2644,8 @@ def environment_code(assigned: dict[str, list[Word]]) -> list[Word]:
     """The shell code git runs from the settings the line gives through variables (ASSIGNED: every value it gives each),
     as setting_code finds it: GIT_CONFIG_KEY_<n> with GIT_CONFIG_VALUE_<n> (either may be missing from the line, so
     any key or value), and GIT_CONFIG_PARAMETERS ('key'='value' ...). A GIT_ALLOW_PROTOCOL letting ext:: URLs run the
-    command they name counts as code the hook can't see. Linear in the values given, however many share a number: a
+    command they name counts as code the hook can't see, and so does a GIT_CONFIG_GLOBAL or GIT_CONFIG_SYSTEM naming
+    a file of settings other than /dev/null (which only leaves them out). Linear in the values given, however many share a number: a
     number's values are judged by one key of each kind (git_key_kind) among its keys, not by every key."""
     codes: list[Word] = []
     unknown = [Word("", dynamic=True)]  # a key or value the line doesn't give comes from the environment
@@ -2539,6 +2666,8 @@ def environment_code(assigned: dict[str, list[Word]]) -> list[Word]:
     for protocols in assigned.get("GIT_ALLOW_PROTOCOL", []):
         if protocols.dynamic or "ext" in protocols.text.split(":"):
             codes.append(Word(f"GIT_ALLOW_PROTOCOL={protocols.text}", dynamic=True))
+    for name in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+        codes += [Word(f"{name}=", dynamic=True) for file in assigned.get(name, []) if file.text != "/dev/null"]
     return codes
 
 

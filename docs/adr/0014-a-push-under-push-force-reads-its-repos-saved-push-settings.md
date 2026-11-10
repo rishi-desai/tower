@@ -21,7 +21,8 @@ that may force.
 - **Not push URLs**: `remote.<name>.pushurl` and `url.<base>.pushInsteadOf` change where a push goes, and `git remote
   -v`, which already decides the profile, applies both.
 - **Only for a push or a possible alias**: `git status`, `git log` and a lone `git config user.name x` read nothing.
-  Each folder is read once per command line, for the same work-budget cost as its `git remote -v`. For a subcommand
+  (Superseded by ADR 0015: since #139 every git command reads its folders' saved settings, with these push settings
+  in the same read.) Each folder is read once per command line, for the same work-budget cost as its `git remote -v`. For a subcommand
   that may only be an alias (`git lfs`, `git diff-tree`), a folder from a variable is left out rather than making it
   ask: an alias saved only in that repo is a Limit. An alias found is read as what it stands for with git's options
   before it still applying (`git -c remote.origin.mirror=true p`), and so is one that writes a push setting (`alias.cfg
@@ -43,8 +44,9 @@ that may force.
   asks even when that repo has no such setting.
 - On a stalled disk each folder's read adds up to 3 s beside its `git remote -v`; past the hook's 30 s timeout the call
   is refused (ADR 0012), which is safe.
-- A saved `!` alias counts as a push that may force rather than having its code checked: reading command-running
-  settings from saved config (#82 checks only those written in the line) is a possible follow-up.
+- A saved `!` alias's code is checked as code since #139 (ADR 0015), which widened this read to the settings that
+  name a command and runs it for every git command; such an alias counts as a push that may force only when it hands
+  git's words on (`"$@"`).
 - Settings written in the same line, before the push runs, aren't in the saved config yet. A write that can make a
   push force or alias a subcommand (`remote.<name>.mirror` or `.push`, `alias.*`, `include*`, `git config --edit`,
   `git remote add --mirror=push`, `clone --mirror`) counts as config the hook can't read; one that only moves where a
