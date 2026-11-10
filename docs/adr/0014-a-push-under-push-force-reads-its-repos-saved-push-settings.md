@@ -21,7 +21,8 @@ that may force.
 - **Not push URLs**: `remote.<name>.pushurl` and `url.<base>.pushInsteadOf` change where a push goes, and `git remote
   -v`, which already decides the profile, applies both.
 - **Only for a push or a possible alias**: `git status`, `git log` and a lone `git config user.name x` read nothing.
-  Each folder is read once per command line, for the same work-budget cost as its `git remote -v`. For a subcommand
+  (Superseded by ADR 0015: since #139 every git command reads its folders' saved settings, with these push settings
+  in the same read.) Each folder is read once per command line, for the same work-budget cost as its `git remote -v`. For a subcommand
   that may only be an alias (`git lfs`, `git diff-tree`), a folder from a variable is left out rather than making it
   ask: an alias saved only in that repo is a Limit. An alias found is read as what it stands for with git's options
   before it still applying (`git -c remote.origin.mirror=true p`), and so is one that writes a push setting (`alias.cfg

@@ -475,11 +475,9 @@ script calling the GitHub API directly isn't caught, and neither are commands bu
 `$CMD push`), shell aliases and functions, files git runs by name (hooks in `.git/hooks` or the folder
 `core.hooksPath` names), or deliberately disguised names. Command-running settings saved in the repo's or the user's
 git config (a `core.pager` in `~/.gitconfig`, a `!` alias) are read for every git command and checked like the line's
-own (ADR 0015). A plain
-push straight to `main` is judged by `push`, not `merge_to_main` (GitHub branch protection refuses it, T03). The
-safety floor matches text too: a protected file
-reached by a path built at run time (pieces joined in a script, a glob) isn't caught, so Claude Code's own permission
-rules or sandbox are the backstop there. The full list is in `confirm-public.py`'s docstring.
+own (ADR 0015). A plain push straight to `main` is judged by `push`, not `merge_to_main` (GitHub branch protection
+refuses it, T03). The safety floor matches text too: a protected file reached by a path built at run time (pieces
+joined in a script, a glob) isn't caught, so Claude Code's own permission rules or sandbox are the backstop there. The full list is in `confirm-public.py`'s docstring.
 `pr-wait` itself only reads.
 
 ## Policy profiles: `~/.claude/tower/policy.toml`

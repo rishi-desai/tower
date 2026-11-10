@@ -294,7 +294,6 @@ FORCE = [
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push origin",
     "env GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror'='true'\" git push",
     "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true; git push origin",
-    "GIT_CONFIG_GLOBAL=/tmp/evil git push",
     "bash -c 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push'",
     "git --config-env=remote.origin.mirror=MIRROR push origin",
     "git --config-env remote.origin.push=REFSPEC push origin",
@@ -322,12 +321,8 @@ FORCE = [
     "export $(echo GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true); git push origin",
     "env $(cat /tmp/gitenv) git push origin",
     'N=GIT_CONFIG_PARAMETERS; export "$N=x"; git push',
-    # an included config file can set remote.origin.mirror; any --config-env may force
-    "git --config-env=include.path=CFG push origin",
-    "git -c include.path=/tmp/mirror.cfg push origin",
-    "git -c includeIf.onbranch:main.path=/tmp/mirror.cfg push origin",
+    # any --config-env may force
     "git --config-env=user.name=NAME push origin",
-    "sudo GIT_CONFIG_GLOBAL=/tmp/evil git push",
     "export GIT_CONFIG_PARAMETERS; git push",
     # a forcing push in the shell code git runs; git passes the words after a `!` alias to its code (#82)
     "git rebase --exec 'git push --force' main",
@@ -340,7 +335,6 @@ FORCE = [
     "git config --add remote.origin.push '+refs/heads/*:refs/heads/*'; git push origin",
     "git config alias.p 'push --force' && git p origin",
     "git config set alias.p 'push --force' && git p origin",
-    "git config --global include.path /tmp/mirror.cfg && git push origin",
     "git config --edit && git push origin",
     "git config --ed && git push origin",  # git takes an unambiguous abbreviation
     "git -c alias.p.command=push p --force origin main",  # git 2.56's [alias "p"] command = ... form
@@ -479,9 +473,9 @@ READS = [
     'export PATH="$HOME/bin:$PATH"; git status',
     # under config the hook can't read, git's own commands are still themselves: git ignores an alias named like one
     "HOME=/tmp/e git status",
+    "GIT_CONFIG_GLOBAL=/dev/null git status",  # only leaves the user's settings out
     "GIT_DIR=../acme/.git git log --oneline -3",
     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x",
-    "git -c include.path=/tmp/x.cfg log",
     "HOMEBREW_NO_AUTO_UPDATE=1 brew install jq; git status",
     "env -S 'git status'",
     "env -u '#' -S 'git status'",
@@ -563,6 +557,14 @@ UNCHECKABLE = [
     "git config --rename-section stash1 alias",
     "git config rename-section stash1 core",
     "git config --ren stash1 alias",
+    # a file of settings the hook can't read may name commands (a pager, a ! alias), whatever the push mode (#139)
+    "GIT_CONFIG_GLOBAL=/tmp/evil git push",
+    "git --config-env=include.path=CFG push origin",
+    "git -c include.path=/tmp/mirror.cfg push origin",
+    "git -c includeIf.onbranch:main.path=/tmp/mirror.cfg push origin",
+    "sudo GIT_CONFIG_GLOBAL=/tmp/evil git push",
+    "git config --global include.path /tmp/mirror.cfg && git push origin",
+    "git -c include.path=/tmp/x.cfg log",
 ]
 
 
@@ -1810,6 +1812,16 @@ def test_a_push_under_saved_settings_that_can_force_asks_under_push_force(
 
 
 @pytest.mark.parametrize(
+    "command", ["echo widget | xargs -I{} git -C {} push origin", "find . -name widget -execdir git -C {} push ';'"]
+)
+def test_a_push_into_a_folder_xargs_or_find_fills_in_may_force(widget: Path, command: str) -> None:
+    """A {} is a folder only known at run time, so its saved push settings can't be read: under push=force the push
+    may force. Read as a folder named {}, it would read the session's settings instead (finding the wrong repo's)."""
+    save_settings(widget, [("remote.origin.mirror", "true")])
+    assert asks(run_hook(widget.parent, bash(command), policy=PERSONAL, env=widget_env(widget, None)))
+
+
+@pytest.mark.parametrize(
     ("settings", "command"),
     [
         ([("alias.p", "push")], "git -c remote.origin.mirror=true p origin"),
@@ -1932,6 +1944,7 @@ SAVED_COMMAND_SETTINGS = [
     ("core.sshCommand", "gh pr comment 5 -b hi; ssh", "git fetch"),
     ("credential.helper", "!gh pr comment 5 -b hi", "git fetch"),
     ("alias.x", "!gh pr comment 5 -b hi", "git x"),
+    ("alias.c.command", "!gh pr comment 5 -b hi", "git c"),  # git 2.56's [alias "c"] command = ... form
     ("alias.r", "rebase --exec 'gh pr comment 5 -b hi'", "git r main"),
 ]
 
@@ -1972,6 +1985,58 @@ def test_a_saved_bang_alias_is_judged_by_its_code_not_as_a_possible_push(widget:
     reason = str(decision["permissionDecisionReason"])
     assert "gh repo delete may change something on GitHub" in reason
     assert "push" not in reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git log -1",
+        "echo git",
+        "git lfs pull && git push origin",
+        # git-lfs is a program of its own, never an alias for a push, even under config the hook can't read
+        "HOME=/tmp/e git status",
+        "git config remote.origin.mirror true && git status",
+    ],
+)
+def test_a_saved_setting_that_runs_git_is_checked_once(widget: Path, command: str) -> None:
+    """git lfs install's filters and a credential manager run git themselves: each saved setting is checked once per
+    line, so its own git doesn't check it again until the nesting runs out."""
+    for key, value in [
+        ("filter.lfs.clean", "git-lfs clean -- %f"),
+        ("filter.lfs.process", "git-lfs filter-process"),
+        ("credential.helper", "/usr/local/share/gcm-core/git-credential-manager"),  # what GCM saves
+    ]:
+        subprocess.run(["git", "-C", str(widget), "config", key, value], check=True)
+    assert run_hook(widget.parent, in_widget(widget, command), push="force", env=widget_env(widget, None)) is None
+
+
+@pytest.mark.parametrize(
+    ("aliases", "command", "push"),
+    [
+        ([("alias.a", "b"), ("alias.b", "!gh pr comment 5 -b hi")], "git a", "none"),  # a chain into a ! alias
+        ([("alias.c", "!gh pr comment 5 -b hi")], "git -c alias.x=c x", "none"),  # a -c alias for a saved one
+        ([("alias.b", "push --force")], "git -c alias.x=b x origin main", "force"),
+        ([("alias.c", "!git push --force"), ("alias.d", "c")], "git d", "force"),
+        ([("alias.z", "-c alias.q='!gh pr comment 5 -b hi' q")], "git z", "none"),  # git's options first
+        ([("alias.y", "-c core.pager='gh pr comment 5 -b hi' log")], "git -p y", "none"),
+    ],
+)
+def test_a_chain_of_aliases_is_followed_to_what_it_runs(
+    widget: Path, aliases: list[tuple[str, str]], command: str, push: str
+) -> None:
+    """A non-! alias naming another alias, or starting with git's own options, is followed one link at a time, through
+    -c and saved aliases alike, so the gh write or force push at its end asks."""
+    for key, value in aliases:
+        subprocess.run(["git", "-C", str(widget), "config", key, value], check=True)
+    assert asks(run_hook(widget.parent, in_widget(widget, command), push=push, env=widget_env(widget, None)))
+
+
+def test_a_loop_of_aliases_ends(widget: Path) -> None:
+    """git refuses a loop of aliases; following one stops at the first alias seen again, without asking."""
+    for key, value in [("alias.a", "b"), ("alias.b", "a")]:
+        subprocess.run(["git", "-C", str(widget), "config", key, value], check=True)
+    assert run_hook(widget.parent, in_widget(widget, "git a"), push="force", env=widget_env(widget, None)) is None
 
 
 def test_a_git_command_asks_when_its_saved_settings_cant_be_read(widget: Path) -> None:
