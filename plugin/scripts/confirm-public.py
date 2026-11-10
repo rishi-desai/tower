@@ -9,10 +9,10 @@ What asks is set by tower's policy for the session's repo (src/tower/policy.py, 
 lib/tower link to tower's core; `tower policy` shows it). Each action is judged by one key of it:
   push             git push: every -> every push asks; force -> only force pushes, deletions, --prune and
                    +refspecs (and pushes under config that can force: -c remote.*.mirror/push, any --config-env,
-                   an alias for a forcing push or one that runs shell code or sets git's options, or config it
-                   can't read: GIT_CONFIG_*, HOME or XDG_CONFIG_HOME set on the line, an include.path,
-                   help.autocorrect, a key from a variable, under which a subcommand that isn't one of git's own,
-                   so may be an alias, counts as a possible push);
+                   an alias for a forcing push or one that sets git's options (a `!` alias's shell code is checked
+                   as code instead), or config it can't read: GIT_CONFIG_*, HOME or XDG_CONFIG_HOME set on the
+                   line, an include.path, help.autocorrect, a key from a variable, under which a subcommand that
+                   isn't one of git's own, so may be an alias, counts as a possible push);
                    none -> no push asks
   comments         gh pr comment, gh pr review, gh issue comment
   issue_writes     gh issue create, edit, close, reopen, delete, lock, pin, transfer, develop, ...
@@ -90,7 +90,13 @@ How a command is read: it is split into simple commands roughly the way bash or 
 && || ; | & and newlines and around ( ), respecting quotes, escapes, comments, heredocs, case
 statements and arithmetic. Commands inside $( ), backticks and <( ) are checked too, and so is the code
 given to `bash -c` (or sh, zsh, csh, ...), `env -S`, eval, ssh/su/watch/tmux/screen/script, or a shell
-through a heredoc. In each simple command, every word naming git or gh (by any path, in any letter
+through a heredoc. So is the shell code git itself runs from what the line says: the value of a setting that names a
+command (core.sshCommand, core.pager, core.editor, diff.external, credential.helper, gpg.program, a diff, filter or
+merge driver, ...) given with -c, --config-env or GIT_CONFIG_* (with its value on the line), a clone's -c or a `git
+config` that saves it; a `!` alias's code with the words after it; the command given to submodule foreach, rebase
+--exec/-x, bisect run, difftool -x, filter-branch's filters and --upload-pack/--receive-pack; and the variables naming
+a command git runs (GIT_SSH_COMMAND, GIT_EDITOR, EDITOR, PAGER, ...). A subcommand that is a -c alias is read as what
+it stands for. In each simple command, every word naming git or gh (by any path, in any letter
 case) starts an invocation to check, so wrappers like env, command, xargs, nohup, sudo and timeout need
 no special case; so does every word naming tower (or the plugin's run-tower.py) followed by `merge` or `clean`.
 git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and gh's command
@@ -102,17 +108,20 @@ python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is 
 When unsure, we ask: a command that can't be split (an unclosed quote, $( or backtick, a heredoc
 delimiter with $, a ${ cmd; } substitution), a shell reading code it can't see (from a pipe, <( ), a
 redirect or xargs), a git/gh subcommand, gh api method or GraphQL query taken from a variable or command
-output, and a command too big to check quickly. Those ask unless the policy lets every push and GitHub
-write through (sandbox), and even then they ask when their text names tower.conf, ~/.claude/tower, a
-Claude Code settings file or a rule file, `tower policy use`, or a `claude plugin` command that turns one
-off. JSON that isn't a well-formed tool call, and any crash in this hook, always ask. (Input that isn't
-JSON at all passes, leaving the call to Claude Code's own rules.)
+output, a command git would run that is only known at run time (-c core.sshCommand="$X", --config-env naming a
+variable the line doesn't set, rebase --exec "$CMD": the shell parses what the variable holds as code too) or that an
+ext:: URL names (a setting or GIT_ALLOW_PROTOCOL letting ext run), and a command too big to check quickly. Those ask
+unless the policy lets every push and GitHub write through (sandbox), and even then they ask when their text names
+tower.conf, ~/.claude/tower, a Claude Code settings file or a rule file, `tower policy use`, or a `claude plugin`
+command that turns one off. JSON that isn't a well-formed tool call, and any crash in this hook, always ask. (Input
+that isn't JSON at all passes, leaving the call to Claude Code's own rules.)
 
 Limits: this sees only the command text. These are not caught:
   - scripts and programs: `bash script.sh`, `python x.py`, `make`, or anything that calls the GitHub
     API itself (such as curl with a token, or subprocess.run(["gh", ...]) in Python);
   - commands built at run time: a variable or command output used as the program or as eval/-c code
-    (`$GIT push`, `eval "$(...)"`, `bash -c "$CMD"`), xargs input that supplies the subcommand, or a
+    (`$GIT push`, `eval "$(...)"`, `bash -c "$CMD"`) or in a variable naming a command git runs
+    (GIT_SSH_COMMAND="$CMD", EDITOR; a git setting's value asks instead), xargs input that supplies the subcommand, or a
     tower.conf path supplied at run time (`... | xargs sed -i`);
   - aliases and functions: git aliases set outside the command (`git p` for push) and shell functions;
   - disguised names: globs, brace expansion or zsh glob qualifiers in a program name, and a protected
@@ -121,8 +130,11 @@ Limits: this sees only the command text. These are not caught:
     config that changes what push does set outside the command, by an earlier command of the same line
     (`git config remote.origin.mirror true && git push`), or by eval or source code that runs after a push
     written before it (in a loop or a function);
-  - commands git runs from its config (a `!` alias, diff.external, core.sshCommand, a credential helper):
-    a gh write inside one isn't checked;
+  - commands git runs from config the line doesn't show: a command-running key or `!` alias saved in a config file
+    (the repo's, the user's, an include.path, GIT_CONFIG_GLOBAL or a HOME the line moves) or inherited in
+    GIT_CONFIG_PARAMETERS, and an ext:: URL in a saved remote or .gitmodules while ext is allowed outside the line;
+  - files git runs by name rather than a command written out: hooks installed under .git/hooks, the folder
+    core.hooksPath names, helpers in GIT_EXEC_PATH, and a merge strategy or remote helper found on PATH;
   - a plain push straight to the default branch (`git push origin HEAD:main`) is judged by push, not
     merge_to_main: refusing direct pushes to main is GitHub branch protection's job (T03, #20);
   - which repo a command acts on, beyond what its words show (see "Which repo's policy"): a GraphQL
@@ -197,13 +209,15 @@ GH_WRITE_SUBCOMMANDS = {
 # license") lists its own, and a group or subgroup alone prints its help. Any other gh command may write: a pr or
 # issue write is judged by its key below, and the rest (release, label, repo, secret, workflow writes, an extension,
 # a gh alias, a command a newer gh adds) ask unless every GitHub key is auto. `auth token` prints a credential, so it
-# isn't listed, and neither is `auth status` with -t/--show-token (see prints_token). `extension browse` isn't
-# either: its screen can install and remove extensions.
+# isn't listed, and neither is `auth status` with -t/--show-token (see prints_token). `auth git-credential` is: it is
+# the credential helper `gh auth setup-git` saves, which hands git the token (its store and erase do nothing); run by
+# hand with get it prints the token, so that asks (prints_token).
+# `extension browse` isn't listed: its screen can install and remove extensions.
 GH_READS: dict[str, set[str]] = {
     "agent-task": {"list", "view"},
     "alias": {"list"},
     "attestation": {"download", "trusted-root", "verify"},
-    "auth": {"status"},
+    "auth": {"status", "git-credential"},
     "cache": {"list"},
     "codespace": {"list", "logs", "view"},
     "config": {"get", "list"},
@@ -417,6 +431,63 @@ GIT_OWN_COMMANDS = {
 GIT_PUSH_FORCE_OPTIONS = ("force", "force-with-lease", "force-if-includes", "mirror", "delete", "prune")
 # `git -c` settings that make a plain push mirror (delete remote refs) or use force refspecs.
 GIT_FORCING_CONFIG = re.compile(r"remote\..*\.(?:mirror|push)")
+# git subcommands' options whose value is a shell command git runs, as (long names, short letters): rebase's --exec,
+# the command difftool runs on each pair of files, filter-branch's filters and setup, the program a fetch, clone, push
+# or archive runs for the other side (on this machine for a local repo; ls-remote's --exec is its old name), the
+# commands send-email runs, and grep's pager.
+GIT_CODE_OPTIONS: dict[str, tuple[set[str], set[str]]] = {
+    "rebase": ({"exec"}, {"x"}),
+    "difftool": ({"extcmd"}, {"x"}),
+    "filter-branch": (
+        {
+            "env-filter",
+            "tree-filter",
+            "index-filter",
+            "parent-filter",
+            "msg-filter",
+            "commit-filter",
+            "tag-name-filter",
+            "setup",
+        },
+        set(),
+    ),
+    "fetch": ({"upload-pack"}, set()),
+    "pull": ({"upload-pack"}, set()),
+    "ls-remote": ({"upload-pack", "exec"}, set()),
+    "fetch-pack": ({"upload-pack", "exec"}, set()),
+    "send-pack": ({"receive-pack", "exec"}, set()),
+    "clone": ({"upload-pack"}, {"u"}),
+    "push": ({"receive-pack", "exec"}, set()),
+    "archive": ({"exec"}, set()),
+    "send-email": ({"sendmail-cmd", "to-cmd", "cc-cmd", "header-cmd"}, set()),
+    "grep": ({"open-files-in-pager"}, {"O"}),
+}
+# Those of them whose value is optional, so given only attached (-Oless, --open-files-in-pager=less): a bare -O opens
+# the default pager, and the word after it is grep's pattern.
+GIT_ATTACHED_CODE_OPTIONS = {"grep"}
+# git subcommands that run the command given as their last arguments, by the word before it: submodule foreach
+# (through the shell when the command is one word, else as it is), bisect run (each word quoted, through the shell).
+GIT_COMMAND_VERBS = {"submodule": "foreach", "bisect": "run"}
+# git config's options that take the next word as their value, and the options and subcommands that only read, remove
+# or edit settings rather than set one (git config --help).
+GIT_CONFIG_OPTIONS_WITH_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment", "--value", "--url"}
+GIT_CONFIG_NON_WRITES = {
+    *("--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "--unset"),
+    *("--unset-all", "-l", "--list", "-e", "--edit", "--rename-section", "--remove-section"),
+    *("get", "list", "unset", "rename-section", "remove-section", "edit"),
+}
+# Variables naming a command git (or another program) runs: their value, set on the line, is checked like bash -c
+# code. git falls back to EDITOR, VISUAL and PAGER; GIT_SSH and GIT_ASKPASS name a program it runs as it is.
+COMMAND_VARIABLES = {
+    *("GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF"),
+    *("GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL", "GIT_PAGER", "PAGER"),
+}
+# The variables that give git settings one by one (GIT_CONFIG_KEY_0, GIT_CONFIG_VALUE_0), by kind and number.
+GIT_CONFIG_PAIR = re.compile(r"GIT_CONFIG_(KEY|VALUE)_(\d+)")
+# A shell parameter that hands on the words after a `!` alias ("$@", $*, $1), which git passes to its code.
+POSITIONAL_PARAMETER = re.compile(r"\$\{?[@*1-9]")
+# git settings that let an ext:: URL run the command it names (git refuses it by default), unless set to never.
+GIT_EXT_PROTOCOL_KEYS = {"protocol.ext.allow", "protocol.allow"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 MAX_NESTING = 8  # shells inside shells (bash -c "bash -c '...'") before we stop and ask
 # Characters split plus words examined (with their characters, where a check scans their text) per tool call: a few
@@ -428,6 +499,11 @@ FILE_LOOKUP_COST = 100
 
 GH_DYNAMIC_REASON = "gh with a subcommand from a variable or command output can't be checked"
 HIDDEN_CODE_REASON = "runs shell code it can't see (from a pipe, <( ), standard input or xargs)"
+RUNTIME_CODE_REASON = (
+    "a command git would run can't be checked: it is only known at run time (a -c, --config-env, GIT_CONFIG_* or "
+    "alias value, or an --exec, from a variable or command output), named by an ext:: URL or moved by a git config "
+    "--rename-section"
+)
 
 
 # --- The policy: which actions ask ---------------------------------------------------------------------
@@ -962,6 +1038,11 @@ class CommandChecker:
         self.makes_links = False  # the line may run ln: the safety floor judges tower's file names by text
         self.git_may_run_program = False  # the line can make git run a program (external diff, pager, editor)
         self.cds_by_name = False  # the line cds to a bare name, which CDPATH or zsh's cdpath may send anywhere
+        self.assigned: dict[str, list[Word]] = {}  # every value the line gives each variable, nested code included
+        # the values the line gives each variable for its later commands too (not NAME=value cmd or env NAME=value cmd)
+        self.line_assigned: dict[str, list[Word]] = {}
+        # git's global options (-C, -c, --config-env, ...) that the code being checked inherits from the git running it
+        self.git_context: list[Word] = []
 
     def spend(self, units: int) -> None:
         """Use UNITS of the work budget; raise TooComplex once it is gone."""
@@ -982,6 +1063,7 @@ class CommandChecker:
         self.names_git_env = bool(GIT_ENV_MENTION.search(command_line))
         self.makes_links = bool(LINK_MENTION.search(command_line))
         found = self.check(command_line)
+        found += [reason for reason in self.variable_code_reasons() if reason not in found]
         return found + [reason for reason in self.merge_reasons() if reason not in found]
 
     def check(self, command_line: str, depth: int = 0) -> list[str]:
@@ -998,6 +1080,11 @@ class CommandChecker:
         self.simple_commands += len(commands)
         for command in commands:
             self.note_folders(command.words)
+            scoped = command_scoped_names(command.words)
+            for name, value in variable_assignments(command.words):
+                self.assigned.setdefault(name, []).append(value)
+                if name not in scoped:
+                    self.line_assigned.setdefault(name, []).append(value)
             self.git_config_from_env = self.git_config_from_env or sets_git_config(command.words, self.spend)
             self.git_may_run_program = self.git_may_run_program or git_runs_program(command.words)
         # A read of setup.sh or the policy module is let through only when it is the line's one simple command; a pipe,
@@ -1017,7 +1104,7 @@ class CommandChecker:
             program = program_of(command.words)
             for index in range(len(command.words)):
                 found += self.check_invocation(command, index, program, depth)
-            reasons += [reason for reason in found if reason not in reasons]
+            reasons += [reason for reason in dict.fromkeys(found) if reason not in reasons]
         return reasons
 
     def note_folders(self, words: list[Word]) -> None:
@@ -1096,8 +1183,45 @@ class CommandChecker:
                 for part in (Word("-C"), folder)
             ]
             git_args = [*moved, *(args if name == "git" else [Word(name[4:]), *args])]
-            reason = check_git(git_args, lambda: self.push_mode(git_args), self.git_config_from_env)
+            # code a git runs (a ! alias, rebase --exec) inherits its -C and its settings (git passes them on in
+            # GIT_CONFIG_PARAMETERS), so a git in that code is judged with them: -c alias.p=push, a mirroring remote
+            self.spend(len(self.git_context))
+            judged = [*self.git_context, *git_args]
+            reason = check_git(judged, lambda: self.push_mode(judged), self.git_config_from_env)
+            found = [reason] if reason else []
+            # --config-env reads the variable git is started with: a value the line gives it for later commands, or
+            # one given to this command (X=v git, env X=v git); any other assignment (X=v true) leaves it unknown
+            self.spend(len(self.line_assigned))  # copied for each git, like the folders for each push
+            config_env = dict(self.line_assigned)
+            for variable, value in variable_assignments(command.words[: index + 1]):
+                config_env[variable] = [*config_env.get(variable, []), value]
+            codes = git_run_code(git_args, self.assigned, self.spend, config_env)
+            outer, self.git_context = self.git_context, judged[: git_subcommand_at(judged)]
+            try:
+                return found + [reason for reason in self.code_reasons(codes, depth + 1) if reason not in found]
+            finally:
+                self.git_context = outer
         return [reason] if reason else []
+
+    def code_reasons(self, codes: list[Word], depth: int) -> list[str]:
+        """Reasons to ask for CODES, shell code that git or another program will run: each is checked like bash -c
+        code at DEPTH, and one only known at run time (dynamic) also can't be checked, since the shell parses what the
+        variable holds as code too (core.sshCommand="ssh -i $KEY" runs whatever KEY adds)."""
+        found: list[str] = []
+        for code in {(code.text, code.dynamic): code for code in codes}.values():  # each once: a padded line repeats
+            reasons = self.check(code.text, depth) + (self.unchecked(RUNTIME_CODE_REASON) if code.dynamic else [])
+            found += [reason for reason in reasons if reason not in found]
+        return found
+
+    def variable_code_reasons(self) -> list[str]:
+        """Reasons to ask for the commands the line's variables hand to git or another program: the values of
+        COMMAND_VARIABLES (GIT_SSH_COMMAND, EDITOR) and of git settings given through GIT_CONFIG_* that name a command
+        (environment_code). Checked once the whole line has been read, wherever the variable is set, since a loop or
+        a later command may be the one that uses it. A COMMAND_VARIABLES value is checked as written, like bash -c
+        code: one holding another variable (GIT_SSH_COMMAND="ssh -i $KEY", which workers use) doesn't ask for that
+        alone (Limits), while a git setting's value does, as #82 asks for -c core.sshCommand="$X"."""
+        codes = [Word(value.text) for name in sorted(COMMAND_VARIABLES) for value in self.assigned.get(name, [])]
+        return self.code_reasons(codes + environment_code(self.assigned), 1)
 
     def note_tower_merge(self, words: list[Word], index: int, top_level: bool) -> None:
         """Collect the `tower merge` that word INDEX of WORDS (tower or run-tower.py) runs, if it does (a subcommand
@@ -1593,21 +1717,24 @@ def check_git(args: list[Word], mode: Callable[[], str], config_from_env: bool) 
     A subcommand from a variable, command output or a `-c alias.*` set in the same command could be push. Config the
     hook can't read (from those variables, an include.path, a -c or --config-env key from a variable) could define
     an alias for push and make it force, so then a subcommand that isn't one of git's own (GIT_OWN_COMMANDS) counts
-    as a push that may force. Any --config-env takes its value from the environment, so it may force too.
+    as a push that may force. Any --config-env takes its value from the environment, so it may force too. A `!` alias
+    runs shell code, which git_run_code hands to the caller to check like bash -c code, so it isn't a push here.
     """
     index = 0
     aliases: set[str] = set()
     unreadable = config_from_env
     config_forces = False  # -c remote.<name>.mirror/push, or an alias for push --force, can make a push delete or force
-    # An alias that runs shell code (!) or gives git its own options first (-c, --config-env) may do either too.
+    # An alias that gives git its own options first (-c, --config-env) may do either too.
     while index < len(args) and args[index].text.startswith("-"):
         setting = config_setting(args, index)
         if setting is not None:
             key, _, value = setting.text.partition("=")
             key = key.lower()
             unreadable = unreadable or is_unreadable_config(key)
-            if key.startswith("alias."):
-                aliases.add(key[len("alias.") :])
+            # a ! alias's code is checked as code, but one that hands git's words on ("$@", $1) may push them
+            alias_name = git_alias_name(key)
+            if alias_name is not None and (not is_shell_alias(value) or POSITIONAL_PARAMETER.search(value)):
+                aliases.add(alias_name)
                 parts = alias_words(value)
                 runs_more = parts is None or (bool(parts) and parts[0].startswith(("!", "-")))
                 forcing_part = any(map(is_force_push_arg, parts or []))
@@ -1628,6 +1755,21 @@ def check_git(args: list[Word], mode: Callable[[], str], config_from_env: bool) 
         action = "git under config it can't read (GIT_CONFIG_*, HOME, an include, a key from a variable), maybe a push,"
         return check_push(args[index + 1 :], mode(), action, forces)
     return check_push(args[index + 1 :], mode(), "git push", forces)
+
+
+def git_alias_name(key: str) -> str | None:
+    """The alias a git setting KEY defines, in lower case: NAME for alias.NAME, and for alias.NAME.command, the
+    `[alias "NAME"] command = ...` form git 2.56 added (whose NAME may hold dots); None for any other key."""
+    lowered = key.lower()
+    if not lowered.startswith("alias."):
+        return None
+    return lowered[len("alias.") :].removesuffix(".command")
+
+
+def is_shell_alias(value: str) -> bool:
+    """Whether a git alias's VALUE runs shell code (!...) rather than git's own subcommand. git looks only at its first
+    character; a leading space counts here too, which only makes more aliases checked as code."""
+    return value.lstrip().startswith("!")
 
 
 def alias_words(value: str) -> list[str] | None:
@@ -1698,6 +1840,297 @@ def config_setting(args: list[Word], index: int) -> Word | None:
         return None
     name, _, variable = spec.partition("=")
     return Word(f"{name}=${variable}", dynamic=True)
+
+
+def variable_assignments(words: list[Word]) -> list[tuple[str, Word]]:
+    """The variables a simple command's WORDS set, with their values: the NAME=value words before its program, and those
+    among the arguments of a wrapper (env NAME=value git ...) or of export, declare and the like. A value with an
+    expansion, or one added to (NAME+=value), is only known at run time, so it is dynamic."""
+    program = program_position(words)
+    found = words[:program]
+    name = program_name(words[program]) if program < len(words) else ""
+    if name in WRAPPERS or name in VARIABLE_SETTERS:
+        found = found + words[program + 1 :]
+    assignments: list[tuple[str, Word]] = []
+    for word in found:
+        match = ASSIGNMENT.match(word.text)
+        if match is not None:
+            added = match.group().endswith("+=")
+            assignments.append((match.group().rstrip("+="), Word(word.text[match.end() :], word.dynamic or added)))
+    return assignments
+
+
+def command_scoped_names(words: list[Word]) -> set[str]:
+    """The variables a simple command's WORDS set only for the program it runs, not for the line's later commands: the
+    NAME=value words before a program (X=v cmd), and every one when the program is a wrapper (env X=v cmd)."""
+    program = program_position(words)
+    if program >= len(words):
+        return set()
+    scoped = words[program + 1 :] if program_name(words[program]) in WRAPPERS else []
+    return {
+        match.group().rstrip("+=") for word in [*words[:program], *scoped] if (match := ASSIGNMENT.match(word.text))
+    }
+
+
+def git_settings(args: list[Word], index: int, config_env: dict[str, list[Word]]) -> list[tuple[str, Word]]:
+    """The key=value settings git's global option at INDEX of ARGS gives, as (key, value): -c's, or --config-env's with
+    each value its variable may have when git starts (CONFIG_ENV; one only known at run time when the line gives it
+    none). A value is dynamic when it holds an expansion, and so is any value whose key does (it may say anything)."""
+    text = args[index].text
+    if text == "--config-env" or text.startswith("--config-env="):
+        following = args[index + 1].text if index + 1 < len(args) else ""
+        key, _, variable = (text.partition("=")[2] if "=" in text else following).partition("=")
+        return [(key, value) for value in config_env.get(variable, [Word(f"${variable}", dynamic=True)])]
+    setting = config_setting(args, index) if text == "-c" else None
+    return [] if setting is None else [split_setting(setting)]
+
+
+def split_setting(setting: Word) -> tuple[str, Word]:
+    """A key=value SETTING as (key, value), the value dynamic when it holds an expansion or its key does."""
+    key, _, value = setting.text.partition("=")
+    return key, Word(value, setting.dynamic and (has_expansion(key) or has_expansion(value)))
+
+
+def git_key_kind(key: str) -> str:
+    """What a git setting's KEY makes of its value, for setting_code: "open" (the key is only known at run time),
+    "protocol" (it may let ext:: URLs run the command they name), "command" (git_key_runs_program), "alias", or ""."""
+    lowered = key.lower()
+    if has_expansion(key):
+        return "open"
+    if lowered in GIT_EXT_PROTOCOL_KEYS:
+        return "protocol"
+    if lowered.startswith("alias."):  # before the leaves: alias.cmd and alias.pager are aliases, not commands
+        return "alias"
+    return "command" if "." in lowered and git_key_runs_program(lowered) else ""
+
+
+def setting_code(key: str, value: Word, rest: list[Word]) -> Word | None:
+    """The shell code a git setting KEY=VALUE makes git run, or None. For a key naming a command (git_key_runs_program)
+    it is VALUE, without the ! that credential.helper and submodule.<name>.update put before shell code; for a `!` alias
+    it is the alias's code with REST, the words after git's subcommand, which git passes to it ("$@"). A key only known
+    at run time may be either, so its setting counts as code only known at run time; so does one letting ext:: URLs run
+    the command they name (GIT_EXT_PROTOCOL_KEYS, unless it says never), which the hook can't see. git runs that code
+    through its own shell, so an expansion in it is only known at run time even when the line quotes it ('$X'), except
+    the parameters an alias hands REST on with ("$@", $1)."""
+    kind = git_key_kind(key)
+    if kind == "open" or (kind == "protocol" and value.text.lower() != "never"):
+        return Word(f"{key}={value.text}", dynamic=True)
+    if kind == "command":
+        code = value.text.removeprefix("!")
+        return Word(code, value.dynamic or has_expansion(code))
+    if kind == "alias" and (value.dynamic or is_shell_alias(value.text)):
+        code = value.text.lstrip().removeprefix("!")
+        expands = value.dynamic or has_expansion(POSITIONAL_PARAMETER.sub("", code))
+        return Word(" ".join([code, *map(shell_text, rest)]), expands)
+    return None
+
+
+def git_run_code(
+    args: list[Word],
+    assigned: dict[str, list[Word]],
+    spend: Callable[[int], None],
+    config_env: dict[str, list[Word]],
+    aliases: dict[str, list[list[str]]] | None = None,
+) -> list[Word]:
+    """The shell code that git, run with ARGS (its own arguments, subcommand included), runs from what the line says,
+    each to be checked like bash -c code: a setting's (setting_code: -c, or --config-env from a variable git starts
+    with, which CONFIG_ENV gives; ASSIGNED is every value the line gives each variable), and a subcommand's
+    (subcommand_code: rebase --exec, submodule foreach, a `git config` write). A subcommand that is a non-! alias
+    (ALIASES, by name, with every value the line may give it: through -c, --config-env or GIT_CONFIG_*, see
+    environment_aliases) is read as each of them, its own options included, once per name, so a chain of them ends. Code
+    only known at run time comes back dynamic. Each read of ARGS is paid for with SPEND, since an alias chain reads the
+    rest of the line again."""
+    spend(scan_cost(args, 0, len(args)) + len(aliases or {}))
+    aliases = environment_aliases(assigned, spend) if aliases is None else dict(aliases)
+    at = git_subcommand_at(args)
+    rest = args[at + 1 :]
+    codes: list[Word] = []
+    index = 0
+    while index < at:
+        settings = git_settings(args, index, config_env)
+        spend(len(settings))  # a --config-env gives one setting per value the line gives its variable
+        for key, value in settings:
+            code = setting_code(key, value, rest)
+            alias = git_alias_name(key)
+            parts = alias_words(value.text) if alias is not None and not value.dynamic else None
+            if code is not None:
+                codes.append(code)
+            elif parts and alias is not None:  # every value counts, an overridden -c's too: the safe side
+                aliases.setdefault(alias, []).append(parts)
+        index += 2 if args[index].text in GIT_OPTIONS_WITH_VALUE else 1
+    if at >= len(args) or args[at].dynamic:
+        return codes  # a subcommand from a variable is a command built at run time (Limits)
+    alternatives = aliases.pop(args[at].text.lower(), None)
+    if alternatives:
+        expanded = [
+            git_run_code([Word(part) for part in parts] + rest, assigned, spend, config_env, aliases)
+            for parts in alternatives
+        ]
+        return codes + [code for found in expanded for code in found]
+    return codes + subcommand_code(args[at].text, rest)
+
+
+def environment_aliases(assigned: dict[str, list[Word]], spend: Callable[[int], None]) -> dict[str, list[list[str]]]:
+    """The non-! aliases the line gives through variables (ASSIGNED): GIT_CONFIG_KEY_<n> with GIT_CONFIG_VALUE_<n>,
+    and GIT_CONFIG_PARAMETERS, by name, each with every value it may have, split as git splits them. A ! alias's code
+    is environment_code's. Each key and value paired is paid for with SPEND before they are, since a padded line can
+    give one number many of both."""
+    found: dict[str, list[list[str]]] = {}
+    numbers = {match.group(2) for name in assigned if (match := GIT_CONFIG_PAIR.fullmatch(name))}
+    pairs: list[tuple[str, str]] = []
+    for number in sorted(numbers):
+        keys = {key.text for key in assigned.get(f"GIT_CONFIG_KEY_{number}", []) if not key.dynamic}
+        names = {name for key in keys if (name := git_alias_name(key)) is not None}
+        values = [value.text for value in assigned.get(f"GIT_CONFIG_VALUE_{number}", []) if not value.dynamic]
+        spend(len(names) * len(values))
+        pairs += [(name, value) for name in names for value in values]
+    for parameters in assigned.get("GIT_CONFIG_PARAMETERS", []):
+        try:
+            parts = [] if parameters.dynamic else shlex.split(parameters.text)
+        except ValueError:  # environment_code counts it as code the hook can't see
+            parts = []
+        spend(len(parts))
+        settings = [part.partition("=") for part in parts]
+        pairs += [(name, value) for key, _, value in settings if (name := git_alias_name(key)) is not None]
+    for name, value in pairs:
+        words = None if is_shell_alias(value) else alias_words(value)
+        if words:
+            found.setdefault(name, []).append(words)
+    return found
+
+
+def subcommand_code(subcommand: str, args: list[Word]) -> list[Word]:
+    """The shell code git's SUBCOMMAND, run with ARGS (the words after it), runs: its GIT_CODE_OPTIONS' values (rebase
+    --exec), the settings a clone writes and uses (-c, --config) or a `git config` sets that name a command, and the
+    command submodule foreach or bisect run is given (GIT_COMMAND_VERBS). foreach runs one word through the shell and
+    more as they are; bisect run quotes each word for the shell; either way only a program word from a variable makes
+    the command unknown, since an argument's value stays one word. An option's value and a one-word foreach command go
+    to git's shell, so an expansion in them is only known at run time even when the line quotes it (--exec '$CMD')."""
+    long_names, letters = GIT_CODE_OPTIONS.get(subcommand, (set(), set()))
+    attached_only = subcommand in GIT_ATTACHED_CODE_OPTIONS
+    codes = [
+        Word(code.text, code.dynamic or has_expansion(code.text))
+        for code in option_values(args, long_names, letters, attached_only)
+    ]
+    settings: list[tuple[str, Word]] = []
+    if subcommand == "clone":
+        settings = [split_setting(setting) for setting in option_values(args, {"config"}, {"c"})]
+    elif subcommand == "config" and (written := git_config_write(args)) is not None:
+        key, value = written
+        settings = [(f"${key.text}" if key.dynamic else key.text, value)]
+    elif subcommand == "config" and renames_config_section(args):
+        codes.append(Word("", dynamic=True))  # the settings it moves into alias.* or core.* aren't on the line
+    codes += [code for key, value in settings if (code := setting_code(key, value, [])) is not None]
+    verb_at = next_operand(args, 0)
+    verb = GIT_COMMAND_VERBS.get(subcommand)
+    if verb is None or verb_at is None or not (args[verb_at].dynamic or args[verb_at].text == verb):
+        return codes
+    command = args[verb_at + 1 :]
+    if subcommand == "submodule":  # foreach's own options (--recursive, -q) come first, and a "--" ends them
+        while command and command[0].text.startswith("-"):
+            first, command = command[0], command[1:]
+            if first.text == "--":
+                break
+        if len(command) == 1:
+            return codes + [Word(command[0].text, command[0].dynamic or has_expansion(command[0].text))]
+    return codes + ([Word(" ".join(map(shell_text, command)), command[0].dynamic)] if command else [])
+
+
+def renames_config_section(args: list[Word]) -> bool:
+    """Whether a `git config` run with ARGS (the words after `config`) renames a section (--rename-section, or the
+    rename-section subcommand), which can turn settings saved under a harmless name into aliases, a remote's push
+    settings or a pager the hook never saw written."""
+    first = next_operand(args, 0)
+    return any(git_long_option(arg.text, "--rename-section") for arg in args) or (
+        first is not None and args[first].text == "rename-section"
+    )
+
+
+def git_long_option(text: str, name: str) -> bool:
+    """Whether the word TEXT gives git's long option NAME (--name, with or without =value) by any start of it: git
+    takes an unambiguous abbreviation (--typ for --type) and refuses an ambiguous one, so every start counts."""
+    given = text.partition("=")[0]
+    return len(given) > 2 and given.startswith("--") and name.startswith(given)
+
+
+def option_values(args: list[Word], long_names: set[str], letters: set[str], attached_only: bool = False) -> list[Word]:
+    """The values ARGS give the options LONG_NAMES (--name=VALUE or --name VALUE, by any start of the name, which git
+    accepts while it is unambiguous) and LETTERS (-x VALUE, -xVALUE, or the first such letter in a cluster: -ix VALUE),
+    read up to a "--"; only the attached ones when ATTACHED_ONLY (an optional value). A value attached to its option's
+    word is dynamic if that word is."""
+    found: list[Word] = []
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word.text == "--":
+            break
+        if word.text.startswith("--"):
+            name, equals, attached = word.text[2:].partition("=")
+            matches, has_value = bool(name) and any(option.startswith(name) for option in long_names), bool(equals)
+        elif word.text.startswith("-"):
+            at = next((i for i in range(1, len(word.text)) if word.text[i] in letters), None)
+            attached = word.text[at + 1 :] if at is not None else ""
+            matches, has_value = at is not None, bool(attached)
+        else:
+            continue
+        if not matches:
+            continue
+        if has_value:
+            found.append(Word(attached, word.dynamic))
+        elif index < len(args) and not attached_only:
+            found.append(args[index])
+            index += 1
+    return found
+
+
+def git_config_write(args: list[Word]) -> tuple[Word, Word] | None:
+    """The key and value a `git config` run with ARGS (the words after `config`) sets: `git config [options] KEY VALUE`
+    or `git config set [options] KEY VALUE`; None when it only reads, removes or edits settings, or names no value."""
+    operands: list[Word] = []
+    index = 0
+    while index < len(args):
+        text = args[index].text
+        if text in GIT_CONFIG_NON_WRITES and (text.startswith("-") or not operands):
+            return None
+        if any(git_long_option(text, name) for name in GIT_CONFIG_NON_WRITES if name.startswith("--")):
+            return None  # an abbreviation git accepts (--get-r, --remove-s)
+        takes_value = text in GIT_CONFIG_OPTIONS_WITH_VALUE or (
+            "=" not in text and any(git_long_option(text, name) for name in GIT_CONFIG_OPTIONS_WITH_VALUE)
+        )
+        index += 2 if takes_value else 1
+        if not text.startswith("-"):
+            operands.append(args[index - 1])
+    operands = operands[1:] if operands and operands[0].text == "set" else operands
+    return (operands[0], operands[1]) if len(operands) >= 2 else None
+
+
+def environment_code(assigned: dict[str, list[Word]]) -> list[Word]:
+    """The shell code git runs from the settings the line gives through variables (ASSIGNED: every value it gives each),
+    as setting_code finds it: GIT_CONFIG_KEY_<n> with GIT_CONFIG_VALUE_<n> (either may be missing from the line, so
+    any key or value), and GIT_CONFIG_PARAMETERS ('key'='value' ...). A GIT_ALLOW_PROTOCOL letting ext:: URLs run the
+    command they name counts as code the hook can't see. Linear in the values given, however many share a number: a
+    number's values are judged by one key of each kind (git_key_kind) among its keys, not by every key."""
+    codes: list[Word] = []
+    unknown = [Word("", dynamic=True)]  # a key or value the line doesn't give comes from the environment
+    numbers = {match.group(2) for name in assigned if (match := GIT_CONFIG_PAIR.fullmatch(name))}
+    for number in sorted(numbers):
+        keys = ["$KEY" if key.dynamic else key.text for key in assigned.get(f"GIT_CONFIG_KEY_{number}", unknown)]
+        judging = {git_key_kind(key): key for key in keys}.values()
+        for value in assigned.get(f"GIT_CONFIG_VALUE_{number}", unknown):
+            codes += [code for key in judging if (code := setting_code(key, value, [])) is not None]
+    for parameters in assigned.get("GIT_CONFIG_PARAMETERS", []):
+        settings = [("$GIT_CONFIG_PARAMETERS", parameters)]  # one only known at run time may say anything
+        if not parameters.dynamic:
+            try:
+                settings = [split_setting(Word(part)) for part in shlex.split(parameters.text)]
+            except ValueError:  # an unclosed quote: git refuses it too, but the hook can't tell what it says
+                settings = [("$GIT_CONFIG_PARAMETERS", Word(parameters.text, dynamic=True))]
+        codes += [code for key, value in settings if (code := setting_code(key, value, [])) is not None]
+    for protocols in assigned.get("GIT_ALLOW_PROTOCOL", []):
+        if protocols.dynamic or "ext" in protocols.text.split(":"):
+            codes.append(Word(f"GIT_ALLOW_PROTOCOL={protocols.text}", dynamic=True))
+    return codes
 
 
 @dataclass(frozen=True)
@@ -1951,8 +2384,11 @@ def gh_alias_target(group: str, subcommand: str) -> str:
 
 def prints_token(group: str, name: str, flags: list[Word]) -> bool:
     """Whether `gh GROUP NAME` with FLAGS (the words after them) prints the auth token, which no known read does: gh
-    auth token, gh auth status -t/--show-token (or -t in a cluster), gh config get oauth_token (or a key from a
-    variable, which may be it)."""
+    auth token, gh auth status -t/--show-token (or -t in a cluster), gh auth git-credential get (or an operation from a
+    variable: git runs the saved helper with get, which the hook doesn't see), gh config get oauth_token (or a key from
+    a variable, which may be it)."""
+    if group == "auth" and name == "git-credential":
+        return any(flag.text == "get" or flag.dynamic for flag in flags)
     if group == "auth":
         return name == "token" or any(
             flag.text.startswith("--show-token") or has_short_option(flag.text, "t") for flag in flags
@@ -2170,12 +2606,18 @@ GIT_FILE_READERS = {"add", "blame", "diff", "log", "ls-files", "show", "status"}
 # which git_runs_program covers, so they aren't options to match here; grep's -O is moot (grep isn't a read subcommand).
 # Environment variables, assigned on the line, that name a program git runs or a folder it runs helpers from: an
 # external diff, a pager, an editor, or the exec path.
-GIT_RUN_PROGRAM_ENV = re.compile(
-    r"^(?:GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|EDITOR|VISUAL|GIT_SEQUENCE_EDITOR|GIT_EXEC_PATH)="
-)
-# The last part of a git config key that names a program git runs (diff.external, diff.<driver>.command,
-# filter.<name>.clean); core.pager/editor, sequence.editor and any pager.* are named in git_key_runs_program.
-GIT_PROGRAM_KEY_LEAVES = {"external", "command", "textconv", "pager", "clean", "smudge", "process"}
+GIT_RUN_PROGRAM_ENV = re.compile(rf"^(?:{'|'.join(sorted(COMMAND_VARIABLES | {'GIT_EXEC_PATH'}))})=")
+# The last part of a git config key that names a program or shell command git runs: diff and filter drivers
+# (diff.external, diff.<driver>.command, filter.<name>.clean), core.sshCommand and its kin, credential helpers, gpg's
+# program, merge drivers, the tools difftool, mergetool, the browser, man and trailers run (*.cmd), send-email's
+# commands, and what a fetch or push runs on the other side (remote.<name>.uploadpack); any pager.* and
+# submodule.<name>.update are named in git_key_runs_program.
+GIT_PROGRAM_KEY_LEAVES = {
+    *("external", "command", "textconv", "pager", "clean", "smudge", "process", "editor"),
+    *("sshcommand", "fsmonitor", "askpass", "gitproxy", "alternaterefscommand", "packobjectshook", "difffilter"),
+    *("helper", "program", "driver", "cmd", "defaultkeycommand", "tunnel"),
+    *("sendmailcmd", "tocmd", "cccmd", "headercmd", "uploadpack", "receivepack"),
+}
 # tower's policy module, by the path it has in the repo (src/tower/policy.py). A write to it, or any naming of it that
 # isn't a plain read, asks (#100). A bare basename (policy.py), which many repos have, is not it.
 POLICY_MODULE_PATH = os.path.join("src", "tower", "policy.py")
@@ -2481,11 +2923,12 @@ def git_runs_program(words: list[Word]) -> bool:
 
 
 def git_key_runs_program(setting: str) -> bool:
-    """Whether a git config SETTING (a bare key, or key=value) names a program git runs: core.pager/editor,
-    sequence.editor, any pager.*, or a key whose last part is external, command, textconv, pager, clean, smudge or
-    process (diff.external, diff.<driver>.command, filter.<name>.clean)."""
+    """Whether a git config SETTING (a bare key, or key=value) names a program or shell command git runs:
+    core.pager/editor, sequence.editor, any pager.*, a submodule's update (its !command form), or a key whose last part
+    is one of GIT_PROGRAM_KEY_LEAVES (diff.external, diff.<driver>.command, filter.<name>.clean, core.sshCommand,
+    credential.helper, gpg.program, merge.<driver>.driver, ...)."""
     key = setting.partition("=")[0].lower()
-    if key in ("core.pager", "core.editor", "sequence.editor") or key.startswith("pager."):
+    if key.startswith("pager.") or (key.startswith("submodule.") and key.endswith(".update")):
         return True
     return key.rsplit(".", 1)[-1] in GIT_PROGRAM_KEY_LEAVES
 
