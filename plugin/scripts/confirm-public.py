@@ -115,8 +115,9 @@ it stands for. In each simple command, every word naming git or gh (by any path,
 case) starts an invocation to check, so wrappers like env, command, xargs, nohup, sudo and timeout need
 no special case; so does every word naming tower (or the plugin's run-tower.py) followed by `merge` or `clean`.
 git's global options (-C, -c, --git-dir, ...) are skipped to find its subcommand, and gh's command
-words are found the way gh itself finds them, so -R/--repo can come anywhere. In code for
-python, node, perl, ruby or osascript, the `git ...`/`gh ...` text inside it is checked, and inline code (-c,
+words are found the way gh itself finds them, so -R/--repo can come anywhere. In the code a code runner is given
+(python, node, perl, ruby, osascript, awk, sed's e command, vim, ex, ed, emacs, a heredoc; is_code_runner), the
+`git ...`/`gh ...` text inside it is checked, and inline code (-c,
 -e, --eval) that names tower and merge (or clean), in the code or the arguments after it, counts as a tower merge
 (or clean).
 
@@ -394,7 +395,8 @@ CODE_STRING_RUNNERS = {"ssh", "su", "runuser", "watch", "tmux", "screen", "scrip
 # Interpreters whose code is another language: only `git ...`/`gh ...` text inside it (EMBEDDED_COMMAND) is checked,
 # as in every code runner's code (is_code_runner, CommandChecker.embedded_reasons).
 LANGUAGE_RUNNER = re.compile(r"(?:python|node|perl|ruby|osascript|php|deno|bun|lua)[\d.]*")
-EMBEDDED_COMMAND = re.compile(r"(?<![\w./-])(?:git|gh)[ \t]+[^'\"`\n;|&)]*")
+# A git or gh named by its path (/opt/homebrew/bin/gh) counts too, as it does on the command line.
+EMBEDDED_COMMAND = re.compile(r"(?<![\w./~-])(?:[\w.~-]*/)*(?:git|gh)[ \t]+[^'\"`\n;|&)]*")
 # The programs that start an invocation we check: env for its -S string, source/. for the code they read.
 INVOKERS = {"git", "gh", "eval", "env", "source", "."} | SHELLS | CODE_STRING_RUNNERS
 # Commands that run the rest of their words as a command. Used to tell `... | sudo bash` (a shell reading the pipe)
@@ -1209,11 +1211,11 @@ class CommandChecker:
         return reasons
 
     def embedded_reasons(self, code: list[str], depth: int) -> list[str]:
-        """Reasons to ask for the git and gh commands written in CODE, the code a program in a command runs (runner_code:
-        an interpreter's, awk's, a sed's that can run a command, vim's and the other code runners', in its words and in
-        a heredoc or here-string on its standard input), each checked like a command line at DEPTH + 1: a gh write by
-        its key, a push by push. Its text counts whether or not the code visibly runs it (awk '/gh pr/' notes may
-        ask), since telling would take a parser per language (#138). Each distinct command is checked once."""
+        """Reasons to ask for the git and gh commands written in CODE, the code a program in a command runs
+        (runner_code: an interpreter's, awk's, a sed's that can run a command, vim's and the other code runners', in its
+        words and in a heredoc or here-string on its standard input), each checked like a command line at DEPTH + 1: a
+        gh write by its key, a push by push. Its text counts whether or not the code visibly runs it (awk '/gh pr/'
+        notes may ask), since telling would take a parser per language (#138). Each distinct command is checked once."""
         commands = dict.fromkeys(match.group() for text in code for match in EMBEDDED_COMMAND.finditer(text))
         return [reason for command in commands for reason in self.check(command, depth + 1)]
 
@@ -3549,28 +3551,48 @@ def sed_only_prints(args: list[Word]) -> bool:
 
 
 def sed_statements(script: str) -> list[str]:
-    """SCRIPT split into statements on ; and newlines, but not those inside a /regex/ address, where ; is literal, or
-    just after a backslash. The /.../ and its escapes are honoured so a print script with a ; or an escaped / in its
-    regex stays one statement; the scan is linear, so a long script never backtracks."""
+    """SCRIPT split into statements on ; and newlines, as sed reads them: not inside a /regex/ or \\cregexc address or
+    the three parts of an s or y command (any delimiter), where ; is literal, nor just after a backslash; and a command
+    whose argument runs to the end of the line (a, i, c, e, r, w, R, W) ends only at a newline. The scan is linear, so a
+    long script never backtracks."""
     parts: list[str] = []
-    current: list[str] = []
-    in_regex = False
-    index = 0
-    while index < len(script):
-        char = script[index]
-        if char == "\\" and index + 1 < len(script):
-            current.append(script[index : index + 2])
-            index += 2
-            continue
-        if char == "/":
-            in_regex = not in_regex
-        if char in ";\n" and not in_regex:
-            parts.append("".join(current))
-            current = []
-        else:
-            current.append(char)
-        index += 1
-    parts.append("".join(current))
+    length = len(script)
+
+    def past(index: int, delimiter: str) -> int:
+        """The index just past the DELIMITER that closes a part starting at INDEX (a backslash escapes one character),
+        or the newline or end that cuts it short."""
+        while index < length and script[index] not in (delimiter, "\n"):
+            index += 2 if script[index] == "\\" else 1
+        return min(index + 1, length) if index < length and script[index] == delimiter else index
+
+    start = index = 0
+    while index < length:
+        while index < length and script[index] in " \t":
+            index += 1
+        for _ in range(2):  # an address, and after a comma a second one
+            if index < length and script[index] in "/\\":
+                index = past(index + 1, "/") if script[index] == "/" else past(index + 2, script[index + 1 : index + 2])
+                while index < length and script[index] in "IM":  # the regex's flags
+                    index += 1
+            while index < length and (script[index].isdigit() or script[index] in "$~+"):
+                index += 1  # a line number, the last line, or a step
+            if index < length and script[index] == ",":
+                index += 1
+                continue
+            break
+        while index < length and script[index] in " \t!":
+            index += 1
+        command = script[index] if index < length else ""
+        if command in ("s", "y") and index + 1 < length and script[index + 1] not in "\\\n":
+            delimiter = script[index + 1]
+            index = past(past(index + 2, delimiter), delimiter)  # past the pattern and the replacement
+        ends = "\n" if command and command in "aiceRrWw" else ";\n"
+        while index < length and script[index] not in ends:
+            index += 2 if script[index] == "\\" else 1
+        parts.append(script[start:index])
+        start = index = index + 1
+    if start == length:  # a ; or newline at the end, or an empty script, leaves an empty statement
+        parts.append("")
     return parts
 
 
@@ -3585,9 +3607,12 @@ def runner_code(command: SimpleCommand, spend: Callable[[int], None]) -> list[st
     claude: every word after the command's program and its standard input (a heredoc to python, awk -f -), paid for
     with SPEND; none without such a program, or when the first one is a sed whose scripts can't run a command
     (sed_runs_commands): an edit or a print runs nothing. The first runner sees every later one's code, so one look is
-    enough, past any sed that can't run a command (a later runner may still: find -exec sed -n p {} ; -exec python3)."""
+    enough, past any sed that can't run a command (a later runner may still: find -exec sed -n p {} ; -exec python3).
+    A git, gh or reading program's words are its arguments, never a program it runs (gh pr view 12, git log -- r)."""
     words = command.words
     program = program_position(words)
+    if program < len(words) and program_name(words[program]) in {"git", "gh", *READ_ONLY_PROGRAMS}:
+        return []
     for index in range(program, len(words)):
         name = program_name(words[index])
         if not is_code_runner(name):

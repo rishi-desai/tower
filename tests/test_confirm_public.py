@@ -783,6 +783,8 @@ CODE_RUNNERS_RUN_GH = [
     "node <<< \"require('child_process').execSync('gh pr comment 5 -b hi')\"",
     "ex -sc '!gh pr comment 5 -b hi' -c q",
     "sed 's/.*/gh pr comment 5 -b hi/e' notes.md",
+    "gsed 's/a/b/;1egh pr comment 5 -b hi' notes.md",
+    "awk 'BEGIN{system(\"/opt/homebrew/bin/gh pr comment 5 -b hi\")}'",
     "awk -f - <<'EOF'\nBEGIN{system(\"gh pr comment 5 -b hi\")}\nEOF",
     "emacs --batch --eval '(shell-command \"gh pr comment 5 -b hi\")'",
 ]
@@ -820,6 +822,8 @@ def test_a_push_in_a_code_runners_code_is_judged_as_a_push(tmp_path: Path, comma
         "python3 scripts/post.py",  # code read from a file isn't read (Limits)
         "awk '{print $1}' notes.md",
         "cat <<'EOF'\ngh pr comment 5 -b hi\nEOF",  # a heredoc to a program that runs no code
+        "git log --grep='gh pr comment 5' -- r",  # git's words are arguments: r is a file, not R
+        "grep -rn 'gh pr comment' view",
     ],
 )
 def test_code_without_a_gh_write_passes(tmp_path: Path, command: str) -> None:
