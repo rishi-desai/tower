@@ -127,6 +127,8 @@ ALWAYS_ASK = [
     "csh -c 'gh issue close 3'",
     "ssh host 'gh pr comment 5 -b hi'",
     "watch 'gh pr comment 5 -b hi'",
+    "parallel 'gh pr comment {} -b hi' ::: 5",
+    "npx -c 'gh issue close 3'",
     "python3 -c \"import os; os.system('gh pr comment 5 -b hi')\"",
     "osascript -e 'do shell script \"gh issue close 3\"'",
     # part of a deciding word, or a GraphQL query, from a variable or command output
@@ -1489,6 +1491,38 @@ FLOOR_COMMANDS = [
     "X=bare; claude --$X -p hi",
     "X==s.json; claude --settings$X -p hi",
     'N=HOME; printf -v "$N" %s /tmp/e; claude -p hi',
+    # code that awk, sed, vim, ex, ed, emacs and the like run, which can run a shell command: claude, plugin and an
+    # off verb in that order, whether or not it names tower, which code can build (#108)
+    "awk 'BEGIN{system(\"claude plugin disable tower@tower\")}'",
+    "vim -c '!claude plugin uninstall tower@tower'",
+    "sed 's/.*/claude plugin disable tower/e' README.md",
+    "ex -sc '!claude plugin remove tower' -c q",
+    "ed -s notes.txt <<< '!claude plugin disable tower'",
+    "emacs --batch --eval '(shell-command \"claude plugin disable tower\")'",
+    "gawk 'BEGIN{system(\"claude plugin marketplace remove tower\")}'",
+    'awk \'BEGIN{n="tow" "er"; system("claude plugin disable " n)}\'',
+    "awk -f - <<'EOF'\nBEGIN{system(\"claude plugin disable tower\")}\nEOF",
+    "python3 <<'EOF'\nimport os; os.system('claude plugin disable tower@tower')\nEOF",
+    "dc -e '!claude plugin disable tower'",
+    "sqlite3 x.db '.shell claude plugin uninstall tower'",
+    "R -e 'system(\"claude plugin disable tower\")'",
+    "parallel 'claude plugin disable {}' ::: tower",
+    "sed 's|a;b|claude plugin disable tower|e' notes.md",
+    "awk 'BEGIN{system(\"claude --bare -p x\")}'",
+    # sed forms GNU sed runs a command in that a deny-list missed; GNU sed as gsed, and m4 (#108 review)
+    "sed -l 5 '1e claude plugin disable tower' f",
+    "sed -n -e '1{1e claude plugin disable tower' -e '}' f",
+    "sed '1~2e claude plugin disable tower' f",
+    "sed '1,+2e claude plugin disable tower' f",
+    "sed '/x/Ie claude plugin disable tower' f",
+    "sed '\\,x,e claude plugin disable tower' f",
+    "sed --e='1e claude plugin disable tower' f",
+    "gsed '1e claude plugin disable tower' f",
+    "gsed 'e claude --bare -p x' f",
+    "m4 <<< 'syscmd(claude plugin disable tower)'",
+    # a sed that can't run a command doesn't hide a later runner's code
+    "find . -exec sed -n p {} \\; -exec python3 -c 'import os; os.system(\"claude plugin disable tower\")' \\;",
+    "find . -exec sed -n p {} \\; -exec python3 -c 'import os; os.system(\"claude --bare -p x\")' \\;",
 ]
 
 
@@ -1538,6 +1572,13 @@ def test_the_floor_asks_before_a_command_that_changes_policy_or_rules_in_every_p
         "git ls-files | xargs grep -ln claude",  # claude is what grep looks for, not a program xargs runs
         "find src -name '*.ts' -exec grep -l claude {} +",
         'cd "$HOME" && claude -p "$PROMPT"',
+        # code that names claude and plugin without an off verb, and a sed that only prints the lines it finds (#108)
+        "awk '/claude plugin/ {print}' notes.md",
+        "sed -n '/claude plugin disable/p' README.md",
+        "sed -i '' 's/claude plugin remove/claude plugin uninstall/' README.md",
+        "sed -n '/claude plugin disable/,+3p' README.md",
+        "vim -c 'set nu' notes.md",
+        "python3 -c 'print(\"claude plugin list\")'",
         "sudo claude plugin disable some-other-plugin --scope user",
         "echo claude plugin disable tower",
         "jq -r .model ~/.claude/settings.json",
@@ -1854,6 +1895,9 @@ FLOOR_BYPASSES = [
     "python3 -c \"from pathlib import Path; (Path.home()/'.claude'/'tower'/'policy.toml').write_text('x')\"",
     "uv run python -c 'from tower import policy; policy.use(\"sandbox\")'",
     "node -e \"require('child_process').execSync('tower policy use sandbox')\"",
+    # R and Julia can build a path to tower's files like python can (#108 review)
+    'Rscript -e \'setwd(path.expand("~/.claude")); writeLines("x", "tower.conf")\'',
+    'julia -e \'cd(homedir() * "/.claude"); write("tower.conf", "x")\'',
 ]
 
 
@@ -2330,6 +2374,8 @@ def test_a_huge_interpreter_argument_is_checked_in_time(tmp_path: Path) -> None:
         pytest.param("git -c git" * 16_000 + " config a b; git push --force", id="git options that say git"),
         pytest.param("GIT_DIR=. " * 8_000 + "true; " + "git push; " * 8_000 + "git push --force", id="GIT_DIR values"),
         pytest.param("for x in " + "a " * 100_000 + "; do git push --force; done", id="loop words"),
+        pytest.param("awk " * 30_000 + "'claude plugin' " * 30_000 + "; git push --force", id="awk code words"),
+        pytest.param("sed " * 30_000 + "-n p notes.md; git push --force", id="sed words"),
     ],
 )
 def test_per_word_checks_stay_linear_on_padded_lines(tmp_path: Path, command: str) -> None:

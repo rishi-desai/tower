@@ -60,8 +60,11 @@ symlink resolves to, always asks. So does any Bash command naming a rule file (C
 ~/.claude/tower/rules/), running `tower policy use` (however tower is run, tower's policy module used in python/node
 code included) or tower's setup.sh (other than --dry-run), which rewrites tower.conf and can set the profile, or
 turning tower's plugin off: `claude plugin disable|uninstall|remove` or `claude plugin marketplace remove|rm` naming
-tower, with a name from a variable or none, disable --all, or any name xargs, parallel or find may add; `claude plugin
-marketplace add` of any source, since a marketplace's name is in its source and one named tower replaces tower's
+tower, with a name from a variable or none, disable --all, or any name xargs, parallel or find may add, or code
+that an interpreter, awk, sed, vim, ex, ed, emacs and the like run (in their words or a heredoc) that mentions claude,
+plugin and an off verb in that order, tower's name or not, since code can build it (a sed that only prints lines runs
+nothing, so it passes); `claude plugin marketplace add` of any source, since a marketplace's name is in its source
+and one named tower replaces tower's
 (Claude Code 2.1.304, tried in a scratch CLAUDE_CONFIG_DIR: "Marketplace 'tower' was already added from ... and now
 points at ...", and the installed plugin loads from the new source; `claude plugin update` and `marketplace update`
 pass, since they refresh tower from the source its marketplace already has); or running Claude Code without tower's
@@ -384,8 +387,9 @@ GH_API_SHORT_FLAGS = {
 }
 # Shells whose -c code, or a heredoc fed to them, is checked like the command line itself.
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh"}
-# Programs that run a string argument as shell code (ssh host 'cmd', watch 'cmd', su -c 'cmd').
-CODE_STRING_RUNNERS = {"ssh", "su", "runuser", "watch", "tmux", "screen", "script"}
+# Programs that run a string argument as shell code (ssh host 'cmd', watch 'cmd', su -c 'cmd', GNU parallel's command
+# template, flock -c 'cmd', npx -c 'cmd', npm exec -c 'cmd').
+CODE_STRING_RUNNERS = {"ssh", "su", "runuser", "watch", "tmux", "screen", "script", "parallel", "flock", "npx", "npm"}
 # Interpreters whose code is another language: only `git ...`/`gh ...` text inside it is checked.
 LANGUAGE_RUNNER = re.compile(r"(?:python|node|perl|ruby|osascript|php|deno|bun|lua)[\d.]*")
 EMBEDDED_COMMAND = re.compile(r"(?<![\w./-])(?:git|gh)[ \t]+[^'\"`\n;|&)]*")
@@ -1162,7 +1166,8 @@ class CommandChecker:
         except RecursionError:  # $( ) or ( ) nested hundreds deep
             return self.unchecked("nests $( ) or ( ) too deeply to check")
         self.simple_commands += len(commands)
-        for command in commands:
+        codes = [runner_code(command, self.spend) for command in commands]  # read once, for runs_claude and the floor
+        for command, code in zip(commands, codes):
             self.note_folders(command.words)
             scoped = command_scoped_names(command.words)
             variables = variables_set(command.words)
@@ -1178,13 +1183,13 @@ class CommandChecker:
             )
             self.git_remotes_unknown = self.git_remotes_unknown or write == MOVING_WRITE
             self.git_may_run_program = self.git_may_run_program or git_runs_program(command.words)
-            self.runs_claude = self.runs_claude or runs_claude(command.words)
+            self.runs_claude = self.runs_claude or runs_claude(command, code)
             self.claude_hidden_word = self.claude_hidden_word or claude_takes_hidden_word(command.words)
         # A read of setup.sh or the policy module is let through only when it is the line's one simple command; a pipe,
         # a second command or a substitution (each adds a command) asks, so the floor fails closed (ADR 0010).
         single_command = depth == 0 and len(commands) == 1
         reasons: list[str] = []
-        for command in commands:
+        for command, code in zip(commands, codes):
             searched = [Word("a bare cd target", dynamic=True)] if self.cds_by_name else []
             # git can't be trusted to only read: it may run a program on the files, or run under config the hook can't
             # read or in another repo
@@ -1192,7 +1197,7 @@ class CommandChecker:
             self.spend(len(self.folders))  # each command is judged against every folder the line cds into so far
             folders = self.folders + searched
             found = protected_reasons(
-                command, self.cwd, folders, self.spend, self.makes_links, single_command, git_unsafe
+                command, code, self.cwd, folders, self.spend, self.makes_links, single_command, git_unsafe
             )
             program = program_of(command.words)
             for index in range(len(command.words)):
@@ -3039,8 +3044,27 @@ POLICY_MODULE_MENTION = re.compile(r"src/tower/policy\.py", re.IGNORECASE)
 POLICY_CODE = re.compile(
     r"from\s+tower(?:\.\w+)*\s+import\b[^\n;]*\bpolicy\b|\btower\.policy\b|\bimport\s+tower\b|\btower\s+policy\s+use\b"
 )
-# Programs whose code can run setup.sh wherever it names it: PATH_BUILDERS' (awk's system()) and sed's (GNU's e).
-SETUP_CODE_PROGRAMS = PATH_BUILDERS | {"sed"}
+# Programs whose own code can run a shell command, besides the LANGUAGE_RUNNER interpreters: PATH_BUILDERS' (awk's
+# system(), vim's, ex's and ed's !, emacs --eval's shell-command), sed's (GNU's e; on macOS GNU sed is Homebrew's
+# gsed, since BSD sed has no e), m4's syscmd, dc's !, gdb's and lldb's shell, sqlite3's .shell, Tcl's exec (tclsh,
+# expect, wish), R's system() (R -e, Rscript -e) and Julia's run(). The policy
+# check and the checks for turning tower's plugin off or running claude without its hook scan the same code
+# (is_code_runner), so they can't drift (#108).
+CODE_RUNNERS = PATH_BUILDERS | {
+    "sed",
+    "gsed",
+    "m4",
+    "dc",
+    "gdb",
+    "lldb",
+    "sqlite3",
+    "tclsh",
+    "expect",
+    "wish",
+    "r",
+    "rscript",
+    "julia",
+}
 # Programs that only read the files given to them and write to standard output, so a setup.sh or policy-module path
 # among their arguments is read, not run. BASE_READERS plus nl and od; not echo/printf (they don't read files, and
 # printf -v assigns a variable), nor awk/sed (they run a script of their own), nor xxd (`xxd in out` writes its second
@@ -3086,6 +3110,17 @@ SED_EXPRESSION = re.compile(r"-[nErsuz]*e(.*)|--expression(?:=(.*))?")
 # statement never backtracks over a long script.
 SED_ADDRESS = r"(?:\d+|\$|/(?:\\.|[^/\n])*/)"
 SED_PRINT_STATEMENT = re.compile(rf"\s*(?:{SED_ADDRESS}(?:,{SED_ADDRESS})?)?[pdq=]\s*")
+# What comes before a sed statement's command, for sed_statement_is_plain: an address (a number, GNU's first~step, $,
+# or a /regex/ with GNU's I and M flags) or a range (to another address, or GNU's +N and ~N), and a ! that negates it.
+# An address it can't read (a regex with its own delimiter, \%x%) is left in front of the command, which then fails.
+SED_PLAIN_ADDRESS = r"(?:\d+(?:~\d+)?|\$|/(?:\\.|[^/\n])*/[IM]*)"
+SED_ADDRESSES = re.compile(rf"\s*(?:{SED_PLAIN_ADDRESS}(?:,(?:{SED_PLAIN_ADDRESS}|[+~]\d+))?)?\s*!?\s*")
+# The names sed goes by: BSD's or GNU's sed, and Homebrew's GNU sed on macOS.
+SED_NAMES = {"sed", "gsed"}
+# sed's in-place edit, GNU's (-i, -iSUFFIX, --in-place[=SUFFIX]) and in a cluster (-ni); BSD's suffix is the next word.
+SED_IN_PLACE = re.compile(r"-[nErsuz]*i\S*|--in-place(?:=.*)?")
+# The flags an s command may end with that only change what it matches or prints (not w, which writes a file, or e).
+SED_SUBSTITUTE_FLAGS = re.compile(r"[gpiImM0-9]*")
 
 
 def check_protected_edit(file_path: str) -> str | None:
@@ -3178,6 +3213,7 @@ def folder_arguments(words: list[Word], bases: list[Word], spend: Callable[[int]
 
 def protected_reasons(
     command: SimpleCommand,
+    code: list[str],
     cwd: str,
     folders: list[Word],
     spend: Callable[[int], None],
@@ -3186,20 +3222,21 @@ def protected_reasons(
     git_may_run_program: bool,
 ) -> list[str]:
     """Reasons to ask because COMMAND may change tower's policy (see changes_policy, which SINGLE_COMMAND and
-    GIT_MAY_RUN_PROGRAM go to), or names a rule file or one of tower's files, judged on its words
-    and redirect targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf,
-    the policy file and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any
-    other program naming them, asks, and so does a write to a path under .claude whose text is only known at run time
-    ($HOME, $'...'), and so does a non-read program naming a .claude folder itself. A path ending in tower.conf or
-    policy.toml names them only when it resolves to them from CWD, the session's folder (see changes_policy), or one
-    of FOLDERS the line cds into (see names_tower_file); in code for an interpreter or a PATH_BUILDERS program, which
-    can build any path, or when BY_TEXT (the line may make a link), the name alone does. Each lookup on disk is paid
-    for with SPEND, which raises TooComplex once the budget is gone."""
+    GIT_MAY_RUN_PROGRAM go to), turn tower's plugin off or run claude without its hook (from its words and CODE, the
+    code a program in it runs: runner_code), or names a rule file or one of tower's files, judged on its words and
+    redirect targets with quotes removed and paths normalized. A rule file asks even when only read. tower.conf, the
+    policy file and the rest of ~/.claude/tower may be read by a read-only program; a redirect into them, or any other
+    program naming them, asks, and so does a write to a path under .claude whose text is only known at run time ($HOME,
+    $'...'), and so does a non-read program naming a .claude folder itself. A path ending in tower.conf or policy.toml
+    names them only when it resolves to them from CWD, the session's folder (see changes_policy), or one of FOLDERS the
+    line cds into (see names_tower_file); in code for an interpreter or another CODE_RUNNERS program, which can build
+    any path, or when BY_TEXT (the line may make a link), the name alone does. Each lookup on disk is paid for with
+    SPEND, which raises TooComplex once the budget is gone."""
     if changes_policy(command, cwd, single_command, git_may_run_program):
         return [POLICY_COMMAND_REASON]
-    if turns_tower_off(command.words):
+    if turns_tower_off(command.words, code):
         return [TOWER_PLUGIN_REASON]
-    if runs_claude_without_hook(command.words):
+    if runs_claude_without_hook(command.words, code):
         return [HOOKLESS_CLAUDE_REASON]
     words = [os.path.normpath(word.text) for word in command.words if word.text]
     texts = words + [os.path.normpath(redirect.target.text) for redirect in command.redirects]
@@ -3219,7 +3256,9 @@ def protected_reasons(
     interpreter_at = next((i for i in range(program, len(names)) if LANGUAGE_RUNNER.fullmatch(names[i])), len(names))
     code_words = command.words[interpreter_at + 1 :]
     gets_code = interpreter_at < len(names) and bool(command.stdin_text or gives_code(code_words))
-    runs_code = gets_code or any(name in PATH_BUILDERS for name in names[program:])
+    # any other program that runs code of its own (CODE_RUNNERS: awk, vim, R, julia, ...) can build a path too; a sed
+    # only when it can run a command (runner_code gave its code)
+    runs_code = gets_code or any(name in CODE_RUNNERS and (name not in SED_NAMES or code) for name in names[program:])
     judged_by_text = runs_code or by_text
     session = [Word(cwd), *folders]
     targets = [(redirect.writes, redirect.target.text) for redirect in command.redirects]
@@ -3291,15 +3330,13 @@ def changes_policy(command: SimpleCommand, cwd: str, single_command: bool, git_m
         return True
     reads = read_only_words(command, single_command, git_may_run_program)
     unread = [index for index in range(len(words)) if index not in reads]
-    interpreters = [index for index in unread if LANGUAGE_RUNNER.fullmatch(program_name(words[index]))]
-    is_interpreter = set(interpreters)
-    code_runners = [i for i in unread if i in is_interpreter or program_name(words[i]) in SETUP_CODE_PROGRAMS]
+    code_runners = [index for index in unread if is_code_runner(program_name(words[index]))]
     in_tower = "tower" in cwd.lower()
 
     def code_after(start: int) -> list[str]:
         """The unread words after word START, and standard input: the code a program there may run. awk and sed read
         their program from standard input with `-f -`, so it is scanned too, not only an interpreter's."""
-        stdin = [command.stdin_text or ""] if interpreters or code_runners else []
+        stdin = [command.stdin_text or ""] if code_runners else []
         return [texts[index] for index in unread if index > start] + stdin
 
     # The first program that runs code sees all the later ones' code too, so one look at it is enough. awk, sed, vim
@@ -3393,6 +3430,49 @@ def git_key_runs_program(setting: str) -> bool:
     return key.rsplit(".", 1)[-1] in GIT_PROGRAM_KEY_LEAVES
 
 
+def sed_runs_commands(args: list[Word]) -> bool:
+    """Whether sed run with ARGS may run a shell command, read as an allow-list: it doesn't when it has no word from a
+    variable, no option but SED_SWITCHES, an in-place edit (SED_IN_PLACE) or -e, and each statement of its scripts
+    (the -e values, or the first bare operand when no -e comes before it, as sed_only_prints reads them) is a print,
+    delete, quit or =, an s command whose flags only change the match (SED_SUBSTITUTE_FLAGS), or
+    a y command, behind at most an address or range it can read (SED_ADDRESSES). Anything else may: GNU's e command or s///e,
+    a script file (-f), an option it doesn't know (-l 5, an abbreviated --e=), braces, or an address it can't read
+    (a regex with its own delimiter), which is where a run can hide."""
+    scripts: list[str] = []
+    saw_expression = saw_operand = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        expression = SED_EXPRESSION.fullmatch(word.text)
+        if word.dynamic:
+            return True
+        if expression:
+            attached = expression.group(1) if expression.group(1) is not None else expression.group(2)
+            scripts.append(attached or (args[index + 1].text if index + 1 < len(args) else ""))
+            index += 0 if attached else 1
+            saw_expression = True
+        elif word.text == "--" or SED_SWITCHES.fullmatch(word.text) or SED_IN_PLACE.fullmatch(word.text):
+            pass
+        elif word.text.startswith("-") and word.text != "-":
+            return True
+        else:
+            scripts += [word.text] if not saw_expression and not saw_operand else []
+            saw_operand = True
+        index += 1
+    return not all(sed_statement_is_plain(part) for script in scripts for part in sed_statements(script))
+
+
+def sed_statement_is_plain(statement: str) -> bool:
+    """Whether one sed STATEMENT can't run a command or write a file: see sed_runs_commands."""
+    command = SED_ADDRESSES.sub("", statement, count=1).rstrip()
+    if command in ("", "p", "d", "q", "="):
+        return True
+    if len(command) < 2 or command[0] not in "sy" or command[1] in "\\\n ":
+        return False
+    parts = re.split(rf"(?<!\\){re.escape(command[1])}", command[2:])
+    return len(parts) == 3 and (command[0] == "y" and not parts[2] or bool(SED_SUBSTITUTE_FLAGS.fullmatch(parts[2])))
+
+
 def sed_only_prints(args: list[Word]) -> bool:
     """Whether sed run with ARGS only selects lines to print, delete or quit on, never running a command or writing a
     file. No word from a variable, and no option but SED_SWITCHES or -e (an -i edit, -f script file or -l makes it
@@ -3460,19 +3540,45 @@ def sed_statements(script: str) -> list[str]:
     return parts
 
 
-def turns_tower_off(words: list[Word]) -> bool:
+def is_code_runner(name: str) -> bool:
+    """Whether the program NAME (as program_name gives it) runs code of its own that can run a shell command: an
+    interpreter (LANGUAGE_RUNNER: python, node, ...) or one of CODE_RUNNERS (awk, sed, vim, ex, ed, emacs, ...)."""
+    return name in CODE_RUNNERS or bool(LANGUAGE_RUNNER.fullmatch(name))
+
+
+def runner_code(command: SimpleCommand, spend: Callable[[int], None]) -> list[str]:
+    """The code a program in COMMAND that runs code (is_code_runner) may run, for the checks that read code for
+    claude: every word after the command's program and its standard input (a heredoc to python, awk -f -), paid for
+    with SPEND; none without such a program, or when the first one is a sed whose scripts can't run a command
+    (sed_runs_commands): an edit or a print runs nothing. The first runner sees every later one's code, so one look is
+    enough, past any sed that can't run a command (a later runner may still: find -exec sed -n p {} ; -exec python3)."""
+    words = command.words
+    program = program_position(words)
+    for index in range(program, len(words)):
+        name = program_name(words[index])
+        if not is_code_runner(name):
+            continue
+        if name in SED_NAMES:
+            spend(scan_cost(words, index, len(words)))  # its scripts are read from the words after it
+            if not sed_runs_commands(words[index + 1 :]):
+                continue
+        spend(scan_cost(words, program, len(words)) + len(command.stdin_text or ""))
+        return [word.text for word in words[program + 1 :]] + [command.stdin_text or ""]
+    return []
+
+
+def turns_tower_off(words: list[Word], code: list[str]) -> bool:
     """Whether a simple command's WORDS run `claude plugin disable|uninstall|remove` or `claude plugin marketplace
     remove|rm` on what may be tower (see plugin_args_turn_tower_off). claude counts wherever it is a word, unless the
     command's program only reads or prints its words (echo, grep); any later word "plugin" may be the group, since an
     option's value can say plugin too (claude -d plugin plugin disable tower), and so may a word from a variable. The
-    first claude word is the one that runs: the words after it are its own. Code in another language (python -c)
-    that mentions claude, plugin and an off verb in that order counts too."""
+    first claude word is the one that runs: the words after it are its own. CODE that a program in the command runs
+    (runner_code: python -c, awk's system(), vim's !, a heredoc to python) counts when it mentions claude, plugin and an
+    off verb in that order, without needing tower's name, which code can build (#108)."""
     program = program_position(words)
     if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
         return False
-    if any(LANGUAGE_RUNNER.fullmatch(program_name(word)) for word in words[program:]) and any(
-        mentions_plugin_off(word.text) for word in words[program + 1 :]
-    ):
+    if any(mentions_plugin_off(text) for text in code):
         return True
     index = claude_position(words, program)
     if index is None:
@@ -3530,15 +3636,14 @@ def claude_runs_at(words: list[Word], program: int) -> int | None:
     return index
 
 
-def runs_claude(words: list[Word]) -> bool:
-    """Whether a simple command's WORDS may run Claude Code, for the variables that start it without tower's hook:
-    the claude word claude_runs_at finds, or another language's code that mentions claude."""
+def runs_claude(command: SimpleCommand, code: list[str]) -> bool:
+    """Whether a simple COMMAND may run Claude Code, for the variables that start it without tower's hook: the claude
+    word claude_runs_at finds, or CODE a program in it runs (runner_code) that mentions claude."""
+    words = command.words
     program = program_position(words)
     if program >= len(words):
         return False
-    if any(LANGUAGE_RUNNER.fullmatch(program_name(word)) for word in words[program:]) and any(
-        CLAUDE_MENTION.search(word.text) for word in words[program + 1 :]
-    ):
+    if any(CLAUDE_MENTION.search(text) for text in code):
         return True
     return claude_runs_at(words, program) is not None
 
@@ -3561,20 +3666,18 @@ def claude_takes_hidden_word(words: list[Word]) -> bool:
     return any(has_expansion(word.text[:1]) for word in args[:end])
 
 
-def runs_claude_without_hook(words: list[Word]) -> bool:
+def runs_claude_without_hook(words: list[Word], code: list[str]) -> bool:
     """Whether a simple command's WORDS start a nested Claude Code session without tower's hook: claude (the word
     claude_position finds) with --bare, --safe-mode or --restricted, --settings (inline JSON or a file: either can turn
     hooks off) or --setting-sources without user (or from a variable), or an option whose name the shell builds
-    (--{bare,x}, --$X, --settings$X); claude run by xargs, parallel or find, which may add one; or another language's code that mentions claude and one of them. The variables that do the same
+    (--{bare,x}, --$X, --settings$X); claude run by xargs, parallel or find, which may add one; or CODE a program in the
+    command runs (runner_code) that mentions claude and one of them. The variables that do the same
     (CLAUDE_CODE_SIMPLE, ...), and a word from a variable that may be one of the options, are judged for the whole line
     in CommandChecker.reasons. Linear: one look at each word."""
     program = program_position(words)
     if program >= len(words) or program_name(words[program]) in READ_ONLY_PROGRAMS:
         return False
-    names = [program_name(word) for word in words[program:]]
-    if any(LANGUAGE_RUNNER.fullmatch(name) for name in names) and any(
-        mentions_hookless_claude(word.text) for word in words[program + 1 :]
-    ):
+    if any(mentions_hookless_claude(text) for text in code):
         return True
     index = claude_runs_at(words, program)
     if index is None:
